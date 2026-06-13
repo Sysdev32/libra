@@ -15,9 +15,9 @@ else
     CROSS_COMPILE ?= toolchain/
 endif
 
-CC := $(CROSS_COMPILE)x86_64-elf-gcc
-LD := $(CROSS_COMPILE)x86_64-elf-ld
-AR := $(CROSS_COMPILE)x86_64-elf-ar
+CC := gcc
+LD := ld
+AR := ar
 
 AS := nasm
 QEMU := qemu-system-x86_64
