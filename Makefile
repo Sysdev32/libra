@@ -1,52 +1,64 @@
-# =========================
-# --- Toolchain Config ---
-# =========================
+# =========================================================
+#               Libra Kernel Build System
+# =========================================================
 
-CROSS_COMPILE ?= toolchain/
-CC      ?= $(CROSS_COMPILE)x86_64-elf-gcc
-LD      ?= $(CROSS_COMPILE)x86_64-elf-ld
+# -------------------------
+# Toolchain (CI + Local)
+# -------------------------
 
-AS      := nasm
-XORRISO := xorriso
-QEMU    := qemu-system-x86_64
-
-# =========================
-# --- CI MODE SWITCH ---
-# =========================
-# Set ACTIONS=1 in GitHub Actions
-# Enables CI-safe behavior
 ACTIONS ?= 0
 
 ifeq ($(ACTIONS),1)
-    TOOLCHAIN_PATH := $(shell pwd)/toolchain
-    CROSS_COMPILE := $(TOOLCHAIN_PATH)/
+    TOOLCHAIN_DIR := $(shell pwd)/toolchain
+    CROSS_COMPILE := $(TOOLCHAIN_DIR)/
+else
+    CROSS_COMPILE ?= toolchain/
 endif
 
-# =========================
-# --- Flags ---
-# =========================
+CC := $(CROSS_COMPILE)x86_64-elf-gcc
+LD := $(CROSS_COMPILE)x86_64-elf-ld
+AR := $(CROSS_COMPILE)x86_64-elf-ar
 
-CFLAGS := -ffreestanding -fno-stack-protector -fno-pic -mno-red-zone \
-          -m64 -march=x86-64 -Wall -Wextra -O2 -I./inc -I. \
-          -mcmodel=kernel -g
+AS := nasm
+QEMU := qemu-system-x86_64
+XORRISO := xorriso
 
-LDFLAGS := -T linker.ld -nostdlib -z max-page-size=0x1000
+# -------------------------
+# Flags
+# -------------------------
+
+CFLAGS := \
+	-ffreestanding \
+	-fno-stack-protector \
+	-fno-pic \
+	-mno-red-zone \
+	-m64 \
+	-march=x86-64 \
+	-mcmodel=kernel \
+	-O2 \
+	-Wall -Wextra \
+	-g \
+	-I./inc -I.
+
+LDFLAGS := \
+	-T linker.ld \
+	-nostdlib \
+	-z max-page-size=0x1000
+
 ASFLAGS := -f elf64
 
-DEPFLAGS = -MT $@ -MMD -MP -MF $(DEP_DIR)/$(notdir $(basename $<)).d
-
-# =========================
-# --- Directories ---
-# =========================
+# -------------------------
+# Directories
+# -------------------------
 
 SRC_DIR := src
 OBJ_DIR := objects
 DEP_DIR := dependencies
 ISO_DIR := iso
 
-# =========================
-# --- Sources ---
-# =========================
+# -------------------------
+# Sources
+# -------------------------
 
 SRCS_C   := $(shell find $(SRC_DIR) -type f -name '*.c')
 SRCS_S   := $(shell find $(SRC_DIR) -type f -name '*.s')
@@ -56,74 +68,79 @@ OBJS_C   := $(patsubst $(SRC_DIR)/%.c, $(OBJ_DIR)/%.o, $(SRCS_C))
 OBJS_S   := $(patsubst $(SRC_DIR)/%.s, $(OBJ_DIR)/%_s.o, $(SRCS_S))
 OBJS_ASM := $(patsubst $(SRC_DIR)/%.asm, $(OBJ_DIR)/%_asm.o, $(SRCS_ASM))
 
-OBJS     := $(OBJS_C) $(OBJS_S) $(OBJS_ASM)
-DEPS     := $(patsubst $(SRC_DIR)/%.c, $(DEP_DIR)/%.d, $(SRCS_C))
+OBJS := $(OBJS_C) $(OBJS_S) $(OBJS_ASM)
 
-# =========================
-# --- Targets ---
-# =========================
+DEPS := $(patsubst $(SRC_DIR)/%.c, $(DEP_DIR)/%.d, $(SRCS_C))
 
-KERNEL  := $(ISO_DIR)/kernel.elf
-ISO_IMG := custom_os.iso
+# -------------------------
+# Output
+# -------------------------
 
-.PHONY: all clean iso run
+KERNEL := $(ISO_DIR)/kernel.elf
+ISO    := custom_os.iso
+
+# -------------------------
+# Targets
+# -------------------------
+
+.PHONY: all clean iso run dirs
 
 all: $(KERNEL)
-	ls
-# =========================
-# --- Link ---
-# =========================
 
-$(KERNEL): $(OBJS) linker.ld | $(ISO_DIR)/.dir
+# -------------------------
+# Link Kernel
+# -------------------------
+
+$(KERNEL): $(OBJS) linker.ld | dirs
 	@echo "[LD] Linking kernel"
+	@mkdir -p $(dir $@)
 	@$(LD) $(LDFLAGS) $(OBJS) -o $@
 
-# =========================
-# --- Compile C ---
-# =========================
+# -------------------------
+# Compile C
+# -------------------------
 
-$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | $(OBJ_DIR) $(DEP_DIR)
+$(OBJ_DIR)/%.o: $(SRC_DIR)/%.c | dirs
 	@echo "[CC] $<"
 	@mkdir -p $(dir $@)
-	@$(CC) $(DEPFLAGS) $(CFLAGS) -c $< -o $@
+	@$(CC) $(CFLAGS) -c $< -o $@
 
-# =========================
-# --- ASM ---
-# =========================
+# -------------------------
+# Assemble .s
+# -------------------------
 
-$(OBJ_DIR)/%_s.o: $(SRC_DIR)/%.s | $(OBJ_DIR)
+$(OBJ_DIR)/%_s.o: $(SRC_DIR)/%.s | dirs
 	@echo "[AS] $<"
 	@mkdir -p $(dir $@)
 	@$(AS) $(ASFLAGS) $< -o $@
 
-$(OBJ_DIR)/%_asm.o: $(SRC_DIR)/%.asm | $(OBJ_DIR)
+# -------------------------
+# Assemble .asm
+# -------------------------
+
+$(OBJ_DIR)/%_asm.o: $(SRC_DIR)/%.asm | dirs
 	@echo "[AS] $<"
 	@mkdir -p $(dir $@)
 	@$(AS) $(ASFLAGS) $< -o $@
 
-# =========================
-# --- dirs ---
-# =========================
+# -------------------------
+# Directories
+# -------------------------
 
-$(OBJ_DIR) $(DEP_DIR):
-	@mkdir -p $@
+dirs:
+	@mkdir -p $(OBJ_DIR) $(DEP_DIR) $(ISO_DIR)
 
-$(ISO_DIR)/.dir:
-	@mkdir -p $(ISO_DIR)
-	@touch $@
-
-# =========================
-# --- ISO ---
-# =========================
+# -------------------------
+# ISO Build (UEFI)
+# -------------------------
 
 iso: $(KERNEL)
-	@echo "[ISO] building"
+	@echo "[ISO] building..."
 
 	@if [ ! -f $(ISO_DIR)/limine.conf ]; then \
-		echo "missing limine.conf"; exit 1; \
+		echo "ERROR: missing limine.conf"; exit 1; \
 	fi
 
-	@rm -f $(ISO_DIR)/limine-bios.sys $(ISO_DIR)/limine-bios-cd.bin
 	@cp limine/limine-uefi-cd.bin $(ISO_DIR)/
 	@mkdir -p $(ISO_DIR)/EFI/BOOT
 	@cp limine/BOOTX64.EFI $(ISO_DIR)/EFI/BOOT/
@@ -131,23 +148,32 @@ iso: $(KERNEL)
 	@$(XORRISO) -as mkisofs \
 		-e limine-uefi-cd.bin \
 		-no-emul-boot \
-		-efi-boot-part --efi-boot-image --protective-msdos-label \
-		$(ISO_DIR) -o $(ISO_IMG)
+		-efi-boot-part \
+		--efi-boot-image \
+		--protective-msdos-label \
+		$(ISO_DIR) -o $(ISO)
 
-# =========================
-# --- RUN ---
-# =========================
+# -------------------------
+# Run in QEMU
+# -------------------------
 
 run: iso
-	ls
-	@$(QEMU) -bios /usr/share/ovmf/OVMF.fd -cdrom $(ISO_IMG) -m 4G -M q35 -serial stdio -D qemu.log -d int
+	@echo "[QEMU] booting..."
+	@$(QEMU) \
+		-bios /usr/share/ovmf/OVMF.fd \
+		-cdrom $(ISO) \
+		-m 4G \
+		-M q35 \
+		-serial stdio \
+		-D qemu.log \
+		-d int
 
-# =========================
-# --- CLEAN ---
-# =========================
+# -------------------------
+# Clean
+# -------------------------
 
 clean:
-	@rm -rf $(OBJ_DIR) $(DEP_DIR) $(ISO_IMG)
-	@rm -rf $(ISO_DIR)/EFI $(ISO_DIR)/limine-uefi-cd.bin $(ISO_DIR)/kernel.elf
+	@echo "[CLEAN]"
+	@rm -rf $(OBJ_DIR) $(DEP_DIR) $(ISO) $(ISO_DIR)/kernel.elf
 
 -include $(DEPS)
