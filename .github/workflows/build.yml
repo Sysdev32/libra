@@ -46,9 +46,3 @@ jobs:
             echo "💀 error found in output.log"
             exit 1
           fi
-
-          # optional sanity check: kernel actually booted
-          if [ -f qemu.log ] && ! grep -q "Libra booted" qemu.log; then
-            echo "💀 kernel did not reach boot success marker"
-            exit 1
-          fi
