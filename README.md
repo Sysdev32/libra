@@ -1,7 +1,7 @@
 # Libra
 Hello my fellow developers. I've started this project as a hobby kernel. It's a sequel to my previous kernels (unreleased).
-It aims to be an alternative to linux that is quite a bit more stable, but this kernel is still quite experimental, and we are super far away from this goal. So, it's a pleasure if anyone would like to help with this project.
-
+It aims to be a stable kernel and efficient. Hence the name Libra, but this kernel is still quite experimental, and we are super far away from this goal. So, it's a pleasure if anyone would like to help with this project.
+Fun Fact: I'm a Libra
 ## Getting Started
 ### Project Instructions
 I've taken inspiration from other kernels and see that this section for devs is mostly unclear.
