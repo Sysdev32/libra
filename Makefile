@@ -175,5 +175,6 @@ run: iso
 clean:
 	@echo "[CLEAN]"
 	@rm -rf $(OBJ_DIR) $(DEP_DIR) $(ISO) $(ISO_DIR)/kernel.elf
+	rm qemu.log
 
 -include $(DEPS)
