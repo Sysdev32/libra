@@ -166,7 +166,7 @@ run: iso
 		-M q35 \
 		-serial stdio \
 		-D qemu.log \
-		-d int
+		-d int > output.log 2>&1
 
 # -------------------------
 # Clean

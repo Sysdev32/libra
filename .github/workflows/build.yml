@@ -15,10 +15,40 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential nasm xorriso grub-pc-bin make qemu-system
+          sudo apt install -y build-essential nasm xorriso grub-pc-bin make qemu-system-x86
+
+      - name: Show toolchain
+        run: |
+          ls -lah $GITHUB_WORKSPACE/toolchain
 
       - name: Build kernel
         run: |
-          ls /home/runner/work/libra/libra/toolchain/
           make clean
           make -j$(nproc)
+
+      - name: Run kernel (QEMU)
+        run: |
+          echo "Running QEMU..."
+          timeout 10s make run || true
+
+      - name: Check logs
+        run: |
+          echo "Checking logs..."
+
+          # fail if qemu log has your custom crash marker
+          if [ -f qemu.log ] && grep -q "check_exception" qemu.log; then
+            echo "💀 check_exception found in qemu.log"
+            exit 1
+          fi
+
+          # fail if output log contains error
+          if [ -f output.log ] && grep -qi "error" output.log; then
+            echo "💀 error found in output.log"
+            exit 1
+          fi
+
+          # optional sanity check: kernel actually booted
+          if [ -f qemu.log ] && ! grep -q "Libra booted" qemu.log; then
+            echo "💀 kernel did not reach boot success marker"
+            exit 1
+          fi
