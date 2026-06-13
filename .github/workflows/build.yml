@@ -19,30 +19,62 @@ jobs:
 
       - name: Show toolchain
         run: |
+          echo "Toolchain contents:"
           ls -lah $GITHUB_WORKSPACE/toolchain
 
       - name: Build kernel
         run: |
+          echo "Building kernel..."
           make clean
-          make -j$(nproc)
+          make -j$(nproc) 2>&1 | tee output.log
 
       - name: Run kernel (QEMU)
         run: |
           echo "Running QEMU..."
-          timeout 10s make run || true
+          timeout 15s make run 2>&1 | tee qemu.log || true
 
       - name: Check logs
         run: |
           echo "Checking logs..."
 
-          # fail if qemu log has your custom crash marker
-          if [ -f qemu.log ] && grep -q "check_exception" qemu.log; then
-            echo "💀 check_exception found in qemu.log"
-            exit 1
+          echo ""
+          echo "=============================="
+          echo "QEMU CHECK"
+          echo "=============================="
+
+          if [ -f qemu.log ]; then
+            if grep -q "check_exception" qemu.log; then
+              echo "💀 FOUND check_exception:"
+              grep "check_exception" qemu.log
+              exit 1
+            else
+              echo "no check_exception found"
+            fi
+          else
+            echo "qemu.log missing"
           fi
 
-          # fail if output log contains error
-          if [ -f output.log ] && grep -qi "error" output.log; then
-            echo "💀 error found in output.log"
-            exit 1
+          echo ""
+          echo "=============================="
+          echo "BUILD ERROR CHECK"
+          echo "=============================="
+
+          if [ -f output.log ]; then
+            if grep -qi "error" output.log; then
+              echo "💀 GCC/LD ERRORS FOUND:"
+              grep -ni "error" output.log
+
+              echo ""
+              echo "FULL BUILD LOG:"
+              cat output.log
+
+              exit 1
+            else
+              echo "no build errors found"
+            fi
+          else
+            echo "output.log missing"
           fi
+
+          echo ""
+          echo "✅ CI passed (somehow your kernel survived)"
