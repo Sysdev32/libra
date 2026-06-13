@@ -19,5 +19,5 @@ jobs:
 
       - name: Build kernel
         run: |
-          make clean
-          make -j$(nproc)
+          ACTIONS=1 make clean
+          ACTIONS=1 make -j$(nproc)
