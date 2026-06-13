@@ -19,6 +19,6 @@ jobs:
 
       - name: Build kernel
         run: |
-          ls $GITHUB_WORKSPACE/toolchain
+          ls /home/runner/work/libra/libra/toolchain/
           ACTIONS=1 CC=$GITHUB_WORKSPACE/toolchain/x86_64-elf-gcc LD=$GITHUB_WORKSPACE/toolchain/x86_64-elf-ld make clean
           ACTIONS=1 CC=$GITHUB_WORKSPACE/toolchain/x86_64-elf-gcc LD=$GITHUB_WORKSPACE/toolchain/x86_64-elf-ld make -j$(nproc)
