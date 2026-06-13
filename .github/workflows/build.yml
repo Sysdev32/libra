@@ -1,0 +1,23 @@
+name: Build Libra Kernel
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential nasm xorriso grub-pc-bin make qemu-system
+
+      - name: Build kernel
+        run: |
+          make clean
+          make -j$(nproc)

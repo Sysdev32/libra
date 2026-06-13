@@ -1,7 +1,7 @@
 # --- Toolchain Configurations ---
-CC      := gcc
+CC      := toolchain/x86_64-elf-gcc
 AS      := nasm
-LD      := ld
+LD      := toolchain/x86_64-elf-ld
 XORRISO := xorriso
 QEMU    := qemu-system-x86_64
 
