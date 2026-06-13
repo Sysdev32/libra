@@ -15,12 +15,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y build-essential nasm xorriso grub-pc-bin make qemu-system-x86
-
-      - name: Show toolchain
-        run: |
-          echo "Toolchain contents:"
-          ls -lah $GITHUB_WORKSPACE/toolchain
+          sudo apt install -y build-essential nasm xorriso grub-pc-bin make qemu-system-x86 ovmf
 
       - name: Build kernel
         run: |
