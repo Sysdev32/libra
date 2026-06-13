@@ -19,5 +19,5 @@ jobs:
 
       - name: Build kernel
         run: |
-          ACTIONS=1 make clean
-          ACTIONS=1 make -j$(nproc)
+          ACTIONS=1 CC=$GITHUB_WORKSPACE/toolchain/x86_64-elf-gcc LD=$GITHUB_WORKSPACE/toolchain/x86_64-elf-ld make clean
+          ACTIONS=1 CC=$GITHUB_WORKSPACE/toolchain/x86_64-elf-gcc LD=$GITHUB_WORKSPACE/toolchain/x86_64-elf-ld make -j$(nproc)

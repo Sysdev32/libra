@@ -3,8 +3,8 @@
 # =========================
 
 CROSS_COMPILE ?= toolchain/
-CC      := $(CROSS_COMPILE)x86_64-elf-gcc
-LD      := $(CROSS_COMPILE)x86_64-elf-ld
+CC      ?= $(CROSS_COMPILE)x86_64-elf-gcc
+LD      ?= $(CROSS_COMPILE)x86_64-elf-ld
 
 AS      := nasm
 XORRISO := xorriso
