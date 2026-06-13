@@ -5,7 +5,7 @@ It aims to be an alternative to linux that is quite a bit more stable, but this 
 ## Getting Started
 ### Project Instructions
 I've taken inspiration from other kernels and see that this section for devs is mostly unclear.
-The actual low-level kernel assembly code isn't there. This kernel boots directly to C using Limine.
+The actual low-level kernel assembly code for booting isn't there. This kernel boots directly to C using Limine.
 If you are unfamiliar with Limine, I'd recommend for you to check it out before developing here.
 This is a higher-half kernel. Limine has mapped the pages already, and I'd prefer that we edit and shall not **REPLACE** the memory map.
 ### Creating a branch
