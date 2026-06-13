@@ -69,7 +69,7 @@ ISO_IMG := custom_os.iso
 .PHONY: all clean iso run
 
 all: $(KERNEL)
-
+	ls
 # =========================
 # --- Link ---
 # =========================
@@ -139,6 +139,7 @@ iso: $(KERNEL)
 # =========================
 
 run: iso
+	ls
 	@$(QEMU) -bios /usr/share/ovmf/OVMF.fd -cdrom $(ISO_IMG) -m 4G -M q35 -serial stdio -D qemu.log -d int
 
 # =========================
