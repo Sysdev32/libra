@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <drivers/fb.h>
 #include <string.h>
+#include <stdarg.h>
 struct flanterm_context *ctx;
 void initConsole(struct flanterm_context *ft_ctx) {
     ctx = ft_ctx;
@@ -138,33 +139,44 @@ void printk(const char *fmt, ...) {
     va_start(args, fmt);
     int len = vsprintf(buf, fmt, args);
     va_end(args);
+    // If no flanterm context is available, send directly to serial (COM1).
+    if (ctx == NULL) {
+        for (int i = 0; i < len; i++) {
+            if (buf[i] == '\n') {
+                // Send CR before LF
+                uint8_t status;
+                do {
+                    __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
+                } while ((status & 0x20) == 0);
+                __asm__ volatile("outb %0, %1" :: "a"((uint8_t)'\r'), "Nd"((uint16_t)0x3F8));
+            }
 
-    // Loop through the formatted string buffer
-    for (int i = 0; i < len; i++) {
-        // If we hit a raw '\n', send a '\r' first to reset the cursor to the left
-        if (buf[i] == '\n') {
-            flanterm_write(ctx, "\r", 1);
-            
-            // Wait for COM1 serial port to be ready for '\r'
             uint8_t status;
             do {
                 __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
             } while ((status & 0x20) == 0);
-            
-            // Transmit '\r' to COM1 data port (0x3F8)
+            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)buf[i]), "Nd"((uint16_t)0x3F8));
+        }
+        return;
+    }
+
+    // Otherwise write through flanterm and also mirror to serial for physical COM1
+    for (int i = 0; i < len; i++) {
+        if (buf[i] == '\n') {
+            flanterm_write(ctx, "\r", 1);
+            uint8_t status;
+            do {
+                __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
+            } while ((status & 0x20) == 0);
             __asm__ volatile("outb %0, %1" :: "a"((uint8_t)'\r'), "Nd"((uint16_t)0x3F8));
         }
-        
-        // Write the original character to the terminal screen (including the '\n')
+
         flanterm_write(ctx, &buf[i], 1);
 
-        // Wait for COM1 serial port to be ready for the current character
         uint8_t status;
         do {
             __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
         } while ((status & 0x20) == 0);
-        
-        // Transmit the current character byte to COM1 data port (0x3F8)
         __asm__ volatile("outb %0, %1" :: "a"((uint8_t)buf[i]), "Nd"((uint16_t)0x3F8));
     }
 }

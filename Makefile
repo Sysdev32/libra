@@ -15,9 +15,9 @@ else
     CROSS_COMPILE ?= toolchain/
 endif
 
-CC := gcc
-LD := ld
-AR := ar
+CC := x86_64-elf-gcc
+LD := x86_64-elf-ld
+AR := x86_64-elf-ar
 
 AS := nasm
 QEMU := qemu-system-x86_64
@@ -39,7 +39,7 @@ CFLAGS := \
 	-Wall -Wextra \
 	-g \
 	-I./inc -I. \
-	-mno-sse -mno-mmx -mno-3dnow
+	-mno-sse -mno-mmx -mno-3dnow -fpermissive -Wno-error=int-conversion -Wno-error=incompatible-pointer-types -Wno-error=implicit-function-declaration
 
 LDFLAGS := \
 	-T linker.ld \

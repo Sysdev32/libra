@@ -213,17 +213,17 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             if (args->arg <= 2) {
                 regs->rax = 0; 
             } else {
-                regs->rax = vfs_read(args->arg - 2, (void*)args->arg, args->arg, args->arg);
+                regs->rax = vfs_read(args->arg[0] - 2, (void*)args->arg[1], args->arg[2], args->arg[3]);
             }
             break;
 
         case 1: // vfs_write_file
             if (args->arg > 2) {
-                regs->rax = vfs_write_file(args->arg - 2, (void*)args->arg, args->arg);
+                regs->rax = vfs_write_file(args->arg[0] - 2, (void*)args->arg[1], args->arg[2]);
             } 
             else if (args->arg == 1 || args->arg == 2) {
-                char *user_str = (char*)args->arg;
-                unsigned long length = args->arg;
+                char *user_str = (char*)args->arg[0];
+                unsigned long length = args->arg[1];
 
                 for (unsigned long i = 0; i < length; i++) {
                     printk("%c", user_str[i]);
@@ -233,7 +233,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             break;
 
         case 2: { // vfs_open
-            long fd = vfs_open((const char*)args->arg);
+            long fd = vfs_open((const char*)args->arg[0]);
             if (fd < 0) {
                 regs->rax = fd; 
             } else {
@@ -243,18 +243,18 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
         }
 
         case 3: // vfs_mkdir
-            regs->rax = vfs_mkdir((const char*)args->arg, args->arg);
+            regs->rax = vfs_mkdir((const char*)args->arg[0], args->arg[1]);
             break;
 
         case 4: // vfs_rmdir
-            regs->rax = vfs_rmdir((const char*)args->arg);
+            regs->rax = vfs_rmdir((const char*)args->arg[0]);
             break;
 
         case 5: // vfs_free_fd (_close)
             if (args->arg <= 2) {
                 regs->rax = 0; 
             } else {
-                regs->rax = vfs_free_fd(args->arg - 2);
+                regs->rax = vfs_free_fd(args->arg[0] - 2);
             }
             break;
 
@@ -262,12 +262,12 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             if (args->arg <= 2) {
                 regs->rax = -1; 
             } else {
-                regs->rax = vfs_move_file(args->arg - 2, (const char*)args->arg);
+                regs->rax = vfs_move_file(args->arg[0] - 2, (const char*)args->arg[1]);
             }
             break;
 
         case 7: { // vfs_create_file
-            long fd = vfs_create_file((void*)args->arg, (const char*)args->arg, args->arg);
+            long fd = vfs_create_file((void*)args->arg[0], (const char*)args->arg[1], args->arg[2]);
             if (fd < 0) {
                 regs->rax = fd; 
             } else {
@@ -277,7 +277,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
         }
 
         case 8: // vfs_delete_file
-            regs->rax = vfs_delete_file((const char*)args->arg);
+            regs->rax = vfs_delete_file((const char*)args->arg[0]);
             break;
 
         default: 

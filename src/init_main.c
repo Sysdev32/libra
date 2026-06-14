@@ -15,7 +15,7 @@
 #include <uacpi/utilities.h>
 #include <uacpi/event.h>
 #include <string.h>
-
+#include <uacpi/tables.h>
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -210,6 +210,7 @@ void _start(void) {
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         hlt();
     }
+    init_sse();
     gdt_init();
     idt_init();
     // FIX 1: Access the array base element pointer directly
@@ -285,7 +286,7 @@ void _start(void) {
     }
 
     // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
-    init_sse();
+    
 
     if (create_kernel_task(main_kthread) < 0) {
         printk("Failed to create main kthread.\n");

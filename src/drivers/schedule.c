@@ -271,8 +271,6 @@ void start_scheduler(void) {
     );
 
     pit_init();
-    // Dump GDT/TSS state just before enabling interrupts to detect any divergence
-    dump_gdt_state("before_enable_interrupts");
     asm volatile ("sti");
     
     for (;;) {

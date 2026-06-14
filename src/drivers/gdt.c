@@ -135,33 +135,4 @@ void gdt_init(void) {
         : "rax", "memory"
     );
 
-    // Dump the hardware GDTR/GDT and TSS state immediately after load
-    dump_gdt_state("after_gdt_init");
-
-}
-
-// Lightweight runtime dump function to help detect when GDTR/GDT/TSS diverge
-void dump_gdt_state(const char* tag) {
-    struct GDTPtr hw;
-    uint16_t tr_val = 0;
-
-    // Read processor GDTR and TR
-    asm volatile("sgdt %0" : "=m"(hw));
-    asm volatile("str %0" : "=r"(tr_val));
-
-    printk("%s: GDTR base=%p limit=0x%x\n", tag, (void*)hw.base, hw.limit);
-    printk("%s: TR=0x%04x TSS_addr=%p\n", tag, tr_val, (void*)&global_tss);
-
-    // Print first 7 GDT 8-byte entries (as qwords)
-    uint64_t *gdt_q = (uint64_t*)hw.base;
-    for (int i = 0; i < 7; i++) {
-        uint64_t val = 0;
-        // protect against invalid memory reads by trying to read, but no crashes expected in-kernel
-        val = gdt_q[i];
-        printk("%s: GDT[%d]=0x%016llx\n", tag, i, (unsigned long long)val);
-    }
-
-    // Print a couple of TSS fields for verification
-    printk("%s: TSS.rsp0=%p TSS.ist1=%p iopb=0x%x\n", tag,
-           (void*)global_tss.rsp0, (void*)global_tss.ist1, global_tss.iopb_offset);
 }
