@@ -48,6 +48,25 @@ void hlt(void) {
     }
 }
 
+static void init_sse(void) {
+    unsigned long cr0, cr4;
+    asm volatile("mov %%cr0, %0" : "=r"(cr0));
+    // Clear EM (bit 2) to enable x87/MMX/SSE instructions
+    cr0 &= ~(1UL << 2);
+    // Set MP (bit 1) so FPU behaves correctly with WAIT/FWAIT
+    cr0 |= (1UL << 1);
+    asm volatile("mov %0, %%cr0" :: "r"(cr0));
+
+    asm volatile("mov %%cr4, %0" : "=r"(cr4));
+    // Enable OSFXSR (bit 9) and OSXMMEXCPT (bit 10)
+    cr4 |= (1UL << 9) | (1UL << 10);
+    asm volatile("mov %0, %%cr4" :: "r"(cr4));
+
+    // Load a sane MXCSR default (all exceptions masked)
+    unsigned int mxcsr = 0x1f80;
+    asm volatile("ldmxcsr %0" :: "m"(mxcsr));
+}
+
 void pit_init(void) {
     // 1193182 Hz is the internal oscillator speed of the PIT chip
     uint32_t frequency = 100; // 100 Hz = 10ms interval
@@ -184,37 +203,7 @@ static void main_kthread(void) {
         asm volatile("sti; hlt");
     }
 }
-void init_sse(void) {
-    uint64_t cr0;
-    uint64_t cr4;
-
-    // 1. Read the current control register states
-    asm volatile("mov %%cr0, %0" : "=r"(cr0));
-    asm volatile("mov %%cr4, %0" : "=r"(cr4));
-
-    // 2. Configure CR0
-    // Clear the EM (Emulation) bit (bit 2) so math isn't simulated in software
-    // Set the MP (Monitor Coprocessor) bit (bit 1) to handle task switches cleanly
-    cr0 &= ~(1ULL << 2);
-    cr0 |= (1ULL << 1);
-
-    // 3. Configure CR4
-    // Set OSFXSR (bit 9) to tell the OS that we support FXSAVE/FXRSTOR instructions
-    // Set OSXMMEXCPT (bit 10) so the CPU can fire unmasked SIMD floating-point traps
-    cr4 |= (1ULL << 9) | (1ULL << 10);
-
-    // 4. Write the updated configurations back to the CPU
-    asm volatile("mov %0, %%cr0" :: "r"(cr0));
-    asm volatile("mov %0, %%cr4" :: "r"(cr4));
-
-    // Initialize MXCSR (SSE control) to the default value and
-    // set the x87 FPU control word to mask exceptions. This
-    // prevents spurious SIMD/x87 faults when restoring state.
-    unsigned int mxcsr = 0x1f80;
-    unsigned short fpu_cw = 0x037f;
-    asm volatile("ldmxcsr %0" :: "m"(mxcsr));
-    asm volatile("fldcw %0" :: "m"(fpu_cw));
-}
+/* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 void _start(void) {
     // Ensure the bootloader answered our framebuffer request safely
@@ -295,11 +284,14 @@ void _start(void) {
         printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
     }
 
+    // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
+    init_sse();
+
     if (create_kernel_task(main_kthread) < 0) {
         printk("Failed to create main kthread.\n");
         hlt();
     }
-    init_sse();
+    /* SSE support removed: not enabling OSFXSR/OSXMMEXCPT or MXCSR here */
     // CRITICAL FIX: Hand over control directly to your scheduler file instead of doing `sti` here.
     // Your start_scheduler() function in the other file must shift RSP to task_table[0].kernel_stack,
     // run pit_init(), and execute the final sti there.

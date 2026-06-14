@@ -1,11 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <drivers/gdt.h>
+#include <drivers/fb.h>
 #include <string.h> // For memset
 
-// Allocate space for 7 entries: 
+// Allocate space for 7 entries:
 // 5 standard entries (Null, KCode, KData, UCode, UData) + 2 slots for the 16-byte TSS descriptor
-static struct GDTEntry gdt[7];
-static struct GDTPtr   gdt_ptr;
+// Align the GDT and TSS to a page boundary to reduce accidental overwrites and
+// ensure stable physical/virtual placement when identity mapping changes.
+static struct GDTEntry gdt[7] __attribute__((aligned(4096)));
+static struct GDTPtr   gdt_ptr __attribute__((aligned(8)));
 
 // The global hardware TSS structure
 struct tss_entry {
@@ -26,7 +29,7 @@ struct tss_entry {
     uint16_t iopb_offset;
 } __attribute__((packed));
 
-struct tss_entry global_tss;
+struct tss_entry global_tss __attribute__((aligned(4096)));
 
 // Dedicated emergency stack for handling user-space interrupts inside the kernel
 static uint8_t bsp_kernel_stack[4096];
@@ -131,4 +134,34 @@ void gdt_init(void) {
         : "m"(gdt_ptr)
         : "rax", "memory"
     );
+
+    // Dump the hardware GDTR/GDT and TSS state immediately after load
+    dump_gdt_state("after_gdt_init");
+
+}
+
+// Lightweight runtime dump function to help detect when GDTR/GDT/TSS diverge
+void dump_gdt_state(const char* tag) {
+    struct GDTPtr hw;
+    uint16_t tr_val = 0;
+
+    // Read processor GDTR and TR
+    asm volatile("sgdt %0" : "=m"(hw));
+    asm volatile("str %0" : "=r"(tr_val));
+
+    printk("%s: GDTR base=%p limit=0x%x\n", tag, (void*)hw.base, hw.limit);
+    printk("%s: TR=0x%04x TSS_addr=%p\n", tag, tr_val, (void*)&global_tss);
+
+    // Print first 7 GDT 8-byte entries (as qwords)
+    uint64_t *gdt_q = (uint64_t*)hw.base;
+    for (int i = 0; i < 7; i++) {
+        uint64_t val = 0;
+        // protect against invalid memory reads by trying to read, but no crashes expected in-kernel
+        val = gdt_q[i];
+        printk("%s: GDT[%d]=0x%016llx\n", tag, i, (unsigned long long)val);
+    }
+
+    // Print a couple of TSS fields for verification
+    printk("%s: TSS.rsp0=%p TSS.ist1=%p iopb=0x%x\n", tag,
+           (void*)global_tss.rsp0, (void*)global_tss.ist1, global_tss.iopb_offset);
 }

@@ -97,10 +97,6 @@ interrupt_common_stub:
     push rbx
     push rax
 
-    ; 2. Save SSE/FPU floating state (512 bytes)
-    sub rsp, 512
-    fxsave [rsp]
-
     mov rdi, rsp        ; Pass context frame pointer to C
     call intrhandler    ; Run your timer/scheduler code
 
@@ -123,10 +119,6 @@ interrupt_common_stub:
     jnz .no_irq_switch    ; If not 16-byte aligned, ignore
     mov rsp, rax         ; Load the new task's stack pointer safely
 .no_irq_switch:
-
-    ; 3. Restore states from current active task context
-    fxrstor [rsp]
-    add rsp, 512
 
     ; 4. Restore integer registers
     pop rax
@@ -168,10 +160,6 @@ exception_common_stub:
     push rbx
     push rax
 
-    ; 2. Save SSE/FPU floating state (512 bytes)
-    sub rsp, 512
-    fxsave [rsp]
-
     mov rdi, rsp
     call exception_handler_c
 
@@ -192,10 +180,6 @@ exception_common_stub:
     jnz .no_exc_switch
     mov rsp, rax
 .no_exc_switch:
-
-    ; 3. Restore states
-    fxrstor [rsp]
-    add rsp, 512
 
     ; 4. Restore integer registers
     pop rax

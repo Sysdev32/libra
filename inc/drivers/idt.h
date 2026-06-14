@@ -6,10 +6,7 @@
 
 // Structure mapping the exact layout pushed to the stack by idt_stub.s
 struct InterruptRegisters {
-    // 1. FXSAVE Area (Lowest address)
-    uint8_t fxsave_region[512] __attribute__((aligned(16)));
-
-    // 2. General-purpose registers
+    // 1. General-purpose registers (SSE state not saved - no OSFXSR)
     uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
 

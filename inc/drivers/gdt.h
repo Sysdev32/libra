@@ -23,4 +23,7 @@ struct GDTPtr {
 // Initializes and loads the custom system GDT
 void gdt_init(void);
 
+// Debug helper: dumps GDTR, first GDT qwords, TR and key TSS fields with a tag
+void dump_gdt_state(const char* tag);
+
 #endif

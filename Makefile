@@ -38,7 +38,8 @@ CFLAGS := \
 	-O2 \
 	-Wall -Wextra \
 	-g \
-	-I./inc -I.
+	-I./inc -I. \
+	-mno-sse -mno-mmx -mno-3dnow
 
 LDFLAGS := \
 	-T linker.ld \
@@ -166,7 +167,7 @@ run: iso
 		-M q35 \
 		-serial stdio \
 		-D qemu.log \
-		-d int > output.log 2>&1
+		-d int
 
 # -------------------------
 # Clean

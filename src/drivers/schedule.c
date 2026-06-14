@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <stdint.h>
 #include <stddef.h>
+#include <drivers/gdt.h>
 
 #define MAX_TASKS 16
 #define KERNEL_STACK_SIZE 4096
@@ -109,16 +110,9 @@ int create_kernel_task(void (*entry_point)(void)) {
             kernel_stack_top[-22] = 0; // RBX
             kernel_stack_top[-23] = 0; // RAX
 
-            // --- FXSAVE 512-BYTE REGION PRE-ALLOCATION (64 Quadwords) ---
-            // Shift down by 64 quadwords to allow fxrstor to run safely on a blank frame
-            // 88 quadwords total (64 for FXSAVE + 24 for registers/padding) 
-// This guarantees perfect 16-byte alignment for the hardware.
-uint64_t *ctx = kernel_stack_top - 88;
+            /* SSE support removed: no FXSAVE region allocation */
+            uint64_t *ctx = kernel_stack_top - 24;  /* 16 regs + 2 dummies + 5 iretq + 1 padding */
 
-// Zero out the 512-byte FXSAVE area (64 quadwords) at the bottom of the stack
-for (int k = 0; k < 64; k++) {
-    ctx[k] = 0; 
-}
             // Save native context pointer directly to task tracking block
             task_table[i].rsp = (uint64_t)ctx;
             task_table[i].state = TASK_STATE_READY;
@@ -163,42 +157,36 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
             uintptr_t k_stack_raw = (uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE];
             uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL); 
 
-            // Offset alignment tracking index:
-            // 22 entries for baseline components + 64 entries (512 bytes) for FXSAVE data region
-            uint64_t *ctx = kernel_stack_top - 86;
-
-            // Clear FXSAVE allocation frame bounds natively (ctx[0] to ctx[63])
-            for (int k = 0; k < 64; k++) {
-                ctx[k] = 0;
-            }
+            /* SSE support removed: allocate only register context (24 qwords) */
+            uint64_t *ctx = kernel_stack_top - 24;
 
             // --- GENERAL PURPOSE REGISTERS ---
-            ctx[64] = 0;                  // RAX
-            ctx[65] = 0;                  // RBX
-            ctx[66] = 0;                  // RCX
-            ctx[67] = 0;                  // RDX
-            ctx[68] = 0;                  // RSI
-            ctx[69] = 0;                  // RDI
-            ctx[70] = 0;                  // RBP
-            ctx[71] = 0;                  // R8
-            ctx[72] = 0;                  // R9
-            ctx[73] = 0;                  // R10
-            ctx[74] = 0;                  // R11
-            ctx[75] = 0;                  // R12
-            ctx[76] = 0;                  // R13
-            ctx[77] = 0;                  // R14
-            ctx[78] = 0;                  // R15
+            ctx[0] = 0;                  // RAX
+            ctx[1] = 0;                  // RBX
+            ctx[2] = 0;                  // RCX
+            ctx[3] = 0;                  // RDX
+            ctx[4] = 0;                  // RSI
+            ctx[5] = 0;                  // RDI
+            ctx[6] = 0;                  // RBP
+            ctx[7] = 0;                  // R8
+            ctx[8] = 0;                  // R9
+            ctx[9] = 0;                  // R10
+            ctx[10] = 0;                 // R11
+            ctx[11] = 0;                 // R12
+            ctx[12] = 0;                 // R13
+            ctx[13] = 0;                 // R14
+            ctx[14] = 0;                 // R15
 
             // --- ASSEMBLY ROUTER DUMMIES ---
-            ctx[79] = 0;                  // Vector Index
-            ctx[80] = 0;                  // Error Code
+            ctx[15] = 0;                 // Vector Index
+            ctx[16] = 0;                 // Error Code
 
             // --- IRETQ FRAME ---
-            ctx[81] = (uint64_t)entry_point;  // RIP
-            ctx[82] = 0x1B;                   // CS: User Code Selector (RPL 3)
-            ctx[83] = 0x202;                  // RFLAGS: Interrupts enabled
-            ctx[84] = task_table[i].user_rsp; // RSP
-            ctx[85] = 0x23;                   // SS: User Data Selector (RPL 3)
+            ctx[17] = (uint64_t)entry_point;  // RIP
+            ctx[18] = 0x1B;                   // CS: User Code Selector (RPL 3)
+            ctx[19] = 0x202;                  // RFLAGS: Interrupts enabled
+            ctx[20] = task_table[i].user_rsp; // RSP
+            ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
 
             // Save final, canonical kernel stack pointer to task structure
             task_table[i].rsp = (uint64_t)ctx;
@@ -283,6 +271,8 @@ void start_scheduler(void) {
     );
 
     pit_init();
+    // Dump GDT/TSS state just before enabling interrupts to detect any divergence
+    dump_gdt_state("before_enable_interrupts");
     asm volatile ("sti");
     
     for (;;) {
