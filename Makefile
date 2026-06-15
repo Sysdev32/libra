@@ -18,10 +18,23 @@ endif
 CC := x86_64-elf-gcc
 LD := x86_64-elf-ld
 AR := x86_64-elf-ar
+HCC = gcc
+HCFLAGS      := -Wall -Wextra -O2
+NCURSES_LIBS:= -lncursesw   # Required to link the terminal interface
 
 AS := nasm
 QEMU := qemu-system-x86_64
 XORRISO := xorriso
+export srctree := .
+export SRCARCH := x86
+
+# Directory references
+SRC_DIR     := scripts/kbuild-standalone
+BIN_DIR     := tools/bin
+
+# Build targets for compiled configuration utilities
+CONF_BIN    := $(BIN_DIR)/conf
+MCONF_BIN   := $(BIN_DIR)/mconf
 
 # -------------------------
 # Flags
@@ -172,9 +185,22 @@ run: iso
 # -------------------------
 # Clean
 # -------------------------
+compile_tools:
+	mkdir -p $(BIN_DIR) && cd $(BIN_DIR) && make -C ../../scripts/kbuild-standalone -f Makefile.sample O=`pwd` -j$(shell nproc)
+menuconfig: compile_tools
+	./$(BIN_DIR)/kconfig/mconf Kconfig
+genconfig: compile_tools
+	@mkdir -p inc
+	export KCONFIG_AUTOHEADER=inc/config.h; \
+	export srctree=.; \
+	export SRCARCH=x86; \
+	./$(BIN_DIR)/kconfig/conf --syncconfig Kconfig
 
 clean:
 	@echo "[CLEAN]"
 	@rm -rf $(OBJ_DIR) $(DEP_DIR) $(ISO) $(ISO_DIR)/kernel.elf
+	@rm -rf inc/config.h
+	@rm -rf $(BIN_DIR)/*
+	@rm -rf qemu.log .config .config.old
 
 -include $(DEPS)

@@ -397,19 +397,21 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
     uint64_t vector = regs->int_no; 
     // --- CASE A: CRITICAL ARCHITECTURAL CPU EXCEPTIONS (0-31) ---
     if (vector < 32) {
-        printk("\r\n==================================================\r\n");
-        printk(" !!! KERNEL PANIC: HARDWARE EXCEPTION TRAPPED !!! \r\n");
-        printk("==================================================\r\n");
-        printk("Vector Index    : %d (0x%x)\r\n", vector, vector);
+        char buffer[64];
+        for (int i=0; i<64; i++) buffer[i] = 0; // Clear the buffer for safety
+        if (vector > 255) {
+            strcpy(buffer, "(invalid)");
+        }
+        printk("Vector Index    : %d (0x%x) %s\r\n", vector, vector, buffer);
         printk("Description     : %s\r\n", exception_names[vector]);
         printk("Error Code Mask : 0x%x\r\n", regs->error_code);
         printk("--------------------------------------------------\r\n");
         
         // Output code boundaries and stack tracking snapshots
-        printk("Faulting Instruction Pointer (RIP): 0x%p\r\n", regs->rip);
-        printk("Faulting Stack Pointer       (RSP): 0x%p\r\n", regs->rsp);
-        printk("Code Segment Selector        (CS) : 0x%x\r\n", regs->cs);
-        printk("Processor Flag Mask      (RFLAGS) : 0x%p\r\n", regs->rflags);
+        printk("Faulting Instruction Pointer (RIP): %p\r\n", regs->rip);
+        printk("Faulting Stack Pointer       (RSP): %p\r\n", regs->rsp);
+        printk("Code Segment Selector        (CS) : %x\r\n", regs->cs);
+        printk("Processor Flag Mask      (RFLAGS) : %p\r\n", regs->rflags);
         
         // Specialize tracking read metrics for standard complex traps
         switch (vector) {
@@ -440,11 +442,11 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         }
 
         printk("--------------------------------------------------\r\n");
-        printk("Register Register Dump:\r\n");
-        printk("RAX: 0x%p  RBX: 0x%p  RCX: 0x%p  RDX: 0x%p\r\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
-        printk("RSI: 0x%p  RDI: 0x%p  RBP: 0x%p  R8 : 0x%p\r\n", regs->rsi, regs->rdi, regs->rbp, regs->r8);
-        printk("R9 : 0x%p  R10: 0x%p  R11: 0x%p  R12: 0x%p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
-        printk("R13: 0x%p  R14: 0x%p  R15: 0x%p\r\n", regs->r13, regs->r14, regs->r15);
+        printk("Register Dump:\r\n");
+        printk("RAX: %p  RBX: %p  RCX: %p  RDX: %p\r\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+        printk("RSI: %p  RDI: %p  RBP: %p  R8 : %p\r\n", regs->rsi, regs->rdi, regs->rbp, regs->r8);
+        printk("R9 : %p  R10: %p  R11: %p  R12: %p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
+        printk("R13: %p  R14: %p  R15: %p\r\n", regs->r13, regs->r14, regs->r15);
         printk("==================================================\r\n");
 
         // Force definitive crash freeze so hardware doesn't pass broken state steps downward
@@ -459,17 +461,10 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         if (vector == 0x20) { // If it's the timer interrupt
             // Pass the current stack pointer to the scheduler and get the new one
             uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
-            printk("Timer Interrupt: Context switch performed, new RSP = 0x%p\r\n", (void*)new_rsp);
             lapic_eoi();
-            
             return new_rsp; // Return the new stack pointer to assembly
-        } else if (vector == isa_overrides[1].gsi + 0x20) { // If it's the keyboard interrupt (example for IRQ1)
-            // Handle keyboard input here (e.g., read scancode from I/O port 0x60)
-            uint8_t scancode = inb(0x60);
-            printk("Keyboard Interrupt: Scancode 0x%02x\r\n", scancode);
-            lapic_eoi();
         } else {
-            printk("External Interrupt: Vector 0x%02x\r\n", vector);
+            printk("External Interrupt: Vector %x\r\n", vector);
             for (int i = 0; i < 512; i++) {
                 
                 if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {

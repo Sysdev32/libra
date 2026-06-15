@@ -1,0 +1,39 @@
+menu "Libra Kernel Configuration"
+
+    config FALLBACK_PCI_ADDRESS
+        hex "Fallback PCI Address"
+        default 0xE0000000
+
+    config FALLBACK_IOAPIC_ADDRESS
+        hex "Fallback IOAPIC Address"
+        default 0xFEC00000
+
+    choice
+        prompt "Select the interrupt controller to use"
+        default APIC
+
+    config APIC
+        bool "APIC (Advanced Programmable Interrupt Controller)"
+
+    config PIC
+        bool "PIC (Programmable Interrupt Controller)"
+
+    endchoice
+
+    choice
+        prompt "Select the debugging output method"
+        default BOTH
+
+    config SERIAL
+        bool "Serial Port (COM1)"
+
+    config VGA
+        bool "VGA Text Mode"
+
+    config BOTH
+        bool "Both Serial and VGA"
+
+    endchoice
+
+endmenu
+
