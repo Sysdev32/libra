@@ -102,9 +102,44 @@ extern char __user_src_end[];
 #define HHDM_OFFSET  0xffff800000000000ULL
 #define PAGE_SIZE 4096
 typedef uint64_t page_table_t;
+static void ps2_wait_input(void)
+{
+    while (inb(0x64) & 2);
+}
+
+static void ps2_wait_output(void)
+{
+    while (!(inb(0x64) & 1));
+}
+void keyboard_init(void)
+{
+    uint8_t config;
+
+    ps2_wait_input();
+    outb(0x64, 0xAD); // disable port 1
+
+    ps2_wait_input();
+    outb(0x64, 0x20); // read config byte
+
+    ps2_wait_output();
+    config = inb(0x60);
+
+    config |= 1;   // enable interrupt on keyboard
+
+    ps2_wait_input();
+    outb(0x64, 0x60);
+    ps2_wait_input();
+    outb(0x60, config);
+
+    ps2_wait_input();
+    outb(0x64, 0xAE); // enable keyboard
+
+    // optional: clear buffer
+    inb(0x60);
+}
 static void main_kthread(void) {
     printk("main kthread started.\n");
-    
+    for(;;);
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
     printk("bam: %d\n", fd_test);
@@ -284,9 +319,9 @@ void _start(void) {
     if (uacpi_unlikely_error(ret)) {
         printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
     }
-
+    asm volatile ("sti"); // Enable interrupts now that we're ready to handle them
     // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
-    
+    keyboard_init();
 
     if (create_kernel_task(main_kthread) < 0) {
         printk("Failed to create main kthread.\n");

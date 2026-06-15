@@ -304,6 +304,7 @@ void idt_init(void) {
     // 2. Safely map vector 0x20 using index 32 from your expanded assembly table
     idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
     idt_set_descriptor(0x80, intr, 0xEE);
+    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0x8E);
     // 3. Load the IDT pointer into the processor
     idt_ptr.limit = (sizeof(struct IDTEntry) * 256) - 1;
     idt_ptr.base  = (uint64_t)&idt;
@@ -346,7 +347,7 @@ void ioapic(struct acpi_table_madt* madt) {
     // 4. Route ISA IRQ 2 (The PIT redirect) to IDT vector 0x20 via the IOAPIC
     // DO NOT initialize the PIT yet! Just set the route.
     ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0xFF);
-    
+    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0); // Route keyboard IRQ (IRQ1) to vector 0x21
     // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
     init_scheduler();
     
@@ -383,6 +384,15 @@ static const char *exception_names[] = {
     "Security Exception (#SE)",              // 30
     "Reserved"                               // 31
 };
+
+uint8_t inb(uint16_t port)
+{
+    uint8_t ret;
+    asm volatile ("inb %1, %0"
+                  : "=a"(ret)
+                  : "Nd"(port));
+    return ret;
+}
 uint64_t exception_handler_c(struct InterruptRegisters *regs) {
     uint64_t vector = regs->int_no; 
     // --- CASE A: CRITICAL ARCHITECTURAL CPU EXCEPTIONS (0-31) ---
@@ -445,12 +455,21 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
     
     // --- CASE B: DYNAMIC EXTERNAL HARDWARE HARDWARE INTERRUPTS (32+) ---
     else {
+        printk("int\n");
         if (vector == 0x20) { // If it's the timer interrupt
             // Pass the current stack pointer to the scheduler and get the new one
             uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
+            printk("Timer Interrupt: Context switch performed, new RSP = 0x%p\r\n", (void*)new_rsp);
             lapic_eoi();
+            
             return new_rsp; // Return the new stack pointer to assembly
+        } else if (vector == isa_overrides[1].gsi + 0x20) { // If it's the keyboard interrupt (example for IRQ1)
+            // Handle keyboard input here (e.g., read scancode from I/O port 0x60)
+            uint8_t scancode = inb(0x60);
+            printk("Keyboard Interrupt: Scancode 0x%02x\r\n", scancode);
+            lapic_eoi();
         } else {
+            printk("External Interrupt: Vector 0x%02x\r\n", vector);
             for (int i = 0; i < 512; i++) {
                 
                 if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {

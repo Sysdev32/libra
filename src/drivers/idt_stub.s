@@ -70,6 +70,12 @@ exception_stub_32:
     push qword 0    ; Dummy error code
     push qword 32   ; Vector index
     jmp interrupt_common_stub
+; --- IRQ LANDING PADS (VECTORS 32+) ---
+; Vector 32 (0x20) - Hardware Timer
+exception_stub_33:
+    push qword 0    ; Dummy error code
+    push qword 32   ; Vector index
+    jmp interrupt_common_stub
 
 ; Legacy fallback hook
 intr:

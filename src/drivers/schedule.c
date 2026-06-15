@@ -271,7 +271,7 @@ void start_scheduler(void) {
     );
 
     pit_init();
-    asm volatile ("sti");
+    asm volatile ("sti; nop" ::: "memory");
     
     for (;;) {
         asm volatile("hlt");

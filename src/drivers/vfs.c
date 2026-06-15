@@ -240,10 +240,6 @@ int init_vfs(void) {
 
     printk("[VFS_DEBUG] Starting CPIO Archive Parsing Loop...\n");
     while (offset + sizeof(struct cpio_newc_header) <= archive_size) {
-        printk("[VFS_DEBUG] -----------------------------------------------------\n");
-        printk("[VFS_DEBUG] Processing Record #%d at Archive Offset: %d (0x%llx)\n", 
-               record_index++, (unsigned long long)offset, (unsigned long long)offset);
-
         const struct cpio_newc_header *header = (const struct cpio_newc_header *)(archive + offset);
         
         // Print raw magic bytes safely
@@ -261,15 +257,9 @@ int init_vfs(void) {
         parse_hex8(header->c_filesize, &file_size);
         parse_hex8(header->c_namesize, &name_size);
 
-        printk("[VFS_DEBUG]   Parsed Metadata -> Mode (Hex): 0x%llx, Size: %d bytes, Name Length: %d\n", 
-               (unsigned long long)mode, (unsigned long long)file_size, (unsigned long long)name_size);
-
         uint64_t name_offset = offset + sizeof(struct cpio_newc_header);
         uint64_t data_offset = align4(name_offset + name_size);
         uint64_t next_offset = align4(data_offset + file_size);
-
-        printk("[VFS_DEBUG]   Offsets Map -> Name @ %d, Data @ %d, Next Record @ %d\n", 
-               (unsigned long long)name_offset, (unsigned long long)data_offset, (unsigned long long)next_offset);
 
         // Safety check to avoid reading out of bounds if headers are corrupted
         if (name_offset + name_size > archive_size || data_offset + file_size > archive_size) {
@@ -278,8 +268,6 @@ int init_vfs(void) {
         }
 
         const char *path = (const char *)(archive + name_offset);
-        printk("[VFS_DEBUG]   Extracted Path String: \"%s\"\n", path);
-
         if (strcmp(path, ".") == 0) {
             printk("[VFS_DEBUG]   Skipping explicit current-directory reference token \".\"\n");
             offset = next_offset;
@@ -292,10 +280,6 @@ int init_vfs(void) {
             printk("[VFS_DEBUG] --- EXITING init_vfs SUCCESSFULLY ---\n");
             return 0;
         }
-        
-        // --- 1. SAFE ARRAY APPEND FIRST ---
-        printk("[VFS_DEBUG]   [Phase 1] Attempting array append entry mapping for path: \"%s\"\n", path);
-        
         // Pass the pure string length to avoid saving hidden raw null terminators inside the path space
         size_t pure_path_len = strlen(path);
         int appended_fd = append_file(path, pure_path_len + 1, archive + data_offset, file_size, mode);
@@ -303,19 +287,9 @@ int init_vfs(void) {
         if (appended_fd < 0) {
             printk("[VFS_DEBUG]     WARNING: append_file failed! File entry was rejected by global tracker.\n");
             for(;;);
-        } else {
-            printk("[VFS_DEBUG]     SUCCESS: Appended file array slot assigned to File Descriptor (FD): %d\n", appended_fd);
-            printk("[VFS_DEBUG]     Verified stored state in files[%d] -> Path: \"%s\", Size: %d\n", 
-                   appended_fd, files[appended_fd].path, (unsigned long long)files[appended_fd].size);
         }
-
-        // --- 2. TREE RESOLUTION LOGIC ---
-        printk("[VFS_DEBUG]   [Phase 2] Resolving hierarchical layout tree strings...\n");
         struct dentry *current_dir = root_dentry;
         const char *ptr = path;
-printk("[VFS_DEBUG] Raw filesize bytes: %c%c%c%c%c%c%c%c\n",
-       header->c_filesize[0], header->c_filesize[1], header->c_filesize[2], header->c_filesize[3],
-       header->c_filesize[4], header->c_filesize[5], header->c_filesize[6], header->c_filesize[7]);
         while (*ptr != '\0') {
             // Strip multiple redundant path separators
             while (*ptr == '/') {
@@ -372,24 +346,6 @@ printk("[VFS_DEBUG] Raw filesize bytes: %c%c%c%c%c%c%c%c\n",
         }
         
         offset = next_offset;
-        printk("[VFS_DEBUG]   Payload Content: \"");
-        for (uint64_t i = 0; i < file_size; i++) {
-            // Cast to const uint8_t* to safely read byte-by-byte
-            uint8_t byte = ((const uint8_t *)files[appended_fd].data)[i];
-            
-            // Print character if it's printable, otherwise print a dot
-            if (byte >= 32 && byte <= 126) {
-                printk("%c", byte);
-            } else if (byte == '\n') {
-                printk("\\n"); // Show newlines clearly
-            } else {
-                printk(".");
-            }
-        }
-        printk("\"\n");
-        if (path == "user.bin") {
-            for(;;);
-        }
     }
 
     printk("[VFS_DEBUG] CRITICAL: Loop finished naturally without reaching a TRAILER!!! marker sequence.\n");
