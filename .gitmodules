@@ -1,0 +1,3 @@
+[submodule "scripts/kbuild-standalone"]
+	path = scripts/kbuild-standalone
+	url = https://github.com/WangNan0/kbuild-standalone.git
