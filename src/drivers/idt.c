@@ -5,7 +5,8 @@
 #include <limine.h>
 #include <drivers/schedule.h>
 #include <drivers/vfs.h>
-
+#include <uacpi/uacpi.h>
+#include <uacpi/sleep.h>
 typedef void (*interrupt)(struct InterruptRegisters *regs);
 
 typedef struct {
@@ -370,7 +371,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 }
 
 // --- COMMON HARDWARE AND LEGACY INTERRUPT DISPATCH ROUTER ---
-
+volatile uint64_t ticks = 0;
 uint64_t intrhandler(struct InterruptRegisters* regs) {
     uint64_t vector = regs->int_no;
 
@@ -382,6 +383,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
 
     // --- DISPATCH GATE B: SYSTEM PREEMPTIVE TIMER INTERRUPT (Vector 32) ---
     if (vector == 0) {
+        ticks += 1;
         uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
         lapic_eoi();
         return new_rsp;
@@ -397,7 +399,6 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
     lapic_eoi();
     return 0;
 }
-
 // --- ARCHITECTURAL EXCEPTION NAMES STORAGE ENGINE ---
 
 static const char *exception_names[] = {
@@ -432,8 +433,31 @@ static const char *exception_names[] = {
 };
 
 // --- CORE CPU EXCEPTION DIAGNOSTICS AND CRASH DUMP ANALYSIS ENGINE ---
+void sleep_ms(uint64_t ms)
+{
+    uint64_t tickst = ms / 10;
 
+    uint64_t start = ticks;
+
+    while ((ticks - start) < tickst) {
+
+        __asm__ volatile("hlt"); // low power wait until next interrupt
+    }
+}
+char *strcpy(char *dest, const char *src)
+{
+    char *orig = dest;
+
+    while (*src) {
+        *dest++ = *src++;
+    }
+
+    *dest = '\0';
+
+    return orig;
+}
 uint64_t exception_handler_c(struct InterruptRegisters *regs) {
+    asm volatile ("sti");
     uint64_t vector = regs->int_no; 
 
     // --- CASE A: CRITICAL ARCHITECTURAL CPU EXCEPTIONS (0-31) ---
@@ -490,7 +514,18 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         printk("R9 : %p  R10: %p  R11: %p  R12: %p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
         printk("R13: %p  R14: %p  R15: %p\r\n", regs->r13, regs->r14, regs->r15);
         printk("==================================================\r\n");
-
+        printk("Rebooting in 5 seconds...\r\n");
+        sleep_ms(1000);
+        printk("Rebooting in 4 seconds...\r\n");
+        sleep_ms(1000);
+        printk("Rebooting in 3 seconds...\r\n");
+        sleep_ms(1000);
+        printk("Rebooting in 2 seconds...\r\n");
+        sleep_ms(1000);
+        printk("Rebooting in 1 seconds...\r\n");
+        sleep_ms(1000);
+        
+        uacpi_reboot();
         // Force definitive crash freeze so hardware doesn't pass broken state steps downward
         for (;;) {
             asm volatile("hlt");

@@ -48,7 +48,7 @@ CFLAGS := \
 	-m64 \
 	-march=x86-64 \
 	-mcmodel=kernel \
-	-O2 \
+	-O0 \
 	-Wall -Wextra \
 	-g \
 	-I./inc -I. \

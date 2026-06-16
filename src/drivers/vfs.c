@@ -213,39 +213,29 @@ static int append_file(const char *path, uint64_t path_size, const uint8_t *data
     return created_fd; 
 }
 int init_vfs(void) {
-    printk("[VFS_DEBUG] --- ENTERING init_vfs ---\n");
 
     struct limine_file *initramfs_file = find_initramfs_module(module_request.response);
     if (initramfs_file == NULL) {
         printk("[VFS_DEBUG] CRITICAL: initramfs module pointer is NULL from Limine.\n");
         return -1;
     }
-
-    printk("[VFS_DEBUG] initramfs module found at physical address: 0x%llx, size: %d bytes\n", 
-           (unsigned long long)initramfs_file->address, (unsigned long long)initramfs_file->size);
-
-    printk("[VFS_DEBUG] Allocating virtual file system root dentry...\n");
     root_dentry = create_dentry_node("", 0, S_IFDIR | 0755, NULL);
     if (root_dentry == NULL) {
         printk("[VFS_DEBUG] CRITICAL: Failed to allocate root dentry node memory.\n");
         return -1;
     }
-    printk("[VFS_DEBUG] Root dentry initialized successfully at memory address: %p\n", (void*)root_dentry);
-
     const uint8_t *archive = (const uint8_t *)initramfs_file->address;
     uint64_t archive_size = initramfs_file->size;
     uint64_t offset = 0;
     size_t loaded_count = 0;
     size_t record_index = 0;
 
-    printk("[VFS_DEBUG] Starting CPIO Archive Parsing Loop...\n");
     while (offset + sizeof(struct cpio_newc_header) <= archive_size) {
         const struct cpio_newc_header *header = (const struct cpio_newc_header *)(archive + offset);
         
         // Print raw magic bytes safely
         char magic_buf[7] = {0};
         memcpy(magic_buf, header->c_magic, 6);
-        printk("[VFS_DEBUG]   Raw CPIO Header Magic String: \"%s\"\n", magic_buf);
 
         if (memcmp(header->c_magic, "070701", 6) != 0) {
             printk("[VFS_DEBUG]   CRITICAL ERROR: Invalid CPIO format signature magic mismatch.\n");
@@ -269,15 +259,10 @@ int init_vfs(void) {
 
         const char *path = (const char *)(archive + name_offset);
         if (strcmp(path, ".") == 0) {
-            printk("[VFS_DEBUG]   Skipping explicit current-directory reference token \".\"\n");
             offset = next_offset;
             continue;
         }
         if (strcmp(path, "TRAILER!!!") == 0) {
-            printk("[VFS_DEBUG]   SUCCESS: Found CPIO End-of-Archive End marker \"TRAILER!!!\"\n");
-            printk("[VFS_DEBUG]   VFS Initialization summary: loaded %d hierarchical directory nodes.\n", loaded_count);
-            printk("[VFS_DEBUG]   Global file tracking state: file_count is currently %d\n", vfs_file_count());
-            printk("[VFS_DEBUG] --- EXITING init_vfs SUCCESSFULLY ---\n");
             return 0;
         }
         // Pass the pure string length to avoid saving hidden raw null terminators inside the path space
@@ -306,40 +291,24 @@ int init_vfs(void) {
             }
             size_t component_len = (size_t)(ptr - component_start);
 
-            // Output component slice details using printk with bounded size
-            printk("[VFS_DEBUG]     Current Parent Dentry Context: \"%s\" (Children count: %d)\n", 
-                   (current_dir->name && strlen(current_dir->name) > 0) ? current_dir->name : "/", current_dir->child_count);
-            
-            printk("[VFS_DEBUG]     Looking up sub-component: \"%.*s\" (Length: %d)\n", 
-                   (int)component_len, component_start, (int)component_len);
 
             struct dentry *next_node = find_child(current_dir, component_start, component_len);
 
             if (next_node == NULL) {
                 uint32_t node_mode = (*ptr == '/') ? (S_IFDIR | 0755) : (uint32_t)mode;
-                printk("[VFS_DEBUG]       Component not found. Spawning missing node (Type: %s)...\n", 
-                       (*ptr == '/') ? "DIRECTORY" : "REGULAR_FILE");
                 
                 next_node = create_dentry_node(component_start, component_len, node_mode, current_dir);
                 if (next_node == NULL) {
                     printk("[VFS_DEBUG]       CRITICAL STRUCTURAL FAILURE: Static array directory child allocation limits hit.\n");
                     return -1;
                 }
-                printk("[VFS_DEBUG]       Node created successfully at address: %p assigned to Parent: %p\n", (void*)next_node, (void*)current_dir);
-                
                 if (*ptr == '\0' && (node_mode & S_IFMT) == S_IFREG) {
-                    printk("[VFS_DEBUG]       Leaf reached: Binding persistent payload onto data inode descriptor\n");
                     next_node->inode->size = file_size;
                     
                     // FIXED: Read directly from the persistent array storage pointer instead of the raw archive offset
                     next_node->inode->data = files[appended_fd].data; 
-                    
-                    printk("[VFS_DEBUG]       Inode Target Size mapped: %d bytes, Address offset: %p\n", 
-                           (unsigned long long)next_node->inode->size, (const void*)next_node->inode->data);
                 }
                 loaded_count++;
-            } else {
-                printk("[VFS_DEBUG]       Component found matching sub-node address: %p (Name: \"%s\")\n", (void*)next_node, next_node->name);
             }
             
             current_dir = next_node;
@@ -390,7 +359,6 @@ int vfs_open(const char *path) {
             stored_path += 2;
         }
 
-        printk("[OPEN_DEBUG] Normalized Target Match: '%s' vs Array Field: '%s'\n", lookup_path, stored_path);
 
         if (strcmp(stored_path, lookup_path) == 0) {
             return (int)i; 

@@ -39,98 +39,204 @@ static char *itoa(uint64_t value, char *str, int base, int uppercase) {
 
     return rc;
 }
+#include <stdarg.h>
+#include <stdint.h>
 
-int vsprintf(char *buf, const char *fmt, va_list args) {
+static const char* parse_length(const char *f, int *is_long, int *is_longlong)
+{
+    *is_long = 0;
+    *is_longlong = 0;
+
+    if (*f == 'l') {
+        f++;
+        if (*f == 'l') {
+            *is_longlong = 1;
+            return f + 1;
+        }
+        *is_long = 1;
+        return f;
+    }
+
+    return f;
+}
+
+static const char* parse_format(const char *f, int *zero, int *width)
+{
+    *zero = 0;
+    *width = 0;
+
+    if (*f == '0') {
+        *zero = 1;
+        f++;
+    }
+
+    while (*f >= '0' && *f <= '9') {
+        *width = (*width * 10) + (*f - '0');
+        f++;
+    }
+
+    return f;
+}
+
+static int str_len(const char *s)
+{
+    int i = 0;
+    while (s[i]) i++;
+    return i;
+}
+
+static void pad(char **buf, const char *s, int width, int zero)
+{
+    int len = str_len(s);
+
+    while (len < width) {
+        *(*buf)++ = zero ? '0' : ' ';
+        width--;
+    }
+
+    while (*s) {
+        *(*buf)++ = *s++;
+    }
+}
+
+int vsprintf(char *buf, const char *fmt, va_list args)
+{
     char *p = buf;
-    const char *f = fmt;
 
-    while (*f) {
-        if (*f != '%') {
-            *p++ = f[0];
-            f++;
+    while (*fmt) {
+        if (*fmt != '%') {
+            *p++ = *fmt++;
             continue;
         }
 
-        f++; // Skip '%'
+        fmt++; // skip %
 
-        // Handle direct escapes (%%)
-        if (*f == '%') {
+        if (*fmt == '%') {
             *p++ = '%';
-            f++;
+            fmt++;
             continue;
         }
 
-        switch (*f) {
+        int is_long = 0;
+        int is_longlong = 0;
+        int zero = 0;
+        int width = 0;
+
+        fmt = parse_length(fmt, &is_long, &is_longlong);
+        fmt = parse_format(fmt, &zero, &width);
+
+        switch (*fmt) {
+
             case 'c': {
-                char c = (char)va_arg(args, int);
-                *p++ = c;
+                *p++ = (char)va_arg(args, int);
                 break;
             }
 
             case 's': {
-                char *s = va_arg(args, char *);
+                char *s = va_arg(args, char*);
                 if (!s) s = "(null)";
-                while (*s) {
-                    *p++ = *s++;
-                }
+                pad(&p, s, width, 0);
                 break;
             }
 
             case 'd':
             case 'i': {
-                int64_t d = va_arg(args, int);
+                long long v;
+
+                if (is_longlong)
+                    v = va_arg(args, long long);
+                else if (is_long)
+                    v = va_arg(args, long);
+                else
+                    v = va_arg(args, int);
+
                 char tmp[32];
-                if (d < 0) {
-                    *p++ = '-';
-                    d = -d;
+                int neg = (v < 0);
+
+                if (neg) v = -v;
+
+                itoa(v, tmp, 10, 0);
+
+                if (neg) {
+                    if (zero && width > 0) {
+                        *p++ = '-';
+                        pad(&p, tmp, width - 1, 1);
+                    } else {
+                        char full[64];
+                        full[0] = '-';
+
+                        int i = 0;
+                        while (tmp[i]) {
+                            full[i + 1] = tmp[i];
+                            i++;
+                        }
+                        full[i + 1] = 0;
+
+                        pad(&p, full, width, zero);
+                    }
+                } else {
+                    pad(&p, tmp, width, zero);
                 }
-                itoa(d, tmp, 10, 0);
-                char *t = tmp;
-                while (*t) *p++ = *t++;
+
                 break;
             }
 
             case 'u': {
-                uint64_t u = va_arg(args, unsigned int);
+                unsigned long long v;
+
+                if (is_longlong)
+                    v = va_arg(args, unsigned long long);
+                else if (is_long)
+                    v = va_arg(args, unsigned long);
+                else
+                    v = va_arg(args, unsigned int);
+
                 char tmp[32];
-                itoa(u, tmp, 10, 0);
-                char *t = tmp;
-                while (*t) *p++ = *t++;
+                itoa(v, tmp, 10, 0);
+                pad(&p, tmp, width, zero);
                 break;
             }
 
             case 'x':
             case 'X': {
-                uint64_t x = va_arg(args, unsigned int);
+                unsigned long long v;
+
+                if (is_longlong)
+                    v = va_arg(args, unsigned long long);
+                else if (is_long)
+                    v = va_arg(args, unsigned long);
+                else
+                    v = va_arg(args, unsigned int);
+
                 char tmp[32];
-                itoa(x, tmp, 16, (*f == 'X'));
-                char *t = tmp;
-                while (*t) *p++ = *t++;
+                itoa(v, tmp, 16, (*fmt == 'X'));
+                pad(&p, tmp, width, zero);
                 break;
             }
 
             case 'p': {
-                uint64_t ptr_val = (uint64_t)va_arg(args, void *);
+                unsigned long long v = (unsigned long long)va_arg(args, void*);
+
                 char tmp[32];
-                *p++ = '0';
-                *p++ = 'x';
-                itoa(ptr_val, tmp, 16, 0);
-                char *t = tmp;
-                while (*t) *p++ = *t++;
+                tmp[0] = '0';
+                tmp[1] = 'x';
+
+                itoa(v, tmp + 2, 16, 0);
+                pad(&p, tmp, width ? width : 2, zero);
                 break;
             }
 
             default:
-                // Unknown specifier; print raw characters to avoid breaking layouts
                 *p++ = '%';
-                *p++ = *f;
+                *p++ = *fmt;
                 break;
         }
-        f++;
+
+        fmt++;
     }
 
     *p = '\0';
-    return (int)(p - buf); // Return string length
+    return (int)(p - buf);
 }
 void printk(const char *fmt, ...) {
     char buf[1024];

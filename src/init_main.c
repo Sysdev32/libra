@@ -147,7 +147,7 @@ static void main_kthread(void) {
     printk("main kthread started.\n");
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
-    printk("bam: %d\n", fd_test);
+    printk("Test File FD (main.py): %d\n", fd_test);
     
     // FIX: Create an isolated, sandboxed user address space context.
     // This routine clones kernel space (entries 256-511) and switches CR3 automatically.
@@ -202,7 +202,7 @@ static void main_kthread(void) {
         // Print header signature verification
         if (page_index == 0) {
             uint8_t *check = (uint8_t *)0x2000000;
-            printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
+    
         }
 
         total_bytes_read += chunks_read;
@@ -226,18 +226,13 @@ static void main_kthread(void) {
     // MAP STACK TO SAFE PHYSICAL AREA
     // ==========================================
     uint8_t *check = (uint8_t *)0x2000000;
-    printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
     void *stack_hhdm_ptr = (void *)(safe_stack_phys_base + HHDM_OFFSET);
-    printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
     memset(stack_hhdm_ptr, 0, PAGE_SIZE);
-    printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
     vmm_map_page(user_pml4, user_stack_vma, safe_stack_phys_base, user_flags);
-    printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
     void *user_rsp = (void *)(user_stack_vma + PAGE_SIZE);
     
     // Fire off your context switch with scheduler interrupts active
     create_user_task((void *)0x2000000, user_rsp);
-    printk("VFS Payload Copied bytes: 0x%x 0x%x 0x%x 0x%x\n", check[0], check[1], check[2], check[3]);
     
     for (;;) {
         asm volatile("sti; hlt");

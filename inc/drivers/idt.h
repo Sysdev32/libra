@@ -141,7 +141,7 @@ struct madt_local_x2apic {
 typedef struct {
     uint8_t arg[8];
 } arg;
-
+void sleep_ms(uint64_t ms);
 void parse_madt(struct acpi_table_madt *madt);
 void idt_init(void);
 void ioapic(struct acpi_table_madt*);
