@@ -335,44 +335,6 @@ void _start(void) {
         printk("MADT not found: %s\n", uacpi_status_to_string(ret));
     }
     ioapic(madt);
-
-    // 2. Find HPET (High Precision Event Timer Table)
-    struct acpi_table_hpet *hpet = NULL;
-    ret = uacpi_table_find_by_signature("HPET", (struct acpi_table**)&hpet);
-    if (ret == UACPI_STATUS_OK) {
-        printk("Found HPET at %p\n", hpet);
-    } else {
-        printk("HPET not found: %s\n", uacpi_status_to_string(ret));
-    }
-
-    // 3. Find MCFG (PCI Express Memory Mapped Configuration Space base address Description Table)
-    struct acpi_table_mcfg *mcfg = NULL;
-    ret = uacpi_table_find_by_signature("MCFG", (struct acpi_table**)&mcfg);
-    if (ret == UACPI_STATUS_OK) {
-        printk("Found MCFG at %p\n", mcfg);
-    } else {
-        printk("MCFG not found: %s\n", uacpi_status_to_string(ret));
-    }
-    ret = uacpi_namespace_load();
-    if (uacpi_unlikely_error(ret)) {
-        printk("uacpi_namespace_load error: %s", uacpi_status_to_string(ret));
-    }
-    ret = uacpi_namespace_initialize();
-    if (uacpi_unlikely_error(ret)) {
-        printk("uacpi_namespace_initialize error: %s", uacpi_status_to_string(ret));
-    }
-    ret = uacpi_finalize_gpe_initialization();
-    if (uacpi_unlikely_error(ret)) {
-        printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
-    }
-    dump_namespace(uacpi_namespace_root());
-    uacpi_object objr;
-    uacpi_namespace_node *node;
-    uacpi_eval(&node, "\\_SB.PCI0.SF8_.KBD_._CRS", NULL, &objr);
-    uacpi_resource res;
-    uacpi_data_view view;
-    uacpi_object_get_buffer(&objr, &view);
-    uacpi_get_resource_from_buffer(view, &res);
     asm volatile ("sti"); // Enable interrupts now that we're ready to handle them
     // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
     keyboard_init();
