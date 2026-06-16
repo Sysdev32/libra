@@ -2,7 +2,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include "limine.h"
+#include <limine.h>
 #include <vendor/flanterm/flanterm.h>
 #include <vendor/flanterm/flanterm_backends/fb.h>
 #include <drivers/fb.h>
@@ -22,11 +22,13 @@
 #include <uacpi/internal/namespace.h>
 #include <uacpi/internal/stdlib.h>
 #include <uacpi/types.h>
+#include <errno.h>
+
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
 void vmm_map_page(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags);
-
+extern volatile struct limine_memmap_request memmap_request;
 // 1. Correct Start Marker Setup
 __attribute__((used, section(".limine_requests_start")))
 volatile uint64_t limine_requests_start_marker[] = LIMINE_REQUESTS_START_MARKER;
@@ -238,10 +240,10 @@ static void main_kthread(void) {
         asm volatile("sti; hlt");
     }
 }
-void dump_namespace(uacpi_namespace_node *root)
+int dump_namespace(uacpi_namespace_node *root)
 {
     if (!root)
-        return;
+        return -EINVAL;
 
     uacpi_namespace_node *node = root;
 
@@ -279,6 +281,26 @@ void dump_namespace(uacpi_namespace_node *root)
         }
     }
 }
+struct idt_ptr {
+    uint16_t limit;
+    uint64_t base;
+} __attribute__((packed));
+
+void triple_fault_reboot(void) {
+    // Create an IDT pointer with a limit of 0
+    struct idt_ptr invalid_idt;
+    invalid_idt.limit = 0;
+    invalid_idt.base = 0;
+
+    // Load the invalid IDT into the CPU
+    asm volatile("lidt %0" :: "m"(invalid_idt));
+
+    // Step 2: Trigger an interrupt to force the crash
+    asm volatile("int $3");
+
+    // Hang just in case the CPU takes a moment to reset
+    for (;;);
+}
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 void _start(void) {
@@ -289,6 +311,18 @@ void _start(void) {
     init_sse();
     gdt_init();
     idt_init();
+    uint64_t total_usable_memory = 0;
+    uint64_t entries_count = memmap_request.response->entry_count;
+
+    for (size_t i = 0; i < entries_count; i++) {
+        struct limine_memmap_entry *entry = memmap_request.response->entries[i];
+
+        // Check if this specific region of RAM is free to use
+        if (entry->type == LIMINE_MEMMAP_USABLE) {
+            total_usable_memory += entry->length;
+        }
+    }
+    
     // FIX 1: Access the array base element pointer directly
     struct limine_framebuffer **framebuffers = framebuffer_request.response->framebuffers;
     struct limine_framebuffer *framebuffer = framebuffers[0];
@@ -316,7 +350,11 @@ void _start(void) {
     
     initConsole(ft_ctx);
     init_vfs();
-    int *hello = kmalloc(sizeof(int) * 5);
+    if (total_usable_memory / 1024 / 1024 < 128) {
+        printk("Warning: Less than 128 MB of usable memory detected. Rebooting now..\n");
+        triple_fault_reboot();
+    }
+    printk("Total usable memory: %d MB\r\n\n", total_usable_memory / 1024 / 1024);
     uacpi_status ret = uacpi_initialize(0);
     if (uacpi_unlikely_error(ret)) {
         printk("uacpi_initialize error: %s", uacpi_status_to_string(ret));

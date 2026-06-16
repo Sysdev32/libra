@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
 char *strncpy(char *dest, const char *src, size_t n) {
     size_t i;
 
