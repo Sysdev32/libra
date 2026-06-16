@@ -34,6 +34,13 @@ menu "Libra Kernel Configuration"
         bool "Both Serial and VGA"
 
     endchoice
-
+    choice
+        prompt "Select the kernel build type"
+        default RELEASE
+        config RELEASE
+            bool "Release Build (optimized), suitable for production"
+        config EXPIREMENTAL
+            bool "Experimental Build, suitable for development and testing. Might crash. (ONLY ACTIVATE IF EXPERIENCED)"
+    endchoice
 endmenu
 

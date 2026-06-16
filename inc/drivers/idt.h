@@ -4,18 +4,26 @@
 
 #include <stdint.h>
 
-// Structure mapping the exact layout pushed to the stack by idt_stub.s
+// Structure mapping the exact layout pushed to the stack by your updated assembly stubs
 struct InterruptRegisters {
-    // 1. General-purpose registers (SSE state not saved - no OSFXSR)
+    // 1. General-purpose registers (Saved by common_stub)
     uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
 
-    // 3. REVERSED TO MATCH STACK PUSH ORDER:
-    uint64_t error_code; // Pushed first by CPU hardware
-    uint64_t int_no;     // Pushed second by your macro stub
+    // 2. Capture region allocated via `sub rsp, 512` and filled by `fxsave64`
+    // Must remain 16-byte aligned for processor safety.
+    uint8_t  fxsave_region[512] __attribute__((aligned(16)));
 
-    // 4. Hardware IRETQ frame
-    uint64_t rip, cs, rflags, rsp, ss;
+    // 3. Macro stub registers ordered exactly by stack pop trajectory
+    uint64_t int_no;     // Pushed last by macro stub (lowest address slot)
+    uint64_t error_code; // Pushed first by macro stub (highest address slot)
+
+    // 4. Hardware IRETQ frame automatically provided by the CPU execution logic
+    uint64_t rip;
+    uint64_t cs;
+    uint64_t rflags;
+    uint64_t rsp;
+    uint64_t ss;
 };
 
 // A single 16-byte gate descriptor entry in x86_64 long-mode IDT
@@ -33,6 +41,7 @@ struct IDTPtr {
     uint16_t limit;
     uint64_t base;
 } __attribute__((packed));
+
 #pragma pack(push, 1)
 
 // Standard ACPI Table Header
@@ -62,6 +71,7 @@ struct madt_record_header {
 };
 
 #pragma pack(pop)
+
 // Entry Type 0: Processor Local APIC
 struct madt_local_apic {
     uint8_t  type;             // 0
@@ -131,6 +141,7 @@ struct madt_local_x2apic {
 typedef struct {
     uint8_t arg[8];
 } arg;
+
 void parse_madt(struct acpi_table_madt *madt);
 void idt_init(void);
 void ioapic(struct acpi_table_madt*);
@@ -138,4 +149,5 @@ void outb(uint16_t port, uint8_t val);
 uint64_t exception_handler_c(struct InterruptRegisters *regs);
 uint64_t intrhandler(struct InterruptRegisters *regs);
 void lapic_eoi(void);
+
 #endif

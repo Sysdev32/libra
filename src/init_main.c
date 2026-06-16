@@ -16,6 +16,12 @@
 #include <uacpi/event.h>
 #include <string.h>
 #include <uacpi/tables.h>
+#include <config.h>
+#include <state.h>
+#include <uacpi/resources.h>
+#include <uacpi/internal/namespace.h>
+#include <uacpi/internal/stdlib.h>
+#include <uacpi/types.h>
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -238,6 +244,47 @@ static void main_kthread(void) {
         asm volatile("sti; hlt");
     }
 }
+void dump_namespace(uacpi_namespace_node *root)
+{
+    if (!root)
+        return;
+
+    uacpi_namespace_node *node = root;
+
+    while (node) {
+
+        int depth = 0;
+        uacpi_namespace_node *tmp = node->parent;
+
+        while (tmp) {
+            depth++;
+            tmp = tmp->parent;
+        }
+
+        for (int i = 0; i < depth; i++)
+            printk("  ");
+
+        printk("%c%c%c%c\n",
+               node->name.text[0],
+               node->name.text[1],
+               node->name.text[2],
+               node->name.text[3]);
+
+        if (node->child) {
+            node = node->child;
+            continue;
+        }
+
+        while (node) {
+            if (node->next) {
+                node = node->next;
+                break;
+            }
+
+            node = node->parent;
+        }
+    }
+}
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 void _start(void) {
@@ -319,6 +366,14 @@ void _start(void) {
     if (uacpi_unlikely_error(ret)) {
         printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
     }
+    dump_namespace(uacpi_namespace_root());
+    uacpi_object objr;
+    uacpi_namespace_node *node;
+    uacpi_eval(&node, "\\_SB.PCI0.SF8_.KBD_._CRS", NULL, &objr);
+    uacpi_resource res;
+    uacpi_data_view view;
+    uacpi_object_get_buffer(&objr, &view);
+    uacpi_get_resource_from_buffer(view, &res);
     asm volatile ("sti"); // Enable interrupts now that we're ready to handle them
     // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
     keyboard_init();
@@ -331,5 +386,6 @@ void _start(void) {
     // CRITICAL FIX: Hand over control directly to your scheduler file instead of doing `sti` here.
     // Your start_scheduler() function in the other file must shift RSP to task_table[0].kernel_stack,
     // run pit_init(), and execute the final sti there.
+    
     start_scheduler();
 }

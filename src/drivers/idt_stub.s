@@ -1,92 +1,99 @@
 bits 64
+
 global idt_load
 global exception_vector_table
 global intr
+
 extern exception_handler_c
 extern intrhandler
-extern printk
 
 section .text
 
 ; --- IDT REGISTER LOADER ---
+; Loads the Interrupt Descriptor Table pointer into the CPU
 idt_load:
     lidt [rdi]
     ret
 
 ; --- STUB GENERATION MACROS ---
 
-; 1. For interrupts/exceptions that DO NOT push an error code
+; 1. For interrupts/exceptions that DO NOT push an error code automatically
 %macro no_error_stub 1
 exception_stub_%1:
-    push qword 0    ; Dummy error code
-    push qword %1    ; Vector index
+    push qword 0         ; Push a dummy error code to keep the stack uniform
+    push qword %1        ; Push the interrupt vector index
     jmp exception_common_stub
 %endmacro
 
-; 2. For exceptions that DO push an error code
+; 2. For exceptions that DO push an error code automatically (like #GP or #PF)
 %macro error_stub 1
 exception_stub_%1:
-    push qword %1    ; Vector index
+    push qword %1        ; Push the interrupt vector index
     jmp exception_common_stub
 %endmacro
 
-; --- GENERATE ALL 32 EXCEPTION LANDING PADS ---
-no_error_stub 0   ; #DE
-no_error_stub 1
-no_error_stub 2
-no_error_stub 3
-no_error_stub 4
-no_error_stub 5
-no_error_stub 6
-no_error_stub 7
-error_stub    8   ; #DF
-no_error_stub 9
-error_stub    10  ; #TS
-error_stub    11  ; #NP
-error_stub    12  ; #SS
-error_stub    13  ; #GP
-error_stub    14  ; #PF
-no_error_stub 15
-no_error_stub 16
-error_stub    17  ; #AC
-no_error_stub 18
-no_error_stub 19
-no_error_stub 20
-error_stub    21  ; #CP
-no_error_stub 22
-no_error_stub 23
-no_error_stub 24
-no_error_stub 25
-no_error_stub 26
-no_error_stub 27
-no_error_stub 28
-error_stub    29  ; #VC
-error_stub    30  ; #SX
-no_error_stub 31
+; --- GENERATE ALL 32 SYSTEM EXCEPTION LANDING PADS ---
+no_error_stub 0   ; #DE (Divide-by-Zero)
+no_error_stub 1   ; #DB (Debug)
+no_error_stub 2   ; NMI (Non-Maskable Interrupt)
+no_error_stub 3   ; #BP (Breakpoint)
+no_error_stub 4   ; #OF (Overflow)
+no_error_stub 5   ; #BR (Bound Range Exceeded)
+no_error_stub 6   ; #UD (Invalid Opcode)
+no_error_stub 7   ; #NM (Device Not Available)
+error_stub    8   ; #DF (Double Fault)
+no_error_stub 9   ; Coprocessor Segment Overrun
+error_stub    10  ; #TS (Invalid TSS)
+error_stub    11  ; #NP (Segment Not Present)
+error_stub    12  ; #SS (Stack-Segment Fault)
+error_stub    13  ; #GP (General Protection Fault)
+error_stub    14  ; #PF (Page Fault)
+no_error_stub 15  ; Reserved
+no_error_stub 16  ; #MF (x87 Floating-Point)
+error_stub    17  ; #AC (Alignment Check)
+no_error_stub 18  ; #MC (Machine Check)
+no_error_stub 19  ; #XM (SIMD Floating-Point)
+no_error_stub 20  ; #VE (Virtualization)
+error_stub    21  ; #CP (Control Protection)
+no_error_stub 22  ; Reserved
+no_error_stub 23  ; Reserved
+no_error_stub 24  ; Reserved
+no_error_stub 25  ; Reserved
+no_error_stub 26  ; Reserved
+no_error_stub 27  ; Reserved
+no_error_stub 28  ; Hypervisor Injection
+error_stub    29  ; #VC (VMM Communication)
+error_stub    30  ; #SX (Security Exception)
+no_error_stub 31  ; Reserved
 
-; --- IRQ LANDING PADS (VECTORS 32+) ---
-; Vector 32 (0x20) - Hardware Timer
+; --- HARDWARE IRQ LANDING PADS (VECTORS 32+) ---
+
+; Vector 32 (0x20) - Hardware Timer / PIT
+align 16
 exception_stub_32:
-    push qword 0    ; Dummy error code
-    push qword 32   ; Vector index
+    push qword 0         ; Dummy error code
+    push qword 32        ; Vector index
     jmp interrupt_common_stub
-; --- IRQ LANDING PADS (VECTORS 32+) ---
-; Vector 32 (0x20) - Hardware Timer
+
+; Vector 33 (0x21) - PS/2 Keyboard
+align 16
 exception_stub_33:
-    push qword 0    ; Dummy error code
-    push qword 32   ; Vector index
+    push qword 0         ; Dummy error code
+    push qword 33        ; Vector index
     jmp interrupt_common_stub
 
-; Legacy fallback hook
+; Legacy fallback hook / System Call hook
+align 16
 intr:
-    push qword 0    ; Dummy error code
-    push qword 32   ; Vector index
+    push qword 0         ; Dummy error code
+    push qword 128       ; Vector index (0x80)
     jmp interrupt_common_stub
 
 
-; --- HARDWARE INTERRUPT ROUTER (PREEMPTIVE Ticks) ---
+; --- HARDWARE INTERRUPT ROUTER (Preemptive Scheduling Path) ---
+align 16
 interrupt_common_stub:
-    ; 1. Save standard integer registers
+    ; Save all general-purpose registers to form a clean InterruptRegisters frame
     push r15
     push r14
     push r13
@@ -103,30 +110,18 @@ interrupt_common_stub:
     push rbx
     push rax
 
-    mov rdi, rsp        ; Pass context frame pointer to C
-    call intrhandler    ; Run your timer/scheduler code
+    mov rdi, rsp         ; Pass the pointer to this saved state as the 1st C argument
+    call intrhandler     ; Run our timer, hardware routing, or system calls
 
-    ; Debug: print candidate stack pointer returned in RAX and current RSP
-    lea rdi, [rel dbg_intr_fmt]
-    mov rsi, rax
-    mov rdx, rsp
-    call printk
-
-    ; Context Switch Check: If RAX == 0, skip stack modification
+    ; Context Switch Check: If the C handler returns 0, keep the current task
     cmp rax, 0
     je .no_irq_switch
-    ; Validate returned stack pointer before switching:
-    ; - Must be canonical higher-half kernel pointer (0xffff8000...)
-    ; - Must be 16-byte aligned
-    mov rcx, rax
-    cmp rax, 0xffff800000000000
-    jb .no_irq_switch    ; If below canonical kernel base, ignore
-    test rax, 0xF
-    jnz .no_irq_switch    ; If not 16-byte aligned, ignore
-    mov rsp, rax         ; Load the new task's stack pointer safely
-.no_irq_switch:
 
-    ; 4. Restore integer registers
+    ; Apply the new stack pointer returned by the scheduler
+    mov rsp, rax
+
+.no_irq_switch:
+    ; Restore all general-purpose registers from the target task's stack frame
     pop rax
     pop rbx
     pop rcx
@@ -143,13 +138,13 @@ interrupt_common_stub:
     pop r14
     pop r15
 
-    add rsp, 16         ; Clean up dummy error code and vector index
-    iretq
+    add rsp, 16          ; Pop the vector number and dummy error code off the stack
+    iretq                ; Return to the target task execution path
 
 
 ; --- CORE CPU EXCEPTION ROUTER ---
+align 16
 exception_common_stub:
-    ; 1. Save standard integer registers
     push r15
     push r14
     push r13
@@ -169,25 +164,13 @@ exception_common_stub:
     mov rdi, rsp
     call exception_handler_c
 
-    ; Debug: print candidate stack pointer returned in RAX and current RSP
-    lea rdi, [rel dbg_exc_fmt]
-    mov rsi, rax
-    mov rdx, rsp
-    call printk
-
-    ; Exceptions should not implicitly alter scheduling unless requested
+    ; Exceptions shouldn't shift scheduling blocks under regular conditions,
+    ; but if a fatal recovery frame returns a new address, switch stacks here.
     cmp rax, 0
     je .no_exc_switch
-    ; Validate returned stack pointer before switching for exceptions as well
-    mov rcx, rax
-    cmp rax, 0xffff800000000000
-    jb .no_exc_switch
-    test rax, 0xF
-    jnz .no_exc_switch
     mov rsp, rax
-.no_exc_switch:
 
-    ; 4. Restore integer registers
+.no_exc_switch:
     pop rax
     pop rbx
     pop rcx
@@ -204,22 +187,19 @@ exception_common_stub:
     pop r14
     pop r15
 
-    add rsp, 16         ; Clean up vector tracking elements
+    add rsp, 16
     iretq
 
 
-; --- THE EXPORTED VECTOR TABLE ---
+; --- THE EXPORTED IDT POINTER VECTOR TABLE ---
 section .data
 align 8
 exception_vector_table:
 %assign i 0
-%rep 33
+%rep 34                   ; Generates entries 0 through 33 sequentially
     dq exception_stub_%[i]
 %assign i i+1
 %endrep
 
-; Debug format strings for interrupt/exception instrumentation
-dbg_intr_fmt: db "[DBG] intr candidate rax=%p rsp=%p\n", 0
-dbg_exc_fmt:  db "[DBG] exc  candidate rax=%p rsp=%p\n", 0
-
+; Keep the stack configuration modern and standard
 section .note.GNU-stack noalloc noexec nowrite progbits

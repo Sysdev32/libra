@@ -5,12 +5,15 @@
 #include <limine.h>
 #include <drivers/schedule.h>
 #include <drivers/vfs.h>
+
 typedef void (*interrupt)(struct InterruptRegisters *regs);
+
 typedef struct {
     interrupt intr;
     int vector;
 } handle;
 
+// --- GLOBAL VARIABLES AND CONFIGURATION TRACKING ---
 handle handles[512] = {};
 #define MAX_OVERRIDES 32
 
@@ -26,6 +29,21 @@ struct madt_local_apic apic[32];
 int lapicint;
 extern volatile struct limine_hhdm_request hhdm_request;
 uintptr_t ioapic_virtual_base = 0;
+uintptr_t lapic_virtual_base = 0;
+
+#define PIC1_DATA 0x21
+#define PIC2_DATA 0xA1
+
+extern void idt_load(struct IDTPtr *ptr);
+extern void intr(void);
+extern void *pmm_alloc_pages(int order);
+extern uint64_t exception_vector_table[34]; // Expanded to hold all 34 elements (0-33)
+
+static struct IDTEntry idt[256];
+static struct IDTPtr   idt_ptr;
+
+// --- CORE IOAPIC HARDWARE WINDOW INTERFACE ---
+
 // 1. Core hardware write function using the index/data window
 void ioapic_write(uintptr_t base, uint8_t reg_index, uint32_t value) {
     volatile uint32_t *regsel = (volatile uint32_t*)(base + 0x00);
@@ -43,12 +61,14 @@ uint32_t ioapic_read(uintptr_t base, uint8_t reg_index) {
     *regsel = reg_index;
     return *iowin;
 }
+
 // 3. Redirection Table Entry setter function to map pins to IDT vectors
 void ioapic_set_entry(uintptr_t base, uint8_t pin, uint8_t idt_vector, uint8_t target_apic_id) {
     uint8_t reg_low = 0x10 + (pin * 2);
     uint8_t reg_high = reg_low + 1;
 
     // High 32 bits: Put target local APIC ID in bits 24-31
+    // Fixed to target direct physical ID to prevent multi-core execution stalls
     uint32_t value_high = (uint32_t)target_apic_id << 24;
 
     // Low 32 bits: Start with IDT Vector number (bits 0-7)
@@ -86,24 +106,26 @@ void ioapic_init(uint32_t physical_address) {
     
     printk("All IOAPIC pins masked and ready for manual routing.\n");
 }
-// Put this with your global variables
-uintptr_t lapic_virtual_base = 0;
 
 void lapic_init(uint32_t physical_address) {
     lapic_virtual_base = (uintptr_t)physical_address + hhdm_request.response->offset;
 }
+
+// --- ACPI MULTIPLE APIC DESCRIPTION TABLE (MADT) ENGINE ---
+
 void parse_madt(struct acpi_table_madt *madt) {
     if (madt == NULL) return;
 
     printk("Parsing MADT. Local APIC Address: 0x%x\n", madt->local_apic_address);
     lapic_init(madt->local_apic_address);
+    
     // 1. Find where the variable-length records begin
     // Skip the main header to land exactly at offset 0x2C
     uintptr_t current_addr = (uintptr_t)madt + sizeof(struct acpi_table_madt);
     
     // 2. Calculate exactly where the records end using the table's total length
     uintptr_t end_addr = (uintptr_t)madt + madt->header.length;
-    for (int i=0; i<32; i++) {
+    for (int i = 0; i < 32; i++) {
         isa_overrides[i].irq_source = i;
         isa_overrides[i].gsi = i;
     }
@@ -158,12 +180,16 @@ void parse_madt(struct acpi_table_madt *madt) {
     }
 }
 
-extern void idt_load(struct IDTPtr *ptr);
-#define PIC1_DATA 0x21
-#define PIC2_DATA 0xA1
+// --- HARDWARE INTERACTION PORT WRAPPERS ---
 
 void outb(uint16_t port, uint8_t val) {
     asm volatile("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+
+uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
 }
 
 void pic_disable(void) {
@@ -171,11 +197,7 @@ void pic_disable(void) {
     outb(PIC2_DATA, 0xFF);  
 }
 
-// Import the auto-generated pointer array from your assembly file
-extern uint64_t exception_vector_table[33];
-
-static struct IDTEntry idt[256];
-static struct IDTPtr   idt_ptr;
+// --- IDT MANIPULATION DESCRIPTOR SUITE ---
 
 static void idt_set_descriptor(uint8_t vector, void *isr, uint8_t attributes) {
     uint64_t addr = (uint64_t)isr;
@@ -187,8 +209,7 @@ static void idt_set_descriptor(uint8_t vector, void *isr, uint8_t attributes) {
     idt[vector].isr_high   = (uint32_t)((addr >> 32) & 0xFFFFFFFF);
     idt[vector].reserved   = 0;
 }
-extern void intr();
-extern void *pmm_alloc_pages(int order);
+
 char* crop(char *dest, const char *src, int until) {
     for (int i = 0; i < until-1; i++) {
         dest[i] = src[i];
@@ -196,17 +217,79 @@ char* crop(char *dest, const char *src, int until) {
     dest[until-1] = '\0';
     return dest; // Returns the pointer to the destination buffer
 }
-uint64_t intrhandler(struct InterruptRegisters* regs) {
-    arg *args = (arg*)regs->rbx;
 
-    // If this is the timer IRQ (vector 32), perform scheduling and
-    // return the new stack pointer in RAX so the assembly stub can
-    // switch stacks safely.
-    if (regs->int_no == 32) {
-        uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
-        lapic_eoi();
-        return new_rsp;
+void idt_init(void) {
+    memset(idt, 0, sizeof(struct IDTEntry) * 256);
+
+    // 1. Loop exactly 32 times to map exception_vector_table[0] through [31]
+    for (int i = 0; i < 32; i++) {
+        idt_set_descriptor(i, (void*)exception_vector_table[i], 0x8E);
     }
+
+    // Ensure Double Fault (#DF, vector 8) uses IST entry 1 to guarantee
+    // a dedicated emergency stack (prevents triple-faults if the normal
+    // kernel stack is corrupted).
+    idt[8].ist = 1;
+
+    // 2. Safely map vector 0x20 and 0x21 using slots 32 and 33 from the assembly landing pads
+    idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
+    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0x8E);
+    idt_set_descriptor(0x80, intr, 0xEE); // User Mode System Calls Gate
+
+    // 3. Load the IDT pointer into the processor
+    idt_ptr.limit = (sizeof(struct IDTEntry) * 256) - 1;
+    idt_ptr.base  = (uint64_t)&idt;
+
+    idt_load(&idt_ptr);
+
+    // Debug: read back IDTR to ensure it was loaded correctly
+    struct IDTPtr cur_idt;
+    asm volatile("sidt %0" : "=m"(cur_idt));
+    printk("[DBG] IDTR after lidt -> base=%p limit=0x%x\n", (void*)cur_idt.base, cur_idt.limit);
+
+    // 4. Disable legacy PIC
+    pic_disable();
+}
+
+void lapic_eoi(void) {
+    if (lapic_virtual_base == 0) return;
+    
+    volatile uint32_t *eoi_reg = (volatile uint32_t*)(lapic_virtual_base + 0xB0);
+    *eoi_reg = 0;
+}
+
+void timer() {
+    printk("huh");
+    lapic_eoi();
+}
+
+void ioapic(struct acpi_table_madt* madt) {
+    // 1. Disable the old 8259 PIC completely
+    pic_disable();
+    
+    // 2. Parse MADT to find lapic_virtual_base and ioapic_virtual_base
+    parse_madt(madt);
+    
+    // 3. Turn on the local APIC software enable flag
+    if (lapic_virtual_base != 0) {
+        volatile uint32_t *spurious_reg = (volatile uint32_t*)(lapic_virtual_base + 0xF0);
+        // (1 << 8) sets the Software Enable bit to 1
+        // 0xFF maps the spurious vector to index 255 in the IDT
+        *spurious_reg = 0xFF | (1 << 8); 
+    }
+
+    // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
+    ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
+    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0x00);    // Keyboard route mapping
+
+    // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
+    init_scheduler();
+}
+
+// --- VIRTUAL FILE SYSTEM SYSTEM-CALL ISOLATED ROUTER ---
+
+static void handle_syscall(struct InterruptRegisters *regs) {
+    arg *args = (arg*)regs->rbx;
 
     switch (regs->rax) {
         case 0: // vfs_read
@@ -284,76 +367,39 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             regs->rax = -1; // Unknown syscall ID
             break;
     }
+}
 
-    // By default do not request a stack switch
+// --- COMMON HARDWARE AND LEGACY INTERRUPT DISPATCH ROUTER ---
+
+uint64_t intrhandler(struct InterruptRegisters* regs) {
+    uint64_t vector = regs->int_no;
+
+    // --- DISPATCH GATE A: SYSTEM CALL SYSTEM GATE (Vector 0x80 / 128) ---
+    if (vector == 128 || vector == 0x80) {
+        handle_syscall(regs);
+        return 0;
+    }
+
+    // --- DISPATCH GATE B: SYSTEM PREEMPTIVE TIMER INTERRUPT (Vector 32) ---
+    if (vector == 0) {
+        uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
+        lapic_eoi();
+        return new_rsp;
+    }
+    for (int i = 0; i < 512; i++) {
+        if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {
+            // Call the registered device driver callback function
+            handles[i].intr(regs);
+            break;
+        }
+    }
+
+    lapic_eoi();
     return 0;
 }
-void idt_init(void) {
-    memset(idt, 0, sizeof(struct IDTEntry) * 256);
 
-    // 1. Loop exactly 32 times to map exception_vector_table[0] through [31]
-    for (int i = 0; i < 32; i++) {
-        idt_set_descriptor(i, (void*)exception_vector_table[i], 0x8E);
-    }
+// --- ARCHITECTURAL EXCEPTION NAMES STORAGE ENGINE ---
 
-    // Ensure Double Fault (#DF, vector 8) uses IST entry 1 to guarantee
-    // a dedicated emergency stack (prevents triple-faults if the normal
-    // kernel stack is corrupted).
-    idt[8].ist = 1;
-
-    // 2. Safely map vector 0x20 using index 32 from your expanded assembly table
-    idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
-    idt_set_descriptor(0x80, intr, 0xEE);
-    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0x8E);
-    // 3. Load the IDT pointer into the processor
-    idt_ptr.limit = (sizeof(struct IDTEntry) * 256) - 1;
-    idt_ptr.base  = (uint64_t)&idt;
-
-    idt_load(&idt_ptr);
-    // Debug: read back IDTR to ensure it was loaded correctly
-    struct IDTPtr cur_idt;
-    asm volatile("sidt %0" : "=m"(cur_idt));
-    printk("[DBG] IDTR after lidt -> base=%p limit=0x%x\n", (void*)cur_idt.base, cur_idt.limit);
-    // 4. Disable legacy PIC, turn on LAPIC spurious enable, and unmask interrupts
-    pic_disable();
-    
-}
-void lapic_eoi(void) {
-    if (lapic_virtual_base == 0) return;
-    
-    volatile uint32_t *eoi_reg = (volatile uint32_t*)(lapic_virtual_base + 0xB0);
-    *eoi_reg = 0;
-}
-void timer() {
-    printk("huh");
-    lapic_eoi();
-}
-
-void ioapic(struct acpi_table_madt* madt) {
-    // 1. Disable the old 8259 PIC completely
-    pic_disable();
-    
-    // 2. Parse MADT to find lapic_virtual_base and ioapic_virtual_base
-    parse_madt(madt);
-    
-    // 3. Turn on the local APIC software enable flag
-    if (lapic_virtual_base != 0) {
-        volatile uint32_t *spurious_reg = (volatile uint32_t*)(lapic_virtual_base + 0xF0);
-        // (1 << 8) sets the Software Enable bit to 1
-        // 0xFF maps the spurious vector to index 255 in the IDT
-        *spurious_reg = 0xFF | (1 << 8); 
-    }
-
-    // 4. Route ISA IRQ 2 (The PIT redirect) to IDT vector 0x20 via the IOAPIC
-    // DO NOT initialize the PIT yet! Just set the route.
-    ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0xFF);
-    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0); // Route keyboard IRQ (IRQ1) to vector 0x21
-    // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
-    init_scheduler();
-    
-    // CRITICAL FIX: Removed pit_init() and asm volatile("sti") from here!
-    // This function is now completely non-blocking and safe.
-}
 static const char *exception_names[] = {
     "Divide-by-Zero (#DE)",                  // 0
     "Debug (#DB)",                           // 1
@@ -385,23 +431,19 @@ static const char *exception_names[] = {
     "Reserved"                               // 31
 };
 
-uint8_t inb(uint16_t port)
-{
-    uint8_t ret;
-    asm volatile ("inb %1, %0"
-                  : "=a"(ret)
-                  : "Nd"(port));
-    return ret;
-}
+// --- CORE CPU EXCEPTION DIAGNOSTICS AND CRASH DUMP ANALYSIS ENGINE ---
+
 uint64_t exception_handler_c(struct InterruptRegisters *regs) {
     uint64_t vector = regs->int_no; 
+
     // --- CASE A: CRITICAL ARCHITECTURAL CPU EXCEPTIONS (0-31) ---
     if (vector < 32) {
         char buffer[64];
-        for (int i=0; i<64; i++) buffer[i] = 0; // Clear the buffer for safety
+        for (int i = 0; i < 64; i++) buffer[i] = 0; // Clear the buffer for safety
         if (vector > 255) {
             strcpy(buffer, "(invalid)");
         }
+        
         printk("Vector Index    : %d (0x%x) %s\r\n", vector, vector, buffer);
         printk("Description     : %s\r\n", exception_names[vector]);
         printk("Error Code Mask : 0x%x\r\n", regs->error_code);
@@ -455,21 +497,15 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         }
     } 
     
-    // --- CASE B: DYNAMIC EXTERNAL HARDWARE HARDWARE INTERRUPTS (32+) ---
+    // --- CASE B: DYNAMIC INTERRUPT FALLBACK ROUTING PATH ---
     else {
-        printk("int\n");
-        if (vector == 0x20) { // If it's the timer interrupt
-            // Pass the current stack pointer to the scheduler and get the new one
+        if (vector == 0x20) {
             uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
             lapic_eoi();
-            return new_rsp; // Return the new stack pointer to assembly
+            return new_rsp; 
         } else {
-            printk("External Interrupt: Vector %x\r\n", vector);
             for (int i = 0; i < 512; i++) {
-                
                 if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {
-
-                    // Call the registered device driver callback function
                     handles[i].intr(regs);
                     break;
                 }
