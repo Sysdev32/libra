@@ -1,0 +1,1 @@
+savedcmd_kconfig/conf := gcc   -o kconfig/conf kconfig/conf.o kconfig/confdata.o kconfig/expr.o kconfig/lexer.lex.o kconfig/menu.o kconfig/parser.tab.o kconfig/preprocess.o kconfig/symbol.o kconfig/util.o   
