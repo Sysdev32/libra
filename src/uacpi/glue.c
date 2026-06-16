@@ -5,8 +5,6 @@
 #include <drivers/fb.h>
 #include <drivers/alloc.h>
 
-// --- Dynamic Limine Requests ---
-
 // Request the Root System Description Pointer (RSDP) from Limine
 __attribute__((used, section(".limine_requests")))
 volatile struct limine_rsdp_request rsdp_request = {
@@ -142,77 +140,130 @@ uacpi_status uacpi_kernel_io_write32(uacpi_handle handle, uacpi_size offset, uac
     asm volatile("outl %0, %1" :: "a"(value), "Nd"(port) : "memory");
     return UACPI_STATUS_OK;
 }
+#define BUMP_HEAP_SIZE (2 * 1024 * 1024) // 2MB Allocation Arena
+static uint8_t uacpi_bump_heap[BUMP_HEAP_SIZE] __attribute__((aligned(16)));
+static size_t bump_heap_offset = 0;
 
 void* uacpi_kernel_alloc(uacpi_size size) {
-    // 1. Request an extra 16 bytes of padding to safely align the pointer
-    void *raw_ptr = kmalloc(size + 16);
-    if (raw_ptr == NULL) {
+    if (size == 0) {
         return NULL;
     }
 
-    // 2. Align the pointer upward to the nearest 16-byte boundary
-    uintptr_t raw_addr = (uintptr_t)raw_ptr;
-    uintptr_t aligned_addr = (raw_addr + 15) & ~15;
+    // Align the requested size upward to the nearest 16-byte boundary
+    size_t aligned_size = (size + 15) & ~15;
 
-    void *aligned_ptr = (void*)aligned_addr;
+    // Guard against out-of-memory conditions in the arena
+    if (bump_heap_offset + aligned_size > BUMP_HEAP_SIZE) {
+        return NULL;
+    }
 
-    // 3. Clean the memory completely
-    memset(aligned_ptr, 0, size);
-    return aligned_ptr;
+    // Pick the current offset as the starting address
+    void *allocated_ptr = (void*)&uacpi_bump_heap[bump_heap_offset];
+    
+    // Advance the bump pointer for the next allocation
+    bump_heap_offset += aligned_size;
+
+    // Zero out the memory block explicitly without relying on string.h memset
+    uint8_t *byte_ptr = (uint8_t*)allocated_ptr;
+    for (size_t i = 0; i < size; i++) {
+        byte_ptr[i] = 0;
+    }
+
+    return allocated_ptr;
 }
-
 void uacpi_kernel_free(void *mem) {
-    kfree(mem);
+    // Unused parameter macro to satisfy strict compiler configurations
+    (void)mem; 
+    
+    // Intentionally left blank. Memory is reclaimed only if the 
+    // entire heap offset is reset to 0.
 }
 // --- PCI Engine Configuration Stubs ---
+uacpi_status uacpi_kernel_pci_device_open(uacpi_pci_address address, uacpi_handle *out_handle) {
+    if (out_handle == NULL) return UACPI_STATUS_INVALID_ARGUMENT;
 
-uacpi_status uacpi_kernel_pci_device_open(
-    uacpi_pci_address address, uacpi_handle *out_handle
-) {
-    (void)address;
-    if (out_handle == NULL) {
-        return UACPI_STATUS_INVALID_ARGUMENT;
-    }
-    // 0xDEADC0DE satisfies uACPI tracking during early initialization
-    *out_handle = (uacpi_handle)((uintptr_t)0xDEADC0DE);
+    // Pack Bus (bits 16-23), Device (bits 11-15), and Function (bits 8-10) into the handle
+    uintptr_t packed_addr = 
+        ((uintptr_t)address.bus << 16) | 
+        ((uintptr_t)address.device << 11) | 
+        ((uintptr_t)address.function << 8);
+
+    *out_handle = (uacpi_handle)packed_addr;
     return UACPI_STATUS_OK;
 }
 
 void uacpi_kernel_pci_device_close(uacpi_handle handle) {
     (void)handle;
 }
-
-uacpi_status uacpi_kernel_pci_read8(uacpi_handle dev, uacpi_size offset, uacpi_u8 *val) {
-    (void)dev; (void)offset;
+uacpi_status uacpi_kernel_pci_read32(uacpi_handle dev, uacpi_size offset, uacpi_u32 *val) {
     if (!val) return UACPI_STATUS_INVALID_ARGUMENT;
-    *val = 0xFF; 
+    
+    uint32_t address = (uint32_t)((uintptr_t)dev);
+    address |= (uint32_t)(offset & 0xFC);
+    address |= (1U << 31);
+
+    // Enforce explicit 16-bit port types to satisfy the assembler constraints
+    uint16_t config_addr_port = 0xCF8;
+    uint16_t config_data_port = 0xCFC;
+
+    asm volatile("outl %0, %1" :: "a"(address), "Nd"(config_addr_port) : "memory");
+    asm volatile("inl %1, %0" : "=a"(*val) : "Nd"(config_data_port) : "memory");
     return UACPI_STATUS_OK;
 }
 
 uacpi_status uacpi_kernel_pci_read16(uacpi_handle dev, uacpi_size offset, uacpi_u16 *val) {
-    (void)dev; (void)offset;
     if (!val) return UACPI_STATUS_INVALID_ARGUMENT;
-    *val = 0xFFFF;
+    uint32_t full_val;
+    
+    uacpi_kernel_pci_read32(dev, offset, &full_val);
+    // Shift right by 0 or 16 bits depending on the offset alignment
+    *val = (uint16_t)((full_val >> ((offset & 2) * 8)) & 0xFFFF);
     return UACPI_STATUS_OK;
 }
 
-uacpi_status uacpi_kernel_pci_read32(uacpi_handle dev, uacpi_size offset, uacpi_u32 *val) {
-    (void)dev; (void)offset;
+uacpi_status uacpi_kernel_pci_read8(uacpi_handle dev, uacpi_size offset, uacpi_u8 *val) {
     if (!val) return UACPI_STATUS_INVALID_ARGUMENT;
-    *val = 0xFFFFFFFF;
+    uint32_t full_val;
+    
+    uacpi_kernel_pci_read32(dev, offset, &full_val);
+    // Shift right by 0, 8, 16, or 24 bits depending on the offset alignment
+    *val = (uint8_t)((full_val >> ((offset & 3) * 8)) & 0xFF);
     return UACPI_STATUS_OK;
+}
+uacpi_status uacpi_kernel_pci_write32(uacpi_handle d, uacpi_size o, uacpi_u32 v) {
+    uint32_t address = (uint32_t)((uintptr_t)d);
+    address |= (uint32_t)(o & 0xFC);
+    address |= (1U << 31);
+
+    // Enforce explicit 16-bit port types to satisfy the assembler constraints
+    uint16_t config_addr_port = 0xCF8;
+    uint16_t config_data_port = 0xCFC;
+
+    asm volatile("outl %0, %1" :: "a"(address), "Nd"(config_addr_port) : "memory");
+    asm volatile("outl %0, %1" :: "a"(v), "Nd"(config_data_port) : "memory");
+    return UACPI_STATUS_OK;
+}
+uacpi_status uacpi_kernel_pci_write16(uacpi_handle d, uacpi_size o, uacpi_u16 v) {
+    uint32_t full_val;
+    uacpi_kernel_pci_read32(d, o, &full_val);
+    
+    uint32_t shift = (o & 2) * 8;
+    full_val &= ~(0xFFFFU << shift); // Clear old 16 bits
+    full_val |= ((uint32_t)v << shift); // Inject new 16 bits
+    
+    return uacpi_kernel_pci_write32(d, o, full_val);
 }
 
 uacpi_status uacpi_kernel_pci_write8(uacpi_handle d, uacpi_size o, uacpi_u8 v) {
-    (void)d; (void)o; (void)v; return UACPI_STATUS_OK;
+    uint32_t full_val;
+    uacpi_kernel_pci_read32(d, o, &full_val);
+    
+    uint32_t shift = (o & 3) * 8;
+    full_val &= ~(0xFFU << shift); // Clear old 8 bits
+    full_val |= ((uint32_t)v << shift); // Inject new 8 bits
+    
+    return uacpi_kernel_pci_write32(d, o, full_val);
 }
-uacpi_status uacpi_kernel_pci_write16(uacpi_handle d, uacpi_size o, uacpi_u16 v) {
-    (void)d; (void)o; (void)v; return UACPI_STATUS_OK;
-}
-uacpi_status uacpi_kernel_pci_write32(uacpi_handle d, uacpi_size o, uacpi_u32 v) {
-    (void)d; (void)o; (void)v; return UACPI_STATUS_OK;
-}
-
 // --- High-Precision Timing Infrastructure ---
 
 static inline uint64_t read_tsc(void) {

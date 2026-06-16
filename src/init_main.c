@@ -145,7 +145,6 @@ void keyboard_init(void)
 }
 static void main_kthread(void) {
     printk("main kthread started.\n");
-    for(;;);
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
     printk("bam: %d\n", fd_test);
