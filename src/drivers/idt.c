@@ -7,6 +7,8 @@
 #include <drivers/vfs.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
+#include <random.h>
+uint64_t user_key = 0;
 typedef void (*interrupt)(struct InterruptRegisters *regs);
 
 typedef struct {
@@ -42,7 +44,7 @@ extern uint64_t exception_vector_table[34]; // Expanded to hold all 34 elements 
 
 static struct IDTEntry idt[256];
 static struct IDTPtr   idt_ptr;
-
+uint64_t admin_key = 0;
 // --- CORE IOAPIC HARDWARE WINDOW INTERFACE ---
 
 // 1. Core hardware write function using the index/data window
@@ -220,6 +222,9 @@ char* crop(char *dest, const char *src, int until) {
 }
 
 void idt_init(void) {
+    rng_init();
+    admin_key = rng_next();
+    user_key = rng_next();
     memset(idt, 0, sizeof(struct IDTEntry) * 256);
 
     // 1. Loop exactly 32 times to map exception_vector_table[0] through [31]
@@ -288,7 +293,43 @@ void ioapic(struct acpi_table_madt* madt) {
 }
 
 // --- VIRTUAL FILE SYSTEM SYSTEM-CALL ISOLATED ROUTER ---
+typedef struct {
+    uint64_t key;
+    int level;
+} permission;
+static inline uint64_t mix64(uint64_t x) {
+    x ^= x >> 33;
+    x *= 0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= 0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+    return x;
+}
+uint64_t encode_pid(uint64_t pid, uint64_t key)
+{
+    uint64_t x = pid;
 
+    // domain separation (important, prevents reuse attacks)
+    x ^= 0x73697374656d5f31ULL; // "system_1"
+
+    // first key mix
+    x ^= key;
+    x = mix64(x);
+
+    // second keyed layer (HMAC-ish behavior)
+    x ^= (key << 1) | (key >> 1);
+    x ^= 0xA5A5A5A5A5A5A5A5ULL;
+    x = mix64(x);
+
+    // final avalanche
+    x ^= key ^ (key * 0x9e3779b97f4a7c15ULL);
+    x = mix64(x);
+
+    return x;
+}
+int verify_pid(uint64_t pid, uint64_t tag, uint64_t pid_secret) {
+    return encode_pid(pid, pid_secret) == tag;
+}
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
 
@@ -363,7 +404,16 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         case 8: // vfs_delete_file
             regs->rax = vfs_delete_file((const char*)args->arg[0]);
             break;
-
+        case 9: // get_permission
+            // TODO: Verify the user's buffer before copying
+            if (args->arg[0] == 0) {
+                permission perm = { .key = encode_pid(get_pid(), admin_key), .level = 0};
+                // TODO: check the user's permissions before sending admin permission
+                memcpy((void*)args->arg[1], &perm, sizeof(permission));
+            } else if (args->arg[0] == 1) {
+                permission perm = { .key = encode_pid(get_pid(), user_key), .level = 1};
+                memcpy((void*)args->arg[1], &perm, sizeof(permission));
+            }
         default: 
             regs->rax = -1; // Unknown syscall ID
             break;

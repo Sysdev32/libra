@@ -272,3 +272,6 @@ uint64_t syscall_exit_handler(uint64_t current_rsp) {
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
     return schedule_preemptive(current_rsp);
 }
+int get_pid() {
+    return current_task_id;
+}
