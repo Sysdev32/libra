@@ -163,9 +163,9 @@ static void main_kthread(void) {
     uint64_t user_code_vma  = 0x2000000; 
     uint64_t user_stack_vma = 0x600000;
 
-    int user_fd = vfs_open("user.bin");
+    int user_fd = vfs_open("init.bin");
     if (user_fd < 0) {
-        printk("Error: Could not open user.bin\n");
+        printk("kernel panic: no initial user binary found! vfs_open error code: %d\n", user_fd);
         for(;;);
     }
 
@@ -220,7 +220,7 @@ static void main_kthread(void) {
     vfs_free_fd(user_fd);
 
     if (total_bytes_read <= 0) {
-        printk("Error: user.bin is empty or failed to load!\n");
+        printk("Error: init.bin is empty or failed to load!\n");
         for(;;);
     }
 
