@@ -51,3 +51,11 @@ Run `make clean`
 | HPET | Not Started | |
 | Syscalls | WIP | Complete but userspace doesn't work yet |
 | User Security | WIP | Complete but userspace doesn't work yet |
+## Release Scheme
+
+- bca / bc# → broken builds (unstable / may not boot)
+- nca / nc# → nightly builds (experimental features)
+- rca / rc# → release candidates (stabilizing)
+- release → stable version
+
+Each major version may contain up to 7 iterations per stage.
