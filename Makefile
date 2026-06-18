@@ -174,7 +174,7 @@ iso: $(KERNEL)
 run: iso
 	@echo "[QEMU] booting..."
 	@$(QEMU) \
-		-bios /usr/share/ovmf/OVMF.fd \
+		-bios ./prebuilt/OVMF.fd \
 		-cdrom $(ISO) \
 		-m 4G \
 		-M q35 \

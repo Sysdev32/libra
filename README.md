@@ -20,7 +20,6 @@ The user Zirconium is also me, just another account, my Git was misconfigured at
 1. Install the dependencies listed below:
     - A `x86_64-elf` bare metal toolchain
     - `QEMU` (At least system)
-    - `OVMF`
     - `make`
     - `nasm`
     - `xorriso`
