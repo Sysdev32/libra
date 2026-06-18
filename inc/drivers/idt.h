@@ -9,11 +9,6 @@ struct InterruptRegisters {
     // 1. General-purpose registers (Saved by common_stub)
     uint64_t rax, rbx, rcx, rdx, rsi, rdi, rbp;
     uint64_t r8, r9, r10, r11, r12, r13, r14, r15;
-
-    // 2. Capture region allocated via `sub rsp, 512` and filled by `fxsave64`
-    // Must remain 16-byte aligned for processor safety.
-    uint8_t  fxsave_region[512] __attribute__((aligned(16)));
-
     // 3. Macro stub registers ordered exactly by stack pop trajectory
     uint64_t int_no;     // Pushed last by macro stub (lowest address slot)
     uint64_t error_code; // Pushed first by macro stub (highest address slot)

@@ -363,23 +363,52 @@ void _start(void) {
     ret = uacpi_table_find_by_signature("APIC", (struct acpi_table**)&madt);
     if (ret == UACPI_STATUS_OK) {
         printk("Found MADT at %p\n", madt);
-        // You can now parse your CPUs/Interrupt controllers here!
     } else {
         printk("MADT not found: %s\n", uacpi_status_to_string(ret));
     }
     ioapic(madt);
-    asm volatile ("sti"); // Enable interrupts now that we're ready to handle them
-    // Re-enable SSE features (OSFXSR/OSXMMEXCPT, MXCSR)
+
+    ret = uacpi_namespace_load();
+    if (uacpi_unlikely_error(ret)) {
+        printk("uacpi_namespace_load error: %s", uacpi_status_to_string(ret));
+        for(;;);
+    }
+
+    /*
+     * Initialize the namespace. This calls all necessary _STA/_INI AML methods,
+     * as well as _REG for registered operation region handlers.
+     */
+    ret = uacpi_namespace_initialize();
+    if (uacpi_unlikely_error(ret)) {
+        printk("uacpi_namespace_initialize error: %s", uacpi_status_to_string(ret));
+        for(;;);
+    }
+    
+    /*
+     * Tell the firmware the interrupt model we're planning to use.
+     * (Use UACPI_INTERRUPT_MODEL_PIC if you're planning to use PIC, or any
+     *  other value depending on the architecture).
+     */
+    uacpi_set_interrupt_model(UACPI_INTERRUPT_MODEL_IOAPIC);
+
+    /*
+     * Tell uACPI that we have marked all GPEs we wanted for wake (even though we haven't
+     * actually marked any, as we have no power management support right now). This is
+     * needed to let uACPI enable all unmarked GPEs that have a corresponding AML handler.
+     * These handlers are used by the firmware to dynamically execute AML code at runtime
+     * to e.g. react to thermal events or device hotplug.
+     */
+    ret = uacpi_finalize_gpe_initialization();
+    if (uacpi_unlikely_error(ret)) {
+        printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
+        for(;;);
+    }
+    asm volatile ("sti");
     keyboard_init();
 
     if (create_kernel_task(main_kthread) < 0) {
         printk("Failed to create main kthread.\n");
         hlt();
     }
-    /* SSE support removed: not enabling OSFXSR/OSXMMEXCPT or MXCSR here */
-    // CRITICAL FIX: Hand over control directly to your scheduler file instead of doing `sti` here.
-    // Your start_scheduler() function in the other file must shift RSP to task_table[0].kernel_stack,
-    // run pit_init(), and execute the final sti there.
-    
     start_scheduler();
 }
