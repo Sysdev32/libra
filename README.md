@@ -1,7 +1,6 @@
 # Libra
-Hello my fellow developers. I've started this project as a hobby kernel. It's a sequel to my previous kernels (unreleased).
+Hello my fellow developers. I've started this project as a small kernel. It's a sequel to my previous kernels (unreleased).
 It aims to be a stable kernel and efficient. Hence the name Libra, but this kernel is still quite experimental, and we are super far away from this goal. So, it's a pleasure if anyone would like to help with this project.
-Fun Fact: I'm a Libra
 ## Getting Started
 ### Project Instructions
 I've taken inspiration from other kernels and see that this section for devs is mostly unclear.
@@ -15,3 +14,21 @@ And then create a pull request. Within a small period of time it might be accept
 ### Small Notes
 
 The user Zirconium is also me, just another account, my Git was misconfigured at the time.
+
+### Instructions to build
+1. Install the dependencies listed below:
+    - A `x86_64-elf` bare metal toolchain
+    - `QEMU` (At least system)
+    - `OVMF`
+    - `make`
+    - `nasm`
+    - `xorriso`
+    - `libncurses-dev`
+2. Configure the build
+    1. Run `make menuconfig` to configure the kernel
+    2. Run `make genconfig` to generate the configuration header
+3. Build and Run
+    1. Run `make -j8`
+    2. Run `make run`
+### Cleaning
+Run `make clean`
