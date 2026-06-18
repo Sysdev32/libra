@@ -32,3 +32,22 @@ The user Zirconium is also me, just another account, my Git was misconfigured at
     2. Run `make run`
 ### Cleaning
 Run `make clean`
+## Feature Status
+
+| Feature | Status | Notes |
+|----------|----------|----------|
+| PMM | Complete | Bitmap allocator |
+| VMM | Complete | Higher-half mapping |
+| Scheduler | Complete | Round-robin preemptive |
+| uACPI | Complete | Namespace and initialization working |
+| PCI | Not Started | |
+| SMP | Not Started | |
+| Filesystem | Complete | VFS Implemented |
+| Userspace | WIP | Crashes on load |
+| AHCI | Not Started | |
+| PCIe | Not Started | |
+| APIC | Complete | Fully working |
+| PIT | Complete | Fully working |
+| HPET | Not Started | |
+| Syscalls | WIP | Complete but userspace doesn't work yet |
+| User Security | WIP | Complete but userspace doesn't work yet |
