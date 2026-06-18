@@ -88,7 +88,7 @@ void pit_init(void) {
     outb(0x40, (uint8_t)(divisor & 0xFF));        // Low byte (LSB)
     outb(0x40, (uint8_t)((divisor >> 8) & 0xFF)); // High byte (MSB)
     
-    printk("PIT Timer initialized at 100Hz.\n");
+    printk(LOG_TRACE, "PIT Timer initialized at 100Hz.\n");
 }
 __attribute__((section(".user_text"))) void uthread(void) {
     asm volatile(
@@ -146,16 +146,16 @@ void keyboard_init(void)
     inb(0x60);
 }
 static void main_kthread(void) {
-    printk("main kthread started.\n");
+    printk(LOG_TRACE, "main kthread started.\n");
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
-    printk("Test File FD (main.py): %d\n", fd_test);
+    printk(LOG_DEBUG, "Test File FD (main.py): %d\n", fd_test);
     
     // FIX: Create an isolated, sandboxed user address space context.
     // This routine clones kernel space (entries 256-511) and switches CR3 automatically.
     page_table_t *user_pml4 = vmm_create_address_space();
     if (user_pml4 == NULL) {
-        printk("Error: Could not allocate isolated user address space\n");
+        printk(LOG_ERROR, "Could not allocate isolated user address space\n");
         for(;;);
     }
     
@@ -165,7 +165,7 @@ static void main_kthread(void) {
 
     int user_fd = vfs_open("user.bin");
     if (user_fd < 0) {
-        printk("Error: Could not open user.bin\n");
+        printk(LOG_ERROR, "Could not open user.bin\n");
         for(;;);
     }
 
@@ -216,11 +216,11 @@ static void main_kthread(void) {
         }
     }
 
-    printk("Loaded user binary from VFS: %d bytes read across %d pages.\n", total_bytes_read, page_index);
+    printk(LOG_TRACE, "Loaded user binary from VFS: %d bytes read across %d pages.\n", total_bytes_read, page_index);
     vfs_free_fd(user_fd);
 
     if (total_bytes_read <= 0) {
-        printk("Error: user.bin is empty or failed to load!\n");
+        printk(LOG_ERROR, "user.bin is empty or failed to load!\n");
         for(;;);
     }
 
@@ -258,9 +258,9 @@ int dump_namespace(uacpi_namespace_node *root)
         }
 
         for (int i = 0; i < depth; i++)
-            printk("  ");
+            printk(LOG_NONE, "  ");
 
-        printk("%c%c%c%c\n",
+        printk(LOG_NONE, "%c%c%c%c\n",
                node->name.text[0],
                node->name.text[1],
                node->name.text[2],
@@ -301,6 +301,7 @@ void triple_fault_reboot(void) {
     // Hang just in case the CPU takes a moment to reset
     for (;;);
 }
+struct flanterm_context *ft_ctx;
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 void _start(void) {
@@ -330,7 +331,7 @@ void _start(void) {
     // FIX 2: Explicitly cast void* address to a 32-bit unsigned integer pointer
     uint32_t *fb_ptr = (uint32_t *)framebuffer->address;
 
-    struct flanterm_context *ft_ctx = flanterm_fb_init(
+    ft_ctx = flanterm_fb_init(
         NULL,
         NULL,
         fb_ptr, framebuffer->width, framebuffer->height, framebuffer->pitch,
@@ -347,30 +348,30 @@ void _start(void) {
         0
     );
     memory_init();
-    
+    flanterm_set_text_fg(ft_ctx, 7, true);
     initConsole(ft_ctx);
     init_vfs();
     if (total_usable_memory / 1024 / 1024 < 128) {
-        printk("Warning: Less than 128 MB of usable memory detected. Rebooting now..\n");
+        printk(LOG_ERROR, "Less than 128 MB of usable memory detected. Rebooting now..\n");
         triple_fault_reboot();
     }
-    printk("Total usable memory: %d MB\r\n\n", total_usable_memory / 1024 / 1024);
+    printk(LOG_TRACE, "Total usable memory: %d MB\n", total_usable_memory / 1024 / 1024);
     uacpi_status ret = uacpi_initialize(0);
     if (uacpi_unlikely_error(ret)) {
-        printk("uacpi_initialize error: %s", uacpi_status_to_string(ret));
+        printk(LOG_ERROR, "uacpi_initialize: %s", uacpi_status_to_string(ret));
     }
     struct acpi_table_madt *madt = NULL;
     ret = uacpi_table_find_by_signature("APIC", (struct acpi_table**)&madt);
     if (ret == UACPI_STATUS_OK) {
-        printk("Found MADT at %p\n", madt);
+        printk(LOG_TRACE, "Found MADT at %p\n", madt);
     } else {
-        printk("MADT not found: %s\n", uacpi_status_to_string(ret));
+        printk(LOG_ERROR, "MADT not found: %s\n", uacpi_status_to_string(ret));
     }
     ioapic(madt);
 
     ret = uacpi_namespace_load();
     if (uacpi_unlikely_error(ret)) {
-        printk("uacpi_namespace_load error: %s", uacpi_status_to_string(ret));
+        printk(LOG_ERROR, "uacpi_namespace_load: %s", uacpi_status_to_string(ret));
         for(;;);
     }
 
@@ -380,7 +381,7 @@ void _start(void) {
      */
     ret = uacpi_namespace_initialize();
     if (uacpi_unlikely_error(ret)) {
-        printk("uacpi_namespace_initialize error: %s", uacpi_status_to_string(ret));
+        printk(LOG_ERROR, "uacpi_namespace_initialize: %s", uacpi_status_to_string(ret));
         for(;;);
     }
     
@@ -400,14 +401,14 @@ void _start(void) {
      */
     ret = uacpi_finalize_gpe_initialization();
     if (uacpi_unlikely_error(ret)) {
-        printk("uACPI GPE initialization error: %s", uacpi_status_to_string(ret));
+        printk(LOG_ERROR, "uACPI GPE initialization: %s", uacpi_status_to_string(ret));
         for(;;);
     }
     asm volatile ("sti");
     keyboard_init();
-
+    
     if (create_kernel_task(main_kthread) < 0) {
-        printk("Failed to create main kthread.\n");
+        printk(LOG_ERROR, "Failed to create main kthread.\n");
         hlt();
     }
     start_scheduler();

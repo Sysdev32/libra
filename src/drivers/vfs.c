@@ -143,7 +143,7 @@ static struct dentry *root_dentry = NULL;
 
 static struct dentry *create_dentry_node(const char *name, size_t name_len, uint32_t mode, struct dentry *parent) {
     if (parent != NULL && parent->child_count >= MAX_DIR_CHILDREN) {
-        printk("VFS ERROR: Maximum directory child limit (%d) reached!\n", MAX_DIR_CHILDREN);
+        printk(LOG_ERROR, "VFS: Maximum directory child limit (%d) reached!\n", MAX_DIR_CHILDREN);
         return NULL;
     }
 
@@ -217,12 +217,12 @@ int init_vfs(void) {
 
     struct limine_file *initramfs_file = find_initramfs_module(module_request.response);
     if (initramfs_file == NULL) {
-        printk("[VFS_DEBUG] CRITICAL: initramfs module pointer is NULL from Limine.\n");
+        printk(LOG_ERROR, "initramfs module pointer is NULL from Limine.\n");
         return -1;
     }
     root_dentry = create_dentry_node("", 0, S_IFDIR | 0755, NULL);
     if (root_dentry == NULL) {
-        printk("[VFS_DEBUG] CRITICAL: Failed to allocate root dentry node memory.\n");
+        printk(LOG_ERROR, "Failed to allocate root dentry node memory.\n");
         return -1;
     }
     const uint8_t *archive = (const uint8_t *)initramfs_file->address;
@@ -239,7 +239,7 @@ int init_vfs(void) {
         memcpy(magic_buf, header->c_magic, 6);
 
         if (memcmp(header->c_magic, "070701", 6) != 0) {
-            printk("[VFS_DEBUG]   CRITICAL ERROR: Invalid CPIO format signature magic mismatch.\n");
+            printk(LOG_ERROR, "Invalid CPIO format signature magic mismatch.\n");
             return -1;
         }
 
@@ -254,7 +254,7 @@ int init_vfs(void) {
 
         // Safety check to avoid reading out of bounds if headers are corrupted
         if (name_offset + name_size > archive_size || data_offset + file_size > archive_size) {
-            printk("[VFS_DEBUG]   CRITICAL ERROR: Header metrics exceed boundaries of loaded ramdisk image.\n");
+            printk(LOG_ERROR, "Header metrics exceed boundaries of loaded ramdisk image.\n");
             return -1;
         }
 
@@ -271,7 +271,7 @@ int init_vfs(void) {
         int appended_fd = append_file(path, pure_path_len + 1, archive + data_offset, file_size, mode);
         
         if (appended_fd < 0) {
-            printk("[VFS_DEBUG]     WARNING: append_file failed! File entry was rejected by global tracker.\n");
+            printk(LOG_WARNING, "append_file failed! File entry was rejected by global tracker.\n");
             for(;;);
         }
         struct dentry *current_dir = root_dentry;
@@ -282,7 +282,7 @@ int init_vfs(void) {
                 ptr++;
             }
             if (*ptr == '\0') {
-                printk("[VFS_DEBUG]     Path tracking hit trailing string terminator component edge.\n");
+                printk(LOG_TRACE, "Path tracking hit trailing string terminator component edge.\n");
                 break;
             }
 
@@ -300,7 +300,7 @@ int init_vfs(void) {
                 
                 next_node = create_dentry_node(component_start, component_len, node_mode, current_dir);
                 if (next_node == NULL) {
-                    printk("[VFS_DEBUG]       CRITICAL STRUCTURAL FAILURE: Static array directory child allocation limits hit.\n");
+                    printk(LOG_ERROR, "Static array directory child allocation limits hit.\n");
                     return -1;
                 }
                 if (*ptr == '\0' && (node_mode & S_IFMT) == S_IFREG) {
@@ -318,7 +318,7 @@ int init_vfs(void) {
         offset = next_offset;
     }
 
-    printk("[VFS_DEBUG] CRITICAL: Loop finished naturally without reaching a TRAILER!!! marker sequence.\n");
+    printk(LOG_ERROR, "Loop finished naturally without reaching a TRAILER!!! marker sequence.\n");
     return -1;
 }
 

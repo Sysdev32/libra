@@ -41,12 +41,12 @@ struct SoftwareTCB {
 extern struct SoftwareTCB *current_task;
 
 // --- Early Logging Implementation ---
-
+extern struct flanterm_context *ft_ctx;
 void uacpi_kernel_log(uacpi_log_level level, const uacpi_char* chars) {
     (void)level;
     // Ensure string pointer exists before passing to serial/screen printk
     if (chars) {
-        printk(chars);
+        printk(LOG_ACPI, chars);
     }
 }
 // --- Dynamic Memory Mapping Hooks ---

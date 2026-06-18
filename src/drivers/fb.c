@@ -238,13 +238,14 @@ int vsprintf(char *buf, const char *fmt, va_list args)
     *p = '\0';
     return (int)(p - buf);
 }
-void printk(const char *fmt, ...) {
+void printk(LogType type, const char *fmt, ...) {
     char buf[1024];
     va_list args;
     
     va_start(args, fmt);
     int len = vsprintf(buf, fmt, args);
     va_end(args);
+    
     // If no flanterm context is available, send directly to serial (COM1).
     if (ctx == NULL) {
         for (int i = 0; i < len; i++) {
@@ -265,9 +266,38 @@ void printk(const char *fmt, ...) {
         }
         return;
     }
-
+    int color = 0;
+    bool bright = true;
+    char *text = kcalloc(sizeof(char), 11);
+    text = " info   ";
+    if (type == LOG_DEBUG) {
+        color = 4;
+        bright = false; 
+        text = " debug  ";
+    } else if (type == LOG_ERROR) {
+        color = 1;
+        bright = false;
+        text = " error  ";
+    } else if (type == LOG_WARNING) {
+        color = 3;
+        bright = false;
+        text = " warning  ";
+    } else if (type == LOG_ACPI) {
+        color = 3;
+        bright = false;
+        text = " uACPI  ";
+    } else if (type == LOG_NONE) {
+        color = 0;
+        bright = false;
+        text = "";
+    }
+    flanterm_set_text_bg(ctx, color, bright);
+    flanterm_write(ctx, text, strlen(text));
+    flanterm_set_text_bg(ctx, 0, false);
+    flanterm_write(ctx, " ", 1);
     // Otherwise write through flanterm and also mirror to serial for physical COM1
     for (int i = 0; i < len; i++) {
+        
         if (buf[i] == '\n') {
             flanterm_write(ctx, "\r", 1);
             uint8_t status;
@@ -276,7 +306,7 @@ void printk(const char *fmt, ...) {
             } while ((status & 0x20) == 0);
             __asm__ volatile("outb %0, %1" :: "a"((uint8_t)'\r'), "Nd"((uint16_t)0x3F8));
         }
-
+        
         flanterm_write(ctx, &buf[i], 1);
 
         uint8_t status;
