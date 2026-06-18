@@ -1,7 +1,11 @@
+Screenshot of Libra Booting
 ![Libra Screenshot](libra.png)
 # Libra
-Hello my fellow developers. I've started this project as a small kernel. It's a sequel to my previous kernels (unreleased).
-It aims to be a stable kernel and efficient. Hence the name Libra, but this kernel is still quite experimental, and we are super far away from this goal. So, it's a pleasure if anyone would like to help with this project.
+## About the Kernel
+The kernel is powered by Limine. It is a higher-half kernel with a GDT and IDT. It also includes a VFS which uses CPIO newc as its main format. A round-robin preemptive scheduler. And uses APIC as its primary interrupt handler. It has a PMM and VMM.
+## My Goals
+I've started this project as a small kernel. It's a sequel to my previous kernels (unreleased).
+It aims to be a stable kernel and efficient. Hence the name Libra, but this kernel is still quite experimental, and we are super far away from this goal. So, it's a pleasure if anyone would like to help with this project. 
 ## Getting Started
 ### Project Instructions
 I've taken inspiration from other kernels and see that this section for devs is mostly unclear.
@@ -43,19 +47,17 @@ Run `make clean`
 | PCI | Not Started | |
 | SMP | Not Started | |
 | Filesystem | Complete | VFS Implemented |
-| Userspace | WIP | Crashes on load |
+| Userspace | WIP | Crashes on load with a #DE fault |
 | AHCI | Not Started | |
 | PCIe | Not Started | |
-| APIC | Complete | Fully working |
-| PIT | Complete | Fully working |
+| APIC | Complete | Fully working with core selection |
+| PIT | Complete | Fully working at 100hz with a sleep function |
 | HPET | Not Started | |
 | Syscalls | WIP | Complete but userspace doesn't work yet |
 | User Security | WIP | Complete but userspace doesn't work yet |
 ## Release Scheme
 
-- bca / bc# → broken builds (unstable / may not boot)
-- nca / nc# → nightly builds (experimental features)
-- rca / rc# → release candidates (stabilizing)
+- bca / bc# → broken builds (unstable / may not boot) 15-20 iterations max
+- nca / nc# → nightly builds (experimental features) 12-15 iterations max
+- rca / rc# → release candidates (stabilizing), 7-12 iterations max
 - release → stable version
-
-Each major version may contain up to 7 iterations per stage.
