@@ -343,14 +343,16 @@ void _start(void) {
         NULL, NULL,
         NULL, NULL,
         NULL, 0, 0, 1,
-        0, 0,
+        1.5, 1.5,
         0,
         0
     );
     memory_init();
     flanterm_set_text_fg(ft_ctx, 7, true);
+    flanterm_write(ft_ctx, "\033[?25l", 6);
     initConsole(ft_ctx);
     init_vfs();
+    
     if (total_usable_memory / 1024 / 1024 < 128) {
         printk(LOG_ERROR, "Less than 128 MB of usable memory detected. Rebooting now..\n");
         triple_fault_reboot();

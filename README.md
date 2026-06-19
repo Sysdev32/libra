@@ -54,10 +54,30 @@ Run `make clean`
 | PIT | Complete | Fully working at 100hz with a sleep function |
 | HPET | Not Started | |
 | Syscalls | WIP | Complete but userspace doesn't work yet |
-| User Security | WIP | Complete but userspace doesn't work yet |
+| User Security | WIP | IPC and buffer safety not complete yet |
+| Accelerated Graphics Card | Not Started | |
+
 ## Release Scheme
 
 - bca / bc# → broken builds (unstable / may not boot) 15-20 iterations max
 - nca / nc# → nightly builds (experimental features) 12-15 iterations max
 - rca / rc# → release candidates (stabilizing), 7-12 iterations max
 - release → stable version
+
+## User Security
+Each process must require a permission from syscall #9 before calling any other syscalls. Each syscall except Syscall #9 will need an extra argument besides its normal arguments that contains a pointer to a permission. Each permission structure is shaped like this:
+```c
+typedef struct {
+    uint64_t key;
+    int claimedlevel;
+} permission;
+```
+Level 0 is Administrator, Level 1 is User. The key given to the process is cryptographically signed with the process's PID to prevent security issues. When a process requests a **Level 0** permission, the kernel has to send an IPC message to the launchd executable (always has PID 1 and is the only process that is launched with ***Level -1 (4,294,967,295)*** automatically) to ask the user for permission to give the process (signed or unsigned) admin permissions. The response will be sent back to the kernel. And if declined the kernel will return -EACCES but if accepted the kernel will fill the buffer given in rbx.arg[1] and return 0 in rax. In each syscall, it checks if the claimedlevel matches the signed key for the process. It resigns it and checks it against the key given in the permission, if it is an admin operation and they both match, the admin operation is executed successfully, if they don't, then -EACCES is returned.
+## VFS
+Our VFS supports these operations:
+- mkdir
+- rmdir
+- open
+- read
+- write
+Each one is very versatile and useful.

@@ -7,8 +7,27 @@
 #include <drivers/vfs.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
+#include <stdint.h>
+uint64_t admin_seed = 0xCAFEF00DD1CE1ULL; 
+uint64_t user_seed = 0xCAFEF11DEADBEULL; 
+// Freestanding 32-bit unsigned random number generator.
+// Must be initialized with a non-zero state.
+static uint32_t random(uint64_t* state) {
+    uint64_t old_state = *state;
+    
+    // Advance internal state using a Linear Congruential Generator (LCG)
+    *state = old_state * 6364136223846793005ULL + 1442695040888963407ULL;
+    
+    // Calculate PCG-XSH-RR output transformation
+    uint32_t xorshifted = (uint32_t)(((old_state >> 18u) ^ old_state) >> 27u);
+    uint32_t rot = (uint32_t)(old_state >> 59u);
+    
+    // Return rotated value
+    return (xorshifted >> rot) | (xorshifted << ((-rot) & 31));
+}
 typedef void (*interrupt)(struct InterruptRegisters *regs);
-
+uint64_t admin_key;
+uint64_t user_key;
 typedef struct {
     interrupt intr;
     int vector;
@@ -221,7 +240,8 @@ char* crop(char *dest, const char *src, int until) {
 
 void idt_init(void) {
     memset(idt, 0, sizeof(struct IDTEntry) * 256);
-
+    user_key = random(&user_seed);
+    admin_key = random(&admin_seed);
     // 1. Loop exactly 32 times to map exception_vector_table[0] through [31]
     for (int i = 0; i < 32; i++) {
         idt_set_descriptor(i, (void*)exception_vector_table[i], 0x8E);
@@ -286,8 +306,140 @@ void ioapic(struct acpi_table_madt* madt) {
     // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
     init_scheduler();
 }
-
+typedef struct {
+    uint64_t key;
+    int claimedlevel;
+} permission;
 // --- VIRTUAL FILE SYSTEM SYSTEM-CALL ISOLATED ROUTER ---
+#include <stdint.h>
+#include <string.h>
+
+// --- Minimal Freestanding SHA-256 Implementation ---
+#define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
+#define Ch(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
+#define Maj(x, y, z) (((x) & (y)) ^ (((x) & (z)) ^ ((y) & (z))))
+#define Sigma0(x) (ROTR(x, 2) ^ ROTR(x, 13) ^ ROTR(x, 22))
+#define Sigma1(x) (ROTR(x, 6) ^ ROTR(x, 11) ^ ROTR(x, 25))
+#define sigma0(x) (ROTR(x, 7) ^ ROTR(x, 18) ^ ((x) >> 3))
+#define sigma1(x) (ROTR(x, 17) ^ ROTR(x, 19) ^ ((x) >> 10))
+
+static const uint32_t K[64] = {
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0xbefa4fa4, 0x0654be30, 0x14abbc42, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb
+};
+
+void sha256_transform(uint32_t state[8], const uint8_t data[64]) {
+    uint32_t a, b, c, d, e, f, g, h, t1, t2, W[64];
+    int i;
+
+    for (i = 0; i < 16; i++) {
+        W[i] = ((uint32_t)data[i * 4] << 24) | ((uint32_t)data[i * 4 + 1] << 16) |
+               ((uint32_t)data[i * 4 + 2] << 8) | ((uint32_t)data[i * 4 + 3]);
+    }
+    for (i = 16; i < 64; i++) {
+        W[i] = sigma1(W[i - 2]) + W[i - 7] + sigma0(W[i - 15]) + W[i - 16];
+    }
+
+    a = state[0]; b = state[1]; c = state[2]; d = state[3];
+    e = state[4]; f = state[5]; g = state[6]; h = state[7];
+
+    for (i = 0; i < 64; i++) {
+        t1 = h + Sigma1(e) + Ch(e, f, g) + K[i] + W[i];
+        t2 = Sigma0(a) + Maj(a, b, c);
+        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
+    }
+
+    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
+    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
+}
+
+void sha256_hash(const uint8_t* data, uint32_t length, uint8_t output[32]) {
+    uint32_t state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    uint8_t buffer[128];
+    uint32_t bits = length * 8;
+    
+    // Copy data into buffer and apply standard padding
+    for (uint32_t i = 0; i < length; i++) buffer[i] = data[i];
+    buffer[length] = 0x80;
+    
+    uint32_t pad_len = length + 1;
+    while ((pad_len % 64) != 56) {
+        buffer[pad_len++] = 0x00;
+    }
+    
+    // Append bit length at the end (Big Endian)
+    buffer[pad_len++] = (bits >> 24) & 0xFF;
+    buffer[pad_len++] = (bits >> 16) & 0xFF;
+    buffer[pad_len++] = (bits >> 8) & 0xFF;
+    buffer[pad_len++] = bits & 0xFF;
+
+    for (uint32_t i = 0; i < pad_len; i += 64) {
+        sha256_transform(state, &buffer[i]);
+    }
+
+    for (int i = 0; i < 8; i++) {
+        output[i * 4]     = (state[i] >> 24) & 0xFF;
+        output[i * 4 + 1] = (state[i] >> 16) & 0xFF;
+        output[i * 4 + 2] = (state[i] >> 8) & 0xFF;
+        output[i * 4 + 3] = state[i] & 0xFF;
+    }
+}
+
+// --- Freestanding HMAC-SHA256 Function ---
+// Signs a data key combined with a specific process identifier (PID)
+void sign_key_with_pid(const uint8_t* key, uint32_t key_len, uint32_t pid, uint8_t out_signature[32]) {
+    uint8_t k_ipad[64] = {0};
+    uint8_t k_opad[64] = {0};
+    
+    // Handle keys larger than block size (64 bytes)
+    uint8_t prepared_key[64] = {0};
+    if (key_len > 64) {
+        sha256_hash(key, key_len, prepared_key);
+    } else {
+        for (uint32_t i = 0; i < key_len; i++) prepared_key[i] = key[i];
+    }
+
+    // XOR key with inner and outer padding constants
+    for (int i = 0; i < 64; i++) {
+        k_ipad[i] = prepared_key[i] ^ 0x36;
+        k_opad[i] = prepared_key[i] ^ 0x5C;
+    }
+
+    // Combine inner padding with the 4-byte PID payload
+    uint8_t inner_buffer[64 + 4];
+    for (int i = 0; i < 64; i++) inner_buffer[i] = k_ipad[i];
+    inner_buffer[64] = (pid >> 24) & 0xFF;
+    inner_buffer[65] = (pid >> 16) & 0xFF;
+    inner_buffer[66] = (pid >> 8) & 0xFF;
+    inner_buffer[67] = pid & 0xFF;
+
+    // First hash pass
+    uint8_t inner_hash[32];
+    sha256_hash(inner_buffer, 68, inner_hash);
+
+    // Combine outer padding with inner hash result
+    uint8_t outer_buffer[64 + 32];
+    for (int i = 0; i < 64; i++) outer_buffer[i] = k_opad[i];
+    for (int i = 0; i < 32; i++) outer_buffer[64 + i] = inner_hash[i];
+
+    // Second hash pass to yield the final signature
+    sha256_hash(outer_buffer, 96, out_signature);
+}
+uint64_t signature_to_uint64_direct(const uint8_t* signature) {
+    uint64_t result;
+    // Copies the first 8 bytes of the signature directly into the uint64_t
+    // Works safely across alignment boundaries
+    for (int i = 0; i < 8; i++) {
+        ((uint8_t*)&result)[i] = signature[i];
+    }
+    return result;
+}
 
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
@@ -363,7 +515,22 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         case 8: // vfs_delete_file
             regs->rax = vfs_delete_file((const char*)args->arg[0]);
             break;
-
+        case 9: {
+            // TODO: Contact launchd executable (level -1) and get permission for the process to gain administrator level
+            // TODO: Fix unsafe buffer copy
+            if (args->arg[0] == 0) {
+                uint8_t signature[32];
+                sign_key_with_pid((uint8_t*)admin_key, sizeof(admin_key), getpid(), signature); 
+                permission perm = { .claimedlevel = 0, .key = signature_to_uint64_direct(signature)};
+                memcpy((void*)args->arg[1], &perm, sizeof(permission));
+            } else if (args->arg[0] == 1) {
+                uint8_t signature[32];
+                sign_key_with_pid((uint8_t*)user_key, sizeof(user_key), getpid(), signature); 
+                permission perm = { .claimedlevel = 0, .key = signature_to_uint64_direct(signature)};
+                memcpy((void*)args->arg[1], &perm, sizeof(permission));
+            }
+            break;
+        }
         default: 
             regs->rax = -1; // Unknown syscall ID
             break;
