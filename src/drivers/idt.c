@@ -301,7 +301,6 @@ void ioapic(struct acpi_table_madt* madt) {
 
     // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
     ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
-    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0x00);    // Keyboard route mapping
 
     // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
     init_scheduler();
@@ -549,7 +548,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
     }
 
     // --- DISPATCH GATE B: SYSTEM PREEMPTIVE TIMER INTERRUPT (Vector 32) ---
-    if (vector == 0) {
+    if (vector == 32) {
         ticks += 1;
         uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
         lapic_eoi();
@@ -562,7 +561,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             break;
         }
     }
-
+    
     lapic_eoi();
     return 0;
 }
@@ -715,6 +714,6 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
             lapic_eoi();
         }
     }
-
+    printk(LOG_TRACE, "ey");
     return 0;
 }

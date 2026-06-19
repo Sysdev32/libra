@@ -261,8 +261,8 @@ void start_scheduler(void) {
     );
 
     pit_init();
+
     asm volatile ("sti; nop" ::: "memory");
-    
     for (;;) {
         asm volatile("hlt");
     }
@@ -271,4 +271,7 @@ void start_scheduler(void) {
 uint64_t syscall_exit_handler(uint64_t current_rsp) {
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
     return schedule_preemptive(current_rsp);
+}
+int getpid() {
+    return current_task_id;
 }

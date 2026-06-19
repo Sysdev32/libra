@@ -7,7 +7,7 @@
 # -------------------------
 
 ACTIONS ?= 0
-
+DETECTED_OS := $(shell uname -s)
 ifeq ($(ACTIONS),1)
     TOOLCHAIN_DIR := $(shell pwd)/toolchain
     CROSS_COMPILE := $(TOOLCHAIN_DIR)/
@@ -181,20 +181,59 @@ run: iso
 		-serial stdio \
 		-D qemu.log \
 		-d int
+# -------------------------
+# Python-based Kconfiglib Environment (PEP 668 Compliant)
+# -------------------------
+VENV_DIR      := .venv
+VENV_ACTIVATE := $(VENV_DIR)/bin/activate
+VENV_PIP      := $(VENV_DIR)/bin/pip
+MENUCONFIG_PY := $(VENV_DIR)/bin/menuconfig
+OLDCONFIG_PY  := $(VENV_DIR)/bin/oldconfig
 
-# -------------------------
-# Clean
-# -------------------------
-compile_tools:
-	mkdir -p $(BIN_DIR) && cd $(BIN_DIR) && make -C ../../scripts/kbuild-standalone -f Makefile.sample O=`pwd` -j$(shell nproc)
+# Virtual environment prerequisite target
+$(VENV_ACTIVATE):
+	@echo "[VENV] Creating localized Python environment..."
+	@python3 -m venv $(VENV_DIR)
+	@echo "[VENV] Installing kconfiglib package..."
+	@$(VENV_PIP) install --upgrade pip > /dev/null
+	@$(VENV_PIP) install kconfiglib > /dev/null
+
+# Replaces compile_tools entirely
+compile_tools: $(VENV_ACTIVATE)
+	@mkdir -p $(BIN_DIR)
+	@echo "[VENV] Python engine ready."
+
+# Interactive visual configuration shell menu
+# Interactive visual configuration shell menu (Dark Aqua Theme)
 menuconfig: compile_tools
-	./$(BIN_DIR)/kconfig/mconf Kconfig
+	@echo "[KCONFIG] Launching Python menuconfig with Dark Aqua Theme..."
+	@export MENUCONFIG_STYLE="\
+		body=fg:darkcyan bg:default;\
+		main_frame=fg:cyan bg:default;\
+		frame_title=fg:brightcyan bg:default bold;\
+		cursor=fg:black bg:cyan bold;\
+		selected_item=fg:brightcyan bg:default bold;\
+		unselected_item=fg:white bg:default;\
+		help=fg:darkcyan bg:default;\
+		separator=fg:cyan bg:default;\
+		shadow=fg:black bg:default;\
+		menu=fg:white bg:default;\
+		text=fg:white bg:default;\
+		jumps=fg:brightcyan bg:default bold;\
+		inputs=fg:white bg:darkcyan;\
+		buttons=fg:black bg:cyan;\
+		selected_button=fg:black bg:brightcyan bold;\
+		unselected_button=fg:white bg:darkcyan"; \
+	. $(VENV_ACTIVATE) && $(MENUCONFIG_PY) Kconfig
+
+# Automatic header compiler generator 
 genconfig: compile_tools
+	@echo "[KCONFIG] Generating configuration header..."
 	@mkdir -p inc
-	export KCONFIG_AUTOHEADER=inc/config.h; \
-	export srctree=.; \
+	@export srctree=.; \
 	export SRCARCH=x86; \
-	./$(BIN_DIR)/kconfig/conf --syncconfig Kconfig
+	export KCONFIG_AUTOHEADER=inc/config.h; \
+	. $(VENV_ACTIVATE) && python3 $(VENV_DIR)/bin/genconfig Kconfig
 
 clean:
 	@echo "[CLEAN]"

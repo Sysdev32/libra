@@ -290,6 +290,10 @@ void printk(LogType type, const char *fmt, ...) {
         color = 0;
         bright = false;
         text = "";
+    } else if (type == LOG_TRACE) {
+        color = 6;
+        bright = false;
+        text = " trace  ";
     }
     flanterm_set_text_bg(ctx, color, bright);
     flanterm_write(ctx, text, strlen(text));
