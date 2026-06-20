@@ -175,12 +175,14 @@ run: iso
 	@echo "[QEMU] booting..."
 	@$(QEMU) \
 		-bios ./prebuilt/OVMF.fd \
-		-cdrom $(ISO) \
 		-m 4G \
 		-M q35 \
 		-serial stdio \
 		-D qemu.log \
-		-d int
+		-d int \
+		-drive id=disk0,file=my_disk.qcow2,if=none,format=qcow2 \
+		-device ide-hd,drive=disk0,bus=ide.0 \
+		-cdrom $(ISO)
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

@@ -303,6 +303,8 @@ void triple_fault_reboot(void) {
 struct flanterm_context *ft_ctx;
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
+pci_device_t* devices;
+uint32_t devicecount = 0;
 void _start(void) {
     // Ensure the bootloader answered our framebuffer request safely
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
@@ -407,13 +409,13 @@ void _start(void) {
     }
     asm volatile ("sti");
     keyboard_init();
-    pci_device_t* buffer = kcalloc(256, sizeof(pci_device_t));
-    uint32_t count = 0;
-    pci_scan_bus(buffer, 256, &count);
-    for (int i=0; i<count; i++) {
-        printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", buffer[i].bus, buffer[i].device, buffer[i].function, buffer[i].class_code, buffer[i].subclass, buffer[i].device_id, buffer[i].vendor_id);
-    }
+    devices = kcalloc(256, sizeof(pci_device_t));
     
+    pci_scan_bus(devices, 256, &devicecount);
+    for (int i=0; i<devicecount; i++) {
+        printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
+    }
+    init_ahci();
     if (create_kernel_task(main_kthread) < 0) {
         printk(LOG_ERROR, "Failed to create main kthread.\n");
         hlt();
