@@ -153,7 +153,8 @@ static void main_kthread(void) {
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
     printk(LOG_DEBUG, "Test File FD (main.py): %d\n", fd_test);
-    // FIX: Create an isolated, sandboxed user address space context.
+
+    // Create an isolated, sandboxed user address space context.
     // This routine clones kernel space (entries 256-511) and switches CR3 automatically.
     page_table_t *user_pml4 = vmm_create_address_space();
     if (user_pml4 == NULL) {
@@ -161,7 +162,7 @@ static void main_kthread(void) {
         for(;;);
     }
     
-    // KEEP: Your preferred 32 MB clean virtual memory base address choice!
+    // User virtual memory space layouts
     uint64_t user_code_vma  = 0x2000000; 
     uint64_t user_stack_vma = 0x600000;
 
@@ -176,8 +177,7 @@ static void main_kthread(void) {
     int total_bytes_read = 0;
     int file_cursor = 0;
 
-    // Shift hardcoded physical targets high up into RAM (128 MB and 160 MB marks).
-    // The PMM is explicitly configured to ignore these ranges so they never collide.
+    // Hardcoded safe physical memory bases (ignored by PMM to avoid collisions)
     uint64_t safe_code_phys_base  = 0x8000000; 
     uint64_t safe_stack_phys_base = 0xA000000; 
 
@@ -203,12 +203,6 @@ static void main_kthread(void) {
         uint64_t current_vma = user_code_vma + (page_index * PAGE_SIZE);
         vmm_map_page(user_pml4, current_vma, page_phys, user_flags);
 
-        // Print header signature verification
-        if (page_index == 0) {
-            uint8_t *check = (uint8_t *)0x2000000;
-    
-        }
-
         total_bytes_read += chunks_read;
         file_cursor += chunks_read;
         page_index++;
@@ -228,8 +222,7 @@ static void main_kthread(void) {
 
     /*
      * User-space sbrk() expects a heap starting immediately after the loaded
-     * image. Newlib-backed helpers like printf may touch this region on the
-     * very first call, so map a small zeroed heap window up front.
+     * image. Map a small zeroed heap window up front.
      */
     const int user_heap_pages = 16;
     uint64_t user_heap_vma = user_code_vma + ((uint64_t)page_index * PAGE_SIZE);
@@ -243,14 +236,17 @@ static void main_kthread(void) {
     // ==========================================
     // MAP STACK TO SAFE PHYSICAL AREA
     // ==========================================
-    uint8_t *check = (uint8_t *)0x2000000;
     void *stack_hhdm_ptr = (void *)(safe_stack_phys_base + HHDM_OFFSET);
     memset(stack_hhdm_ptr, 0, PAGE_SIZE);
+    
+    // Map the user stack space to our designated physical frame
     vmm_map_page(user_pml4, user_stack_vma, safe_stack_phys_base, user_flags);
     
-    // Fire off your context switch with scheduler interrupts active
-    create_user_task((void *)0x2000000, stack_hhdm_ptr);
+    // FIX: Pass the raw physical frame pointer.
+    // create_user_task will automatically apply HHDM_OFFSET to initialize argc and argv correctly.
+    create_user_task((void *)user_code_vma, (void *)safe_stack_phys_base);
     
+    // Idle loop while scheduler interrupts switch to the user task
     for (;;) {
         asm volatile("sti; hlt");
     }
@@ -367,7 +363,7 @@ void _start(void) {
     memory_init();
     flanterm_set_text_fg(ft_ctx, 7, true);
     flanterm_write(ft_ctx, "\033[?25l", 6);
-    initConsole(ft_ctx);
+    initConsole(ft_ctx, framebuffer);
     init_vfs();
     
     if (total_usable_memory / 1024 / 1024 < 128) {

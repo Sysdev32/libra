@@ -59,6 +59,27 @@ static inline long user_syscall3(long num, long a1, long a2, long a3) {
     );
     return ret;
 }
+static inline long user_syscall7(long num, long a1, long a2, long a3, long a4, long a5, long a6, long a7) {
+    syscall_args_t args = {
+        .arg = {
+            (uint64_t)a1,
+            (uint64_t)a2,
+            (uint64_t)a3,
+            (uint64_t)a4,
+            (uint64_t)a5,
+            (uint64_t)a6,
+            (uint64_t)a7,
+        },
+    };
+    long ret;
+    __asm__ volatile (
+        "int $0x80"
+        : "=a" (ret)
+        : "a" (num), "b" (&args)
+        : "cc", "memory"
+    );
+    return ret;
+}
 
 #define SYS_READ  0
 #define SYS_WRITE 1
@@ -83,4 +104,14 @@ int close(int file) { return -1; }
 int lseek(int file, int ptr, int dir) { return 0; }
 int getpid(void) { return 1; }
 int kill(int pid, int sig) { errno = EINVAL; return -1; }
-void _exit(int status) { while (1) { __asm__ volatile ("pause"); } }
+void _exit(int status) {
+    user_syscall3(12, status, 0, 0);
+    for(;;);
+}
+void graduate() {
+    user_syscall3(10, 0, 0, 0);
+}
+void draw_rect(int rect_x, int rect_y, int rect_width, int rect_height, 
+                   uint8_t r, uint8_t g, uint8_t b) {
+    user_syscall7(11, rect_x, rect_y, rect_width, rect_height, b, g, r);
+}

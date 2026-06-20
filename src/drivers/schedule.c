@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
-
+#include <drivers/fb.h>
 #define MAX_TASKS 16
 #define KERNEL_STACK_SIZE 4096
 #define USER_STACK_SIZE 4096
@@ -220,16 +220,18 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
     return -1;
 }
 
-/**
- * CORE PREEMPTIVE ROUND-ROBIN SCHEDULER
- */
 uint64_t schedule_preemptive(uint64_t old_rsp) {
+    // Save the old stack pointer to its slot
     task_table[current_task_id].rsp = old_rsp;
     
-    if (task_table[current_task_id].state == TASK_STATE_RUNNING) {
-        task_table[current_task_id].state = TASK_STATE_READY;
+    // Remember the task that just ran
+    int old_task_id = current_task_id;
+
+    if (task_table[old_task_id].state == TASK_STATE_RUNNING) {
+        task_table[old_task_id].state = TASK_STATE_READY;
     }
 
+    // Find the next available ready task
     int next_task_id = -1;
     for (int i = 1; i <= MAX_TASKS; i++) {
         int candidate = (current_task_id + i) % MAX_TASKS;
@@ -239,16 +241,34 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
         }
     }
 
-    // If no other runable threads exist, yield back to current thread context
+    // If no other runnable threads exist
     if (next_task_id == -1) {
+        // If the current task died (is a zombie) and nothing else can run, the system must halt
+        if (task_table[old_task_id].state == TASK_STATE_ZOMBIE) {
+            // Free the last task's table tracking slot safely
+            task_table[old_task_id].state = TASK_STATE_DEAD;
+            return 0; // Returning 0 will fall back to your assembly idle/halt loop
+        }
+        
         if (task_table[current_task_id].state == TASK_STATE_READY) {
             task_table[current_task_id].state = TASK_STATE_RUNNING;
         }
         return 0; 
     }
 
+    // Switch contexts to the new task
     current_task_id = next_task_id;
     task_table[current_task_id].state = TASK_STATE_RUNNING;
+
+    // --- ADDED CLEANUP MECHANISM ---
+    // If the previous task exited and became a zombie, safely free its slot now
+    if (task_table[old_task_id].state == TASK_STATE_ZOMBIE) {
+        task_table[old_task_id].state = TASK_STATE_DEAD;
+        task_table[old_task_id].rsp = 0;
+        task_table[old_task_id].user_rsp = 0;
+        // NOTE: If you implemented virtual memory page directories (cr3) later,
+        // you would also call your memory manager to free the process memory pages here.
+    }
 
     // Update TSS so the CPU switches to the right kernel stack during future user interrupts
     uint64_t kstack_canonical = (uint64_t)&task_table[current_task_id].kernel_stack[KERNEL_STACK_SIZE];
@@ -300,8 +320,16 @@ void start_scheduler(void) {
     }
 }
 
-uint64_t syscall_exit_handler(uint64_t current_rsp) {
+// Update your function signature to accept the status from RSI
+uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
+    
+    // Log the exit status inside the kernel console for debugging
+    printk(LOG_INFO, "Task %d exited with status: %d\n", current_task_id, (int)status);
+    
+    // Mark the task as a zombie so the scheduler cleans it up
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
+    
+    // Force a context switch to the next ready task
     return schedule_preemptive(current_rsp);
 }
 int getpid() {

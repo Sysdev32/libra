@@ -8,3 +8,4 @@ void init_scheduler(void);
 void start_scheduler(void);
 void fpu_context_save(void);
 void fpu_context_restore(void);
+uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status);

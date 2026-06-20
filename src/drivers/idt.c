@@ -428,6 +428,11 @@ void sign_key_with_pid(const uint8_t* key, uint32_t key_len, uint32_t pid, uint8
     // Second hash pass to yield the final signature
     sha256_hash(outer_buffer, 96, out_signature);
 }
+uint64_t get_rsp(void) {
+    uint64_t rsp;
+    asm volatile("mov %%rsp, %0" : "=r"(rsp));
+    return rsp;
+}
 uint64_t signature_to_uint64_direct(const uint8_t* signature) {
     uint64_t result;
     // Copies the first 8 bytes of the signature directly into the uint64_t
@@ -526,6 +531,18 @@ static void handle_syscall(struct InterruptRegisters *regs) {
                 permission perm = { .claimedlevel = 0, .key = signature_to_uint64_direct(signature)};
                 memcpy((void*)args->arg[1], &perm, sizeof(permission));
             }
+            break;
+        }
+        case 10: {
+            graduate();
+            break;
+        }
+        case 11: {
+            draw_rect(args->arg[0], args->arg[1], args->arg[2], args->arg[3], args->arg[4], args->arg[5], args->arg[6]);
+            break;
+        }
+        case 12: {
+            syscall_exit_handler(get_rsp(), args->arg[0]);
             break;
         }
         default: 
