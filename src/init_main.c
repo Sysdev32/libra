@@ -11,6 +11,8 @@
 #include <drivers/idt.h>
 #include <drivers/schedule.h>
 #include <drivers/vfs.h>
+#include <drivers/pci.h>
+#include <drivers/gpt.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/utilities.h>
 #include <uacpi/event.h>
@@ -23,7 +25,7 @@
 #include <uacpi/internal/stdlib.h>
 #include <uacpi/types.h>
 #include <errno.h>
-#include <drivers/pci.h>
+
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -416,6 +418,7 @@ void _start(void) {
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
     init_ahci();
+    gpt_parse_partitions(get_primary_sata_drive());
     if (create_kernel_task(main_kthread) < 0) {
         printk(LOG_ERROR, "Failed to create main kthread.\n");
         hlt();

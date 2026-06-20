@@ -690,8 +690,7 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         sleep_ms(1000);
         printk(LOG_INFO, "Rebooting in 1 seconds...\r\n");
         sleep_ms(1000);
-        
-        uacpi_reboot();
+
         // Force definitive crash freeze so hardware doesn't pass broken state steps downward
         for (;;) {
             asm volatile("hlt");
