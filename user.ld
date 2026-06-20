@@ -30,19 +30,18 @@ SECTIONS
         *(.data.*)
     }
 
-    /* 4. Uninitialized Data Segment - naturally follows writable data */
+    /* 4. Uninitialized Data Segment */
     .bss : {
         *(.bss)
         *(.bss.*)
         *(COMMON)
     }
 
-    /* Align to a standard 4KB CPU memory page boundary before initializing the heap */
+    /* Align to a standard 4KB CPU memory page boundary */
     . = ALIGN(4096);
 
-    /* Export standard runtime control boundary symbols for the stubs.c _sbrk implementation */
     _heap_start = .;
-
-    /* Advance the tracking allocation offset pointer to cleanly reserve 32MB of User Heap space */
-    _heap_end = _heap_start + 0x2000000; 
 }
+
+/* Move this definition OUTSIDE of the SECTIONS block so it remains a pure reference pointer */
+_heap_end = _heap_start + 0x2000000;
