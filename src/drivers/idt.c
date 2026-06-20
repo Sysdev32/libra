@@ -10,6 +10,16 @@
 #include <stdint.h>
 uint64_t admin_seed = 0xCAFEF00DD1CE1ULL; 
 uint64_t user_seed = 0xCAFEF11DEADBEULL; 
+void outb(uint16_t port, uint8_t val) {
+    asm volatile("outb %0, %1" :: "a"(val), "Nd"(port));
+}
+
+uint8_t inb(uint16_t port) {
+    uint8_t ret;
+    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 // Freestanding 32-bit unsigned random number generator.
 // Must be initialized with a non-zero state.
 static uint32_t random(uint64_t* state) {
@@ -32,7 +42,40 @@ typedef struct {
     interrupt intr;
     int vector;
 } handle;
-
+static const char kbd_us_keymap[128] = {
+    0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', /* Backspace */
+  '\t', /* Tab */
+  'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', /* Enter */
+    0,  /* 29   - Control */
+  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',   
+    0,  /* 42   - Left Shift */
+ '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',   
+    0,  /* 54   - Right Shift */
+  '*',
+    0,  /* 56   - Alt */
+  ' ',  /* Space bar */
+    0,  /* 58   - Caps lock */
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, /* 59-68 - F1 to F10 keys */
+    0,  /* 69   - Num lock */
+    0,  /* 70   - Scroll Lock */
+    0,  /* 71   - Home key */
+    0,  /* 72   - Up Arrow */
+    0,  /* 73   - Page Up */
+  '-',
+    0,  /* 75   - Left Arrow */
+    0,
+    0,  /* 77   - Right Arrow */
+  '+',
+    0,  /* 79   - End key */
+    0,  /* 80   - Down Arrow */
+    0,  /* 81   - Page Down */
+    0,  /* 82   - Insert Key */
+    0,  /* 83   - Delete Key */
+    0, 0, 0,
+    0,  /* 87   - F11 Key */
+    0,  /* 88   - F12 Key */
+    0,  /* All others undefined */
+};
 // --- GLOBAL VARIABLES AND CONFIGURATION TRACKING ---
 handle handles[512] = {};
 #define MAX_OVERRIDES 32
@@ -62,6 +105,91 @@ extern uint64_t exception_vector_table[34]; // Expanded to hold all 34 elements 
 static struct IDTEntry idt[256];
 static struct IDTPtr   idt_ptr;
 
+// Wait until the controller is ready for us to SEND a command (Bit 1 must be 0)
+void ps2_wait_write(void) {
+    while (inb(0x64) & 2);
+}
+
+// Wait until the controller has DATA for us to read (Bit 0 must be 1)
+void ps2_wait_read(void) {
+    while (!(inb(0x64) & 1));
+}
+void ps2_init(void) {
+    // 1. Disable both PS/2 channels (Port 1 and Port 2) so they don't flood us with data
+    ps2_wait_write();
+    outb(0x64, 0xAD); // Disable Port 1 (Keyboard)
+    ps2_wait_write();
+    outb(0x64, 0xA7); // Disable Port 2 (Mouse - okay if it doesn't exist)
+
+    // 2. Flush the buffer (Read any leftover garbage data out of port 0x60)
+    while (inb(0x64) & 1) {
+        inb(0x60);
+    }
+
+    // 3. Read the Configuration Byte
+    ps2_wait_write();
+    outb(0x64, 0x20); // Command: Read Controller Configuration
+    ps2_wait_read();
+    uint8_t config = inb(0x60);
+
+    // 4. Modify the Configuration Byte:
+    // Clear Bit 0 (Disable Port 1 Interrupts)
+    // Clear Bit 1 (Disable Port 2 Interrupts)
+    // Clear Bit 6 (Disable Port 1 Translation - keeps scan codes predictable)
+    config &= ~(1 << 0);
+    config &= ~(1 << 1);
+    config &= ~(1 << 6);
+
+    // Write the modified Configuration Byte back
+    ps2_wait_write();
+    outb(0x64, 0x60); // Command: Write Controller Configuration
+    ps2_wait_write();
+    outb(0x60, config);
+
+    // 5. Perform Controller Self-Test
+    ps2_wait_write();
+    outb(0x64, 0xAA); // Command: Test Controller
+    ps2_wait_read();
+    if (inb(0x60) != 0x55) {
+        // Controller is broken or missing!
+        return; 
+    }
+
+    // 6. Perform Interface Test (Port 1)
+    ps2_wait_write();
+    outb(0x64, 0xAB); // Command: Test Port 1
+    ps2_wait_read();
+    if (inb(0x60) != 0x00) {
+        // Keyboard interface test failed
+        return;
+    }
+
+    // 7. Enable the Keyboard Port and Turn on Interrupts
+    ps2_wait_write();
+    outb(0x64, 0xAE); // Command: Enable Port 1
+
+    // Re-read configuration byte to flip the interrupt bit back on
+    ps2_wait_write();
+    outb(0x64, 0x20);
+    ps2_wait_read();
+    config = inb(0x60);
+    
+    config |= (1 << 0); // Set Bit 0: Enable Port 1 Interrupt (IRQ 1)
+    
+    ps2_wait_write();
+    outb(0x64, 0x60);
+    ps2_wait_write();
+    outb(0x60, config);
+
+    // 8. Reset the actual Keyboard hardware device
+    ps2_wait_write();
+    outb(0x60, 0xFF); // Device Command: Reset
+    ps2_wait_read();
+    if (inb(0x60) == 0xFA) { // ACK (Acknowledge)
+        ps2_wait_read();
+        uint8_t self_test_res = inb(0x60); // Should be 0xAA for passed
+    }
+}
 // --- CORE IOAPIC HARDWARE WINDOW INTERFACE ---
 
 // 1. Core hardware write function using the index/data window
@@ -202,15 +330,6 @@ void parse_madt(struct acpi_table_madt *madt) {
 
 // --- HARDWARE INTERACTION PORT WRAPPERS ---
 
-void outb(uint16_t port, uint8_t val) {
-    asm volatile("outb %0, %1" :: "a"(val), "Nd"(port));
-}
-
-uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
 
 void pic_disable(void) {
     outb(PIC1_DATA, 0xFF);
@@ -270,6 +389,7 @@ void idt_init(void) {
 
     // 4. Disable legacy PIC
     pic_disable();
+    ps2_init();
 }
 
 void lapic_eoi(void) {
@@ -301,6 +421,7 @@ void ioapic(struct acpi_table_madt* madt) {
 
     // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
     ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
+    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0);
 
 }
 typedef struct {
@@ -448,9 +569,31 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
     switch (regs->rax) {
         case 0: // vfs_read
-            if (args->arg[0] <= 2) {
+            if (args->arg[0] == 0) {
+                // --- HOOK: Redirect stdin (FD 0) to the Keyboard Buffer ---
+                uint8_t *user_buf = (uint8_t*)args->arg[1];
+                uint64_t bytes_to_read = args->arg[2];
+                
+                if (bytes_to_read == 0 || user_buf == NULL) {
+                    regs->rax = 0;
+                    break;
+                }
+
+                uint8_t scancode;
+                
+                // --- BLOCKING VIA POLLING ---
+                // Loop indefinitely until kbd_buffer_pop successfully returns a scancode
+                while (!kbd_buffer_pop(&scancode)) {
+                    asm volatile("pause");
+                }
+
+                *user_buf = scancode; 
+                regs->rax = 1; // Return 1 byte successfully read
+            } 
+            else if (args->arg[0] == 1 || args->arg[0] == 2) {
                 regs->rax = 0; 
-            } else {
+            } 
+            else {
                 regs->rax = vfs_read(args->arg[0] - 2, (void*)args->arg[1], args->arg[2], args->arg[3]);
             }
             break;
@@ -553,6 +696,51 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
 // --- COMMON HARDWARE AND LEGACY INTERRUPT DISPATCH ROUTER ---
 volatile uint64_t ticks = 0;
+#define KBD_BUFFER_SIZE 256
+typedef struct {
+    uint8_t data[KBD_BUFFER_SIZE];
+    volatile uint32_t head;  // Must be volatile
+    volatile uint32_t tail;  // Must be volatile
+} kbd_buffer_t;
+
+static volatile kbd_buffer_t kbd_buf = { .head = 0, .tail = 0 };
+
+// Call this inside your keyboard interrupt handler to save a scancode
+void kbd_buffer_push(uint8_t scancode) {
+    uint32_t next = (kbd_buf.head + 1) % KBD_BUFFER_SIZE;
+    
+    // If the buffer is full, discard the scancode to protect kernel memory
+    if (next == kbd_buf.tail) {
+        return; 
+    }
+    
+    kbd_buf.data[kbd_buf.head] = scancode;
+    kbd_buf.head = next;
+}
+
+// This function checks if user space has anything to read
+int kbd_buffer_pop(uint8_t *out_scancode) {
+    if (kbd_buf.head == kbd_buf.tail) {
+        return 0; // Buffer is empty
+    }
+    
+    *out_scancode = kbd_buf.data[kbd_buf.tail];
+    kbd_buf.tail = (kbd_buf.tail + 1) % KBD_BUFFER_SIZE;
+    return 1; // Successfully popped a scancode
+}
+// System call wrapper exposed to your interrupt/syscall table
+int sys_read_key(uint8_t *user_buffer) {
+    uint8_t scancode;
+    
+    // Attempt to pull a key out of the queue
+    if (kbd_buffer_pop(&scancode)) {
+        // Safely write the byte to the user space pointer address
+        *user_buffer = scancode;
+        return 1; // Success
+    }
+    
+    return 0; // No keys available right now
+}
 uint64_t intrhandler(struct InterruptRegisters* regs) {
     uint64_t vector = regs->int_no;
 
@@ -568,6 +756,22 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
         uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
         lapic_eoi();
         return new_rsp;
+    }
+    if (vector == 33) {
+        uint8_t scancode = inb(0x60);
+
+        // 2. Filter out key releases (Break codes)
+        // In Set 1, if bit 7 (0x80) is set, it means the user just lifted their finger off the key.
+        if (scancode & 0x80) {
+            /* Optional: Handle key release state changes here (like clearing a 'shift_pressed' flag) */
+        } 
+        else {
+            // 3. This is a key press (Make code). Translate it using our keymap layout.
+            if (scancode < 128) {
+                kbd_buffer_push(scancode);
+            }
+        }
+        lapic_eoi();
     }
     for (int i = 0; i < 512; i++) {
         if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {
@@ -725,6 +929,7 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
                     break;
                 }
             }
+            printk(LOG_TRACE, "rlly?");
             lapic_eoi();
         }
     }

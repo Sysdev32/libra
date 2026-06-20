@@ -46,14 +46,15 @@ Run `make clean`
 | uACPI | Complete | Namespace and initialization working |
 | SMP | Not Started | |
 | Filesystem | Complete | VFS Implemented |
-| Userspace | WIP | Crashes on load with a #DE fault |
+| Userspace | Complete | |
 | AHCI | Complete | |
 | GPT | Complete | |
 | PCI | Complete | |
+| SSE | Complete | |
 | APIC | Complete | Fully working with core selection |
 | PIT | Complete | Fully working at 100hz with a sleep function |
 | HPET | Not Started | |
-| Syscalls | WIP | Complete but userspace doesn't work yet |
+| Syscalls | Complete | |
 | User Security | WIP | IPC and buffer safety not complete yet |
 | Accelerated Graphics Card | Not Started | |
 ## Release Scheme
