@@ -67,3 +67,70 @@ int memcmp(const void *s1, const void *s2, size_t n) {
     }
     return 0;
 }
+char* strcat(char* destination, const char* source) {
+    // 1. Save the beginning of the destination string to return later
+    char* ptr = destination;
+
+    // 2. Move the destination pointer forward until it hits the null terminator
+    while (*ptr != '\0') {
+        ptr++;
+    }
+
+    // 3. Copy the characters from the source string into the destination string
+    while (*source != '\0') {
+        *ptr = *source;
+        ptr++;
+        source++;
+    }
+
+    // 4. Add the final null terminator to the end of the combined string
+    *ptr = '\0';
+
+    // Return the original destination pointer
+    return destination;
+}
+char* strchr(const char* str, int c) {
+    char target = (char)c;
+
+    // Scan the string until we find the character or hit the null terminator
+    while (*str != '\0') {
+        if (*str == target) {
+            return (char*)str; // Found the character, return its memory address
+        }
+        str++;
+    }
+
+    // Special case: If the caller is looking for the null terminator itself
+    if (target == '\0') {
+        return (char*)str;
+    }
+
+    // Character was not found in the string
+    return NULL;
+}
+/**
+ * Locates the last occurrence of a character in a string.
+ * @param str The null-terminated string to search.
+ * @param c   The character to look for (passed as an int, but evaluated as a char).
+ * @return A pointer to the last matched character, or NULL if the character is not found.
+ */
+char* strrchr(const char* str, int c) {
+    char target = (char)c;
+    char* last_match = NULL;
+
+    // Scan the entire string from left to right
+    while (*str != '\0') {
+        if (*str == target) {
+            last_match = (char*)str; // Update the pointer every time we see a match
+        }
+        str++;
+    }
+
+    // Special case: If looking for the null terminator, return the pointer to it
+    if (target == '\0') {
+        return (char*)str;
+    }
+
+    // Returns the address of the last match found, or NULL if it never matched
+    return last_match;
+}

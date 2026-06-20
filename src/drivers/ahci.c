@@ -12,25 +12,60 @@ extern void* pmm_alloc_pages(int order);
 
 static ahci_device_t primary_sata_drive;
 
-int ahci_send_command(uint64_t port_base, void* cl_virt, void* table_virt, uint64_t table_phys, 
-                      uint8_t ata_command, uint64_t buffer_phys, uint32_t buffer_size, int is_write) {
+// Helper function to safely stop a port's DMA engines
+static void ahci_stop_port(uint64_t port_base) {
+    printk(LOG_DEBUG, "[AHCI ENGINE] Attempting to stop port engines. PxCMD: 0x%x\n", *(volatile uint32_t*)(port_base + 0x18));
     
-    printk(LOG_DEBUG, "[AHCI CMD] Sending command 0x%x. Buffer Phys: 0x%llx, Size: %u, Write: %d\n", 
-           ata_command, buffer_phys, buffer_size, is_write);
+    *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 0); // Clear ST
+    *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 4); // Clear FRE
 
-    // 1. Ensure the port engine is stopped before modification
-    uint32_t pxcmd = *(volatile uint32_t*)(port_base + 0x18);
-    *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 0);
+    uint32_t timeout = 1000000;
+    while (1) {
+        uint32_t pxcmd = *(volatile uint32_t*)(port_base + 0x18);
+        if (!(pxcmd & (1 << 15)) && !(pxcmd & (1 << 14))) {
+            break;
+        }
+        if (--timeout == 0) {
+            printk(LOG_DEBUG, "[AHCI ENGINE CRITICAL] Timeout waiting for port engines to idle! PxCMD: 0x%x\n", pxcmd);
+            break;
+        }
+    }
+    printk(LOG_DEBUG, "[AHCI ENGINE] Port engines stopped successfully. PxCMD: 0x%x\n", *(volatile uint32_t*)(port_base + 0x18));
+}
+
+// Helper function to safely start a port's DMA engines
+static void ahci_start_port(uint64_t port_base) {
+    printk(LOG_DEBUG, "[AHCI ENGINE] Attempting to start port engines. PxCMD: 0x%x\n", *(volatile uint32_t*)(port_base + 0x18));
     
     uint32_t timeout = 1000000;
-    while(*(volatile uint32_t*)(port_base + 0x18) & (1 << 15)) {
+    while (*(volatile uint32_t*)(port_base + 0x18) & (1 << 15)) {
         if (--timeout == 0) {
-            printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Engine hang! CR bit (bit 15) failed to clear.\n");
-            return 0;
+            printk(LOG_DEBUG, "[AHCI ENGINE CRITICAL] CR bit stuck active before start sequence!\n");
+            break;
         }
     }
 
-    // 2. Clear and set up Command Header Slot 0
+    *(volatile uint32_t*)(port_base + 0x18) |= (1 << 4); // Set FRE
+    *(volatile uint32_t*)(port_base + 0x18) |= (1 << 0); // Set ST
+    
+    printk(LOG_DEBUG, "[AHCI ENGINE] Port engines command started. Current PxCMD: 0x%x\n", *(volatile uint32_t*)(port_base + 0x18));
+}
+
+int ahci_send_command(uint64_t port_base, void* cl_virt, void* table_virt, uint64_t table_phys, 
+                      uint8_t ata_command, uint64_t buffer_phys, uint32_t buffer_size, int is_write) {
+    
+    printk(LOG_DEBUG, "[AHCI VERBOSE CMD] Executing raw command 0x%x. Buffer Phys: 0x%llx, Size: %u\n", 
+           ata_command, buffer_phys, buffer_size);
+
+    uint32_t initial_ci = *(volatile uint32_t*)(port_base + 0x38);
+    uint32_t initial_tfd = *(volatile uint32_t*)(port_base + 0x20);
+    printk(LOG_DEBUG, "[AHCI VERBOSE CMD] Initial registers -> PxCI: 0x%x, PxTFD: 0x%x\n", initial_ci, initial_tfd);
+
+    if (initial_ci & (1 << 0)) {
+        printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Cannot dispatch; slot 0 is completely blocked by hardware.\n");
+        return 0;
+    }
+
     ahci_cmd_header_t* cmd_hdr = (ahci_cmd_header_t*)cl_virt;
     memset(cmd_hdr, 0, sizeof(ahci_cmd_header_t));
     cmd_hdr->cfl = 5;          
@@ -39,44 +74,42 @@ int ahci_send_command(uint64_t port_base, void* cl_virt, void* table_virt, uint6
     cmd_hdr->ctba = (uint32_t)table_phys;
     cmd_hdr->ctbau = (uint32_t)(table_phys >> 32);
 
-    // 3. Populate Command Table FIS layout
     uint8_t* cmd_table = (uint8_t*)table_virt;
     memset(cmd_table, 0, PAGE_SIZE); 
-    
-    cmd_table[0] = 0x27;       // FIS Type: Register H2D
-    cmd_table[1] = 0x80;       // Command bit set
+    cmd_table[0] = 0x27;       
+    cmd_table[1] = 0x80;       
     cmd_table[2] = ata_command;
     cmd_table[7] = 0xA0;       
 
-    // 4. Populate PRDT Entry (Splitting 64-bit physical addresses correctly)
     ahci_prdt_entry_t* prdt = (ahci_prdt_entry_t*)(cmd_table + 0x80);
     prdt->dba = (uint32_t)buffer_phys;
     prdt->dbau = (uint32_t)(buffer_phys >> 32);
     prdt->dbc = buffer_size - 1; 
     prdt->i = 1;               
     
-    printk(LOG_DEBUG, "[AHCI CMD] PRDT written -> DBA: 0x%x, DBAU: 0x%x, DBC: %u\n", prdt->dba, prdt->dbau, prdt->dbc);
+    printk(LOG_DEBUG, "[AHCI VERBOSE CMD] Slot 0 Setup complete. Header -> PRDTL: %d, CTBA: 0x%x\n", cmd_hdr->prdtl, cmd_hdr->ctba);
 
-    // 5. Fire command processing via slot 0
-    *(volatile uint32_t*)(port_base + 0x18) |= (1 << 0); 
+    // Fire the command execution processing bit
     *(volatile uint32_t*)(port_base + 0x38) = (1 << 0);  
 
-    // 6. Monitor processing state loops
-    timeout = 5000000;
+    uint32_t timeout = 5000000;
     while (1) {
         uint32_t ci = *(volatile uint32_t*)(port_base + 0x38);
+        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
+        
         if ((ci & (1 << 0)) == 0) {
+            printk(LOG_DEBUG, "[AHCI VERBOSE CMD] Command complete bit signaled by HBA. Final PxTFD: 0x%x\n", tfd);
             break; 
         }
         
-        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
         if (tfd & (1 << 0)) { 
-            printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Hardware Error reported in PxTFD: 0x%x\n", tfd);
+            printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Hardware execution failure! PxTFD: 0x%x, PxSERR: 0x%x\n", 
+                   tfd, *(volatile uint32_t*)(port_base + 0x30));
             return 0;
         }
 
         if (--timeout == 0) {
-            printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Timeout waiting for command processing! PxTFD: 0x%x, PxCI: 0x%x\n", tfd, ci);
+            printk(LOG_DEBUG, "[AHCI CMD CRITICAL ERROR] Loop Timeout reached! PxCI: 0x%x, PxTFD: 0x%x\n", ci, tfd);
             return 0;
         }
     }
@@ -164,35 +197,14 @@ void init_ahci() {
                 memset(table_virt, 0, PAGE_SIZE);
                 memset(identify_buf_virt, 0, PAGE_SIZE);
 
-                printk(LOG_DEBUG, "[AHCI PORT %d MEMORY]\n"
-                                  "  -> Cmd List:  Virt=0x%llx, Phys=0x%llx\n"
-                                  "  -> FIS Recv:   Virt=0x%llx, Phys=0x%llx\n"
-                                  "  -> Cmd Table:  Virt=0x%llx, Phys=0x%llx\n"
-                                  "  -> ID Buffer:   Virt=0x%llx, Phys=0x%llx\n", 
-                       i, (uint64_t)cl_virt, cl_phys, (uint64_t)fis_virt, fis_phys, 
-                       (uint64_t)table_virt, table_phys, (uint64_t)identify_buf_virt, identify_buf_phys);
+                ahci_stop_port(port_base);
 
-                // Stop the port engines safely
-                *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 0); 
-                *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 4); 
-
-                uint32_t timeout = 1000000;
-                while((*(volatile uint32_t*)(port_base + 0x18) & (1 << 15)) || 
-                      (*(volatile uint32_t*)(port_base + 0x18) & (1 << 14))) {
-                    if (--timeout == 0) break;
-                }
-
-                // Write 64-bit physical addresses across low/high registers split cleanly
                 *(volatile uint32_t*)(port_base + 0x00) = (uint32_t)cl_phys;         
                 *(volatile uint32_t*)(port_base + 0x04) = (uint32_t)(cl_phys >> 32);  
                 *(volatile uint32_t*)(port_base + 0x08) = (uint32_t)fis_phys;         
                 *(volatile uint32_t*)(port_base + 0x0C) = (uint32_t)(fis_phys >> 32);  
 
-                *(volatile uint32_t*)(port_base + 0x18) |= (1 << 4); 
-                *(volatile uint32_t*)(port_base + 0x18) |= (1 << 0); 
-
-                uint32_t final_pxcmd = *(volatile uint32_t*)(port_base + 0x18);
-                printk(LOG_DEBUG, "[AHCI PORT %d] Port Engine Active. PxCMD: 0x%x\n", i, final_pxcmd);
+                ahci_start_port(port_base);
 
                 int cmd_success = ahci_send_command(port_base, cl_virt, table_virt, table_phys, 
                                                     0xEC, identify_buf_phys, 512, 0);
@@ -229,21 +241,17 @@ void init_ahci() {
                 printk(LOG_DEBUG, "[AHCI] Drive Registered: Port %d, Total Sectors: %llu (%d GB).\n", 
                        i, total_sectors, primary_sata_drive.size_gb);
 
-                // --- TEST DUMP: Verify structural reads work out safely via low mapping pointers ---
                 void* test_block_virt = pmm_alloc_pages(0);
                 uint64_t test_block_phys = (uint64_t)test_block_virt - HHDM_OFFSET;
                 memset(test_block_virt, 0, PAGE_SIZE);
 
-                printk(LOG_DEBUG, "[AHCI PORT %d TESTING] Dispatching read verification to LBA 0...\n", i);
                 if (ahci_read_sectors(&primary_sata_drive, 0, 1, test_block_phys)) {
                     uint8_t* raw_bytes = (uint8_t*)test_block_virt;
-                    printk(LOG_DEBUG, "[AHCI PORT %d TESTING] FIRST 8 BYTES OF LBA 0 (Hex Dump): ", i);
+                    printk(LOG_DEBUG, "[AHCI PORT %d TESTING] FIRST 8 BYTES OF LBA 0: ", i);
                     for(int b = 0; b < 8; b++) {
-                        printk(LOG_DEBUG, "%x ", raw_bytes[b]);
+                        printk(LOG_DEBUG, "%02x ", raw_bytes[b]);
                     }
                     printk(LOG_DEBUG, "\n");
-                } else {
-                    printk(LOG_DEBUG, "[AHCI PORT %d TESTING CRITICAL ERROR] Verification read on LBA 0 failed!\n", i);
                 }
                 break; 
             }
@@ -258,23 +266,38 @@ ahci_device_t* get_primary_sata_drive(void) {
 
 int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys) {
     if (!drive || !drive->is_initialized) {
-        printk(LOG_DEBUG, "[AHCI IO ERROR] Read attempt denied. Drive uninitialized.\n");
+        printk(LOG_DEBUG, "[AHCI TRACE READ] Error: Drive unitialized.\n");
         return 0;
     }
 
-    printk(LOG_DEBUG, "[AHCI READ DATA] LBA: %llu, Count: %u, Destination Phys: 0x%llx\n", start_lba, count, buf_phys);
     uint64_t port_base = drive->port_base;
+    uint64_t target_phys = buf_phys;
+    void* bounce_virt = NULL;
+    uint64_t bounce_phys = 0;
 
-    *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 0); 
-    uint32_t timeout = 1000000;
-    while(*(volatile uint32_t*)(port_base + 0x18) & (1 << 15)) {
-        if (--timeout == 0) return 0;
+    printk(LOG_DEBUG, "[AHCI TRACE READ] Request submitted. LBA: %llu, Sectors Count: %u, Orig Phys Address: 0x%llx\n", 
+           start_lba, count, buf_phys);
+
+    // Track pointer alignment status
+    if (buf_phys & 0x3) {
+        printk(LOG_DEBUG, "[AHCI ALIGNMENT WARNING] Physical address 0x%llx is NOT 4-byte aligned! Instantiating safe bounce buffer tracking pipeline...\n", buf_phys);
+        bounce_virt = pmm_alloc_pages(0); 
+        bounce_phys = (uint64_t)bounce_virt - HHDM_OFFSET;
+        target_phys = bounce_phys;
+        memset(bounce_virt, 0, PAGE_SIZE);
+        printk(LOG_DEBUG, "[AHCI ALIGNMENT Pipeline] Bounce buffer generated -> Virt: 0x%llx, Phys: 0x%llx\n", (uint64_t)bounce_virt, bounce_phys);
+    }
+
+    uint32_t current_ci = *(volatile uint32_t*)(port_base + 0x38);
+    if (current_ci & (1 << 0)) {
+        printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Slot 0 is stuck busy before execution! PxCI: 0x%x\n", current_ci);
+        return 0;
     }
 
     ahci_cmd_header_t* cmd_hdr = (ahci_cmd_header_t*)drive->cl_virt;
     memset(cmd_hdr, 0, sizeof(ahci_cmd_header_t));
     cmd_hdr->cfl = 5;          
-    cmd_hdr->w = 0;            
+    cmd_hdr->w = 0;          
     cmd_hdr->prdtl = 1;        
     cmd_hdr->ctba = (uint32_t)drive->table_phys;
     cmd_hdr->ctbau = (uint32_t)(drive->table_phys >> 32);
@@ -282,10 +305,10 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
     uint8_t* cmd_table = (uint8_t*)drive->table_virt;
     memset(cmd_table, 0, PAGE_SIZE);
     
-    cmd_table[0] = 0x27;       // Register H2D FIS
-    cmd_table[1] = 0x80;       // Command Execution
-    cmd_table[2] = 0x25;       // READ DMA EXT Command code
-    cmd_table[7] = 0x40;       // LBA Mode selection parameter
+    cmd_table[0] = 0x27;       
+    cmd_table[1] = 0x80;       
+    cmd_table[2] = 0x25;       // READ DMA EXT
+    cmd_table[7] = 0x40;       
 
     cmd_table[4]  = (uint8_t)start_lba;          
     cmd_table[5]  = (uint8_t)(start_lba >> 8);   
@@ -297,32 +320,55 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
     cmd_table[12] = (uint8_t)count;             
     cmd_table[13] = (uint8_t)(count >> 8);      
 
-    // Clean division of destination address into 32-bit fields
     ahci_prdt_entry_t* prdt = (ahci_prdt_entry_t*)(cmd_table + 0x80);
-    prdt->dba = (uint32_t)buf_phys;
-    prdt->dbau = (uint32_t)(buf_phys >> 32);
+    prdt->dba = (uint32_t)target_phys;
+    prdt->dbau = (uint32_t)(target_phys >> 32);
     prdt->dbc = ((uint32_t)count * 512) - 1;
     prdt->i = 1;
 
-    printk(LOG_DEBUG, "[AHCI READ] Submitting PRDT entry -> DBA: 0x%x, DBAU: 0x%x\n", prdt->dba, prdt->dbau);
+    printk(LOG_DEBUG, "[AHCI TRACE READ] Dispatching to HBA -> target_phys: 0x%llx, size fields: %u bytes\n", target_phys, prdt->dbc + 1);
 
-    *(volatile uint32_t*)(port_base + 0x18) |= (1 << 0); 
+    // Fire processing bit
     *(volatile uint32_t*)(port_base + 0x38) = (1 << 0);  
 
-    timeout = 5000000;
+    uint32_t timeout = 5000000;
     while (1) {
-        if ((*(volatile uint32_t*)(port_base + 0x38) & (1 << 0)) == 0) {
+        uint32_t ci = *(volatile uint32_t*)(port_base + 0x38);
+        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
+        if ((ci & (1 << 0)) == 0) {
             break; 
         }
-        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
         if (tfd & (1 << 0)) { 
-            printk(LOG_DEBUG, "[AHCI READ CRITICAL ERROR] Hardware Error! TFD State: 0x%x\n", tfd);
+            printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Hardware device failure flag! PxTFD: 0x%x\n", tfd);
             return 0;
         }
         if (--timeout == 0) {
-            printk(LOG_DEBUG, "[AHCI READ CRITICAL ERROR] Transaction timed out!\n");
+            printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Transaction timed out waiting for bit loop finish! PxCI: 0x%x, PxTFD: 0x%x\n", ci, tfd);
             return 0;
         }
+    }
+
+    // Inspect the actual memory buffer contents immediately post-hardware execution loop
+    if (bounce_virt != NULL) {
+        uint8_t* b_bytes = (uint8_t*)bounce_virt;
+        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside bounce buffer (first 16 bytes): ");
+        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", b_bytes[x]);
+        printk(LOG_DEBUG, "\n");
+
+        void* dest_virt = (void*)(buf_phys + HHDM_OFFSET);
+        printk(LOG_DEBUG, "[AHCI TRACE READ ALIGNMENT] Relocating data buffer via memcpy to unaligned target virtual pointer: 0x%llx\n", (uint64_t)dest_virt);
+        memcpy(dest_virt, bounce_virt, (uint32_t)count * 512);
+
+        uint8_t* dest_bytes = (uint8_t*)dest_virt;
+        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside final unaligned target memory destination: ");
+        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", dest_bytes[x]);
+        printk(LOG_DEBUG, "\n");
+    } else {
+        void* direct_virt = (void*)(buf_phys + HHDM_OFFSET);
+        uint8_t* d_bytes = (uint8_t*)direct_virt;
+        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside direct pointer address 0x%llx (first 16 bytes): ", (uint64_t)direct_virt);
+        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", d_bytes[x]);
+        printk(LOG_DEBUG, "\n");
     }
 
     return 1;
@@ -330,17 +376,29 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
 
 int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys) {
     if (!drive || !drive->is_initialized) {
-        printk(LOG_DEBUG, "[AHCI IO ERROR] Write attempt denied. Drive uninitialized.\n");
+        printk(LOG_DEBUG, "[AHCI TRACE WRITE] Error: Drive uninitialized.\n");
         return 0;
     }
 
-    printk(LOG_DEBUG, "[AHCI WRITE DATA] LBA: %llu, Count: %u, Source Phys: 0x%llx\n", start_lba, count, buf_phys);
     uint64_t port_base = drive->port_base;
+    uint64_t target_phys = buf_phys;
+    void* bounce_virt = NULL;
+    uint64_t bounce_phys = 0;
 
-    *(volatile uint32_t*)(port_base + 0x18) &= ~(1 << 0); 
-    uint32_t timeout = 1000000;
-    while(*(volatile uint32_t*)(port_base + 0x18) & (1 << 15)) {
-        if (--timeout == 0) return 0;
+    printk(LOG_DEBUG, "[AHCI TRACE WRITE] Request submitted. LBA: %llu, Sectors: %u, Orig Phys Address: 0x%llx\n", start_lba, count, buf_phys);
+
+    if (buf_phys & 0x3) {
+        printk(LOG_DEBUG, "[AHCI ALIGNMENT WARNING] Physical write address 0x%llx is NOT 4-byte aligned! Generating bounce tracking configuration...\n", buf_phys);
+        bounce_virt = pmm_alloc_pages(0);
+        bounce_phys = (uint64_t)bounce_virt - HHDM_OFFSET;
+        void* src_virt = (void*)(buf_phys + HHDM_OFFSET);
+        memcpy(bounce_virt, src_virt, (uint32_t)count * 512);
+        target_phys = bounce_phys;
+    }
+
+    if (*(volatile uint32_t*)(port_base + 0x38) & (1 << 0)) {
+        printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Port engine active slot 0 busy block.\n");
+        return 0;
     }
 
     ahci_cmd_header_t* cmd_hdr = (ahci_cmd_header_t*)drive->cl_virt;
@@ -356,7 +414,7 @@ int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count,
     
     cmd_table[0] = 0x27;       
     cmd_table[1] = 0x80;       
-    cmd_table[2] = 0x35;       // WRITE DMA EXT Command code
+    cmd_table[2] = 0x35;       // WRITE DMA EXT
     cmd_table[7] = 0x40;       
 
     cmd_table[4]  = (uint8_t)start_lba;          
@@ -370,29 +428,30 @@ int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count,
     cmd_table[13] = (uint8_t)(count >> 8);      
 
     ahci_prdt_entry_t* prdt = (ahci_prdt_entry_t*)(cmd_table + 0x80);
-    prdt->dba = (uint32_t)buf_phys;
-    prdt->dbau = (uint32_t)(buf_phys >> 32);
+    prdt->dba = (uint32_t)target_phys;
+    prdt->dbau = (uint32_t)(target_phys >> 32);
     prdt->dbc = ((uint32_t)count * 512) - 1;
     prdt->i = 1; 
 
-    *(volatile uint32_t*)(port_base + 0x18) |= (1 << 0); 
     *(volatile uint32_t*)(port_base + 0x38) = (1 << 0);  
 
-    timeout = 5000000;
+    uint32_t timeout = 5000000;
     while (1) {
-        if ((*(volatile uint32_t*)(port_base + 0x38) & (1 << 0)) == 0) {
+        uint32_t ci = *(volatile uint32_t*)(port_base + 0x38);
+        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
+        if ((ci & (1 << 0)) == 0) {
             break; 
         }
-        uint32_t tfd = *(volatile uint32_t*)(port_base + 0x20);
         if (tfd & (1 << 0)) { 
-            printk(LOG_DEBUG, "[AHCI WRITE CRITICAL ERROR] Hardware Error! TFD State: 0x%x\n", tfd);
+            printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Hardware Error! TFD State: 0x%x\n", tfd);
             return 0;
         }
         if (--timeout == 0) {
-            printk(LOG_DEBUG, "[AHCI WRITE CRITICAL ERROR] Transaction timed out!\n");
+            printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Transaction timed out!\n");
             return 0;
         }
     }
 
+    printk(LOG_DEBUG, "[AHCI TRACE WRITE] Sector output transaction confirmed completed by hardware.\n");
     return 1;
 }
