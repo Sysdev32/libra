@@ -7,12 +7,22 @@
 #define KERNEL_STACK_SIZE 4096
 #define USER_STACK_SIZE 4096
 #define HHDM_OFFSET 0xffff800000000000ULL
+#define MAX_MSG_PAYLOAD 128  // Maximum bytes per single message
+#define MAX_PROCESS_MSGS 16  // Maximum pending messages a process can hold
 
+// The message structure stored in the kernel
+typedef struct {
+    uint32_t sender_pid;
+    uint32_t payload_size;
+    uint8_t  data[MAX_MSG_PAYLOAD];
+} kernel_msg_t;
 typedef enum {
     TASK_STATE_DEAD = 0,
     TASK_STATE_READY,
     TASK_STATE_RUNNING,
-    TASK_STATE_ZOMBIE
+    TASK_STATE_ZOMBIE,
+    TASK_STATE_BLOCKED_SEND,    // Added: Waiting for space in a target queue
+    TASK_STATE_BLOCKED_RECEIVE
 } task_state_t;
 
 // Task Control Block (TCB)
@@ -22,6 +32,10 @@ struct task {
     task_state_t state;         
     uint8_t fpu_state[512] __attribute__((aligned(16)));
     uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16))); 
+    kernel_msg_t msg_queue[MAX_PROCESS_MSGS];
+    int msg_head;
+    int msg_tail;
+    int msg_count;
 };
 
 // Task State Segment (TSS) layout for x86_64
@@ -95,6 +109,9 @@ int create_kernel_task(void (*entry_point)(void)) {
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_STATE_DEAD) {
             task_table[i].user_rsp = 0;
+            task_table[i].msg_head = 0;
+            task_table[i].msg_tail = 0;
+            task_table[i].msg_count = 0;
             init_fpu_context((struct task *)&task_table[i]);
 
             uint64_t *kernel_stack_top = (uint64_t *)((uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE] & ~0xFULL);
@@ -334,4 +351,107 @@ uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
 }
 int getpid() {
     return current_task_id;
+}/**
+ * BLOCKING SEND
+ * If the target queue is full, this task sleeps until space is available.
+ */
+int ipc_send(uint32_t target_pid, const void *buf, uint32_t size) {
+    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == current_task_id) {
+        return -1;
+    }
+
+    while (1) {
+        uint64_t flags = irq_save();
+        volatile struct task *target = &task_table[target_pid];
+
+        // If target died while we were waiting, abort
+        if (target->state == TASK_STATE_DEAD || target->state == TASK_STATE_ZOMBIE) {
+            irq_restore(flags);
+            return -1;
+        }
+
+        // If there is room in the target's queue, perform the write
+        if (target->msg_count < MAX_PROCESS_MSGS) {
+            int tail = target->msg_tail;
+            kernel_msg_t *msg = (kernel_msg_t *)&target->msg_queue[tail];
+            
+            msg->sender_pid = current_task_id;
+            msg->payload_size = size;
+            memcpy(msg->data, buf, size);
+
+            target->msg_tail = (tail + 1) % MAX_PROCESS_MSGS;
+            target->msg_count++;
+
+            // WAKE UP TARGET: If the target was blocked waiting for a message, make it ready
+            if (target->state == TASK_STATE_BLOCKED_RECEIVE) {
+                target->state = TASK_STATE_READY;
+            }
+
+            irq_restore(flags);
+            return 0; // Success
+        }
+
+        // QUEUE FULL: Block current task and yield CPU
+        task_table[current_task_id].state = TASK_STATE_BLOCKED_SEND;
+        
+        // Pass the current stack pointer to the scheduler so it can save our place.
+        // We will wake up exactly right here when someone reads from the target queue.
+        uint64_t current_rsp;
+        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
+        
+        irq_restore(flags);
+        schedule_preemptive(current_rsp); 
+    }
+}
+
+/**
+ * BLOCKING RECEIVE
+ * If the queue is empty, this task sleeps until a message arrives.
+ */
+int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
+    while (1) {
+        uint64_t flags = irq_save();
+        volatile struct task *current = &task_table[current_task_id];
+
+        // If there is a message, consume it
+        if (current->msg_count > 0) {
+            int head = current->msg_head;
+            kernel_msg_t *msg = (kernel_msg_t *)&current->msg_queue[head];
+
+            uint32_t bytes_to_copy = msg->payload_size;
+            if (bytes_to_copy > max_size) {
+                bytes_to_copy = max_size;
+            }
+
+            memcpy(buf, msg->data, bytes_to_copy);
+            if (out_sender_pid) {
+                *out_sender_pid = msg->sender_pid;
+            }
+
+            current->msg_head = (head + 1) % MAX_PROCESS_MSGS;
+            current->msg_count--;
+
+            // WAKE UP SENDERS: Check if any task was blocked trying to send to us
+            for (int i = 0; i < MAX_TASKS; i++) {
+                // If a task is blocked trying to send to this exact process, wake it up
+                if (task_table[i].state == TASK_STATE_BLOCKED_SEND) {
+                    // Note: In a complete implementation, you'd check if 'i' was targeting 'current_task_id'
+                    // For a simple loop, waking up any blocked sender to re-check their target is safe.
+                    task_table[i].state = TASK_STATE_READY;
+                }
+            }
+
+            irq_restore(flags);
+            return bytes_to_copy;
+        }
+
+        // QUEUE EMPTY: Block current task and yield CPU
+        current->state = TASK_STATE_BLOCKED_RECEIVE;
+
+        uint64_t current_rsp;
+        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
+
+        irq_restore(flags);
+        schedule_preemptive(current_rsp);
+    }
 }

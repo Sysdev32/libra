@@ -148,6 +148,15 @@ void keyboard_init(void)
     // optional: clear buffer
     inb(0x60);
 }
+typedef struct {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+    int rect_x;
+    int rect_y;
+    int rect_width;
+    int rect_height;
+} packet;
 static void main_kthread(void) {
     printk(LOG_TRACE, "main kthread started.\n");
     char hi[3] = "hi";
@@ -244,8 +253,16 @@ static void main_kthread(void) {
     
     // FIX: Pass the raw physical frame pointer.
     // create_user_task will automatically apply HHDM_OFFSET to initialize argc and argv correctly.
-    create_user_task((void *)user_code_vma, (void *)safe_stack_phys_base);
-    
+    int pid = create_user_task((void *)user_code_vma, (void *)safe_stack_phys_base);
+    packet data;
+    data.r = 255;
+    data.g = 0;
+    data.b = 255;
+    data.rect_width = 1920;
+    data.rect_height = 1080;
+    data.rect_x = 0;
+    data.rect_y = 0;
+    ipc_send(pid, &data, sizeof(data));
     // Idle loop while scheduler interrupts switch to the user task
     for (;;) {
         asm volatile("sti; hlt");
