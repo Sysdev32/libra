@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <stdint.h>
 #include <stddef.h>
+#include <string.h>
 
 #define MAX_TASKS 16
 #define KERNEL_STACK_SIZE 4096
@@ -19,6 +20,7 @@ struct task {
     uint64_t rsp;               // Saved kernel stack pointer 
     uint64_t user_rsp;          // Saved userspace stack pointer (0 for kthreads)
     task_state_t state;         
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
     uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16))); 
 };
 
@@ -41,6 +43,26 @@ extern void pit_init(void);
 // Global volatile scheduler tracking structures
 volatile struct task task_table[MAX_TASKS];
 volatile int current_task_id = 0;
+static const uint32_t default_mxcsr = 0x1f80;
+
+static void init_fpu_context(struct task *task) {
+    uint32_t mxcsr = default_mxcsr;
+
+    memset((void *)task->fpu_state, 0, sizeof(task->fpu_state));
+    asm volatile("fninit" ::: "memory");
+    asm volatile("ldmxcsr %0" :: "m"(mxcsr) : "memory");
+    asm volatile("fxsave64 %0" : "=m"(task->fpu_state) :: "memory");
+}
+
+void fpu_context_save(void) {
+    struct task *task = (struct task *)&task_table[current_task_id];
+    asm volatile("fxsave64 %0" : "=m"(task->fpu_state) :: "memory");
+}
+
+void fpu_context_restore(void) {
+    struct task *task = (struct task *)&task_table[current_task_id];
+    asm volatile("fxrstor64 %0" :: "m"(task->fpu_state) : "memory");
+}
 
 static uint64_t irq_save(void) {
     uint64_t flags;
@@ -73,6 +95,7 @@ int create_kernel_task(void (*entry_point)(void)) {
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_STATE_DEAD) {
             task_table[i].user_rsp = 0;
+            init_fpu_context((struct task *)&task_table[i]);
 
             uint64_t *kernel_stack_top = (uint64_t *)((uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE] & ~0xFULL);
 
@@ -129,6 +152,7 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
 
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_STATE_DEAD) {
+            init_fpu_context((struct task *)&task_table[i]);
             
             uint64_t user_stack_vma_top = 0x600000 + USER_STACK_SIZE;
             uint64_t *user_virt_stack_top = (uint64_t *)(user_stack_vma_top & ~0xFULL);
@@ -138,11 +162,18 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
                 raw_phys_stack -= HHDM_OFFSET;
             }
 
-            uint64_t *kernel_hhdm_stack_top = (uint64_t *)(raw_phys_stack + USER_STACK_SIZE + HHDM_OFFSET);
-            kernel_hhdm_stack_top = (uint64_t *)((uintptr_t)kernel_hhdm_stack_top & ~0xFULL);
+            uint64_t *user_stack_hhdm_top = (uint64_t *)(raw_phys_stack + USER_STACK_SIZE + HHDM_OFFSET);
+            user_stack_hhdm_top = (uint64_t *)((uintptr_t)user_stack_hhdm_top & ~0xFULL);
 
-            kernel_hhdm_stack_top[-1] = (uint64_t)userspace_exit_handler;
-            task_table[i].user_rsp = (uint64_t)&user_virt_stack_top[-1];
+            /*
+             * The user image starts in crt0.asm, which reads argc/argv from the
+             * initial stack and then CALLs main(). That means _start must enter
+             * with a 16-byte aligned RSP, so main itself lands on the standard
+             * SysV ABI boundary.
+             */
+            user_stack_hhdm_top[-2] = 0; // argc
+            user_stack_hhdm_top[-1] = 0; // argv
+            task_table[i].user_rsp = (uint64_t)&user_virt_stack_top[-2];
 
             uintptr_t k_stack_raw = (uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE];
             uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL); 
@@ -240,6 +271,7 @@ void init_scheduler(void) {
         task_table[i].state = TASK_STATE_DEAD;
         task_table[i].rsp = 0;
         task_table[i].user_rsp = 0;
+        init_fpu_context((struct task *)&task_table[i]);
     }
 
     task_table[0].state = TASK_STATE_RUNNING;

@@ -226,6 +226,20 @@ static void main_kthread(void) {
         for(;;);
     }
 
+    /*
+     * User-space sbrk() expects a heap starting immediately after the loaded
+     * image. Newlib-backed helpers like printf may touch this region on the
+     * very first call, so map a small zeroed heap window up front.
+     */
+    const int user_heap_pages = 16;
+    uint64_t user_heap_vma = user_code_vma + ((uint64_t)page_index * PAGE_SIZE);
+    for (int heap_page = 0; heap_page < user_heap_pages; heap_page++) {
+        uint64_t heap_phys = safe_code_phys_base + ((uint64_t)(page_index + heap_page) * PAGE_SIZE);
+        void *heap_hhdm_ptr = (void *)(heap_phys + HHDM_OFFSET);
+        memset(heap_hhdm_ptr, 0, PAGE_SIZE);
+        vmm_map_page(user_pml4, user_heap_vma + ((uint64_t)heap_page * PAGE_SIZE), heap_phys, user_flags);
+    }
+
     // ==========================================
     // MAP STACK TO SAFE PHYSICAL AREA
     // ==========================================
@@ -233,10 +247,9 @@ static void main_kthread(void) {
     void *stack_hhdm_ptr = (void *)(safe_stack_phys_base + HHDM_OFFSET);
     memset(stack_hhdm_ptr, 0, PAGE_SIZE);
     vmm_map_page(user_pml4, user_stack_vma, safe_stack_phys_base, user_flags);
-    void *user_rsp = (void *)(user_stack_vma + PAGE_SIZE);
     
     // Fire off your context switch with scheduler interrupts active
-    create_user_task((void *)0x2000000, user_rsp);
+    create_user_task((void *)0x2000000, stack_hhdm_ptr);
     
     for (;;) {
         asm volatile("sti; hlt");
@@ -313,7 +326,7 @@ void _start(void) {
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         hlt();
     }
-    init_sse();
+    
     gdt_init();
     idt_init();
     uint64_t total_usable_memory = 0;
@@ -380,6 +393,8 @@ void _start(void) {
         printk(LOG_ERROR, "uacpi_namespace_load: %s", uacpi_status_to_string(ret));
         for(;;);
     }
+    init_sse();
+    init_scheduler();
 
     /*
      * Initialize the namespace. This calls all necessary _STA/_INI AML methods,

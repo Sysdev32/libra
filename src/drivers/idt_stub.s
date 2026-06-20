@@ -6,6 +6,8 @@ global intr
 
 extern exception_handler_c
 extern intrhandler
+extern fpu_context_save
+extern fpu_context_restore
 
 section .text
 
@@ -110,8 +112,13 @@ interrupt_common_stub:
     push rbx
     push rax
 
+    call fpu_context_save
     mov rdi, rsp         ; Pass the pointer to this saved state as the 1st C argument
     call intrhandler     ; Run our timer, hardware routing, or system calls
+
+    mov rbx, rax         ; Preserve the handler return value across the FPU restore
+    call fpu_context_restore
+    mov rax, rbx
 
     ; Context Switch Check: If the C handler returns 0, keep the current task
     cmp rax, 0
@@ -161,8 +168,13 @@ exception_common_stub:
     push rbx
     push rax
 
+    call fpu_context_save
     mov rdi, rsp
     call exception_handler_c
+
+    mov rbx, rax
+    call fpu_context_restore
+    mov rax, rbx
 
     ; Exceptions shouldn't shift scheduling blocks under regular conditions,
     ; but if a fatal recovery frame returns a new address, switch stacks here.

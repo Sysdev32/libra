@@ -302,8 +302,6 @@ void ioapic(struct acpi_table_madt* madt) {
     // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
     ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
 
-    // 5. Initialize the scheduler structures (Sets up Task 0 as RUNNING)
-    init_scheduler();
 }
 typedef struct {
     uint64_t key;
@@ -445,7 +443,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
     switch (regs->rax) {
         case 0: // vfs_read
-            if (args->arg <= 2) {
+            if (args->arg[0] <= 2) {
                 regs->rax = 0; 
             } else {
                 regs->rax = vfs_read(args->arg[0] - 2, (void*)args->arg[1], args->arg[2], args->arg[3]);
@@ -453,12 +451,12 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
 
         case 1: // vfs_write_file
-            if (args->arg > 2) {
+            if (args->arg[0] > 2) {
                 regs->rax = vfs_write_file(args->arg[0] - 2, (void*)args->arg[1], args->arg[2]);
             } 
-            else if (args->arg == 1 || args->arg == 2) {
-                char *user_str = (char*)args->arg[0];
-                unsigned long length = args->arg[1];
+            else if (args->arg[0] == 1 || args->arg[0] == 2) {
+                char *user_str = (char*)args->arg[1];
+                unsigned long length = args->arg[2];
 
                 for (unsigned long i = 0; i < length; i++) {
                     printk(LOG_NONE, "%c", user_str[i]);
@@ -486,7 +484,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
 
         case 5: // vfs_free_fd (_close)
-            if (args->arg <= 2) {
+            if (args->arg[0] <= 2) {
                 regs->rax = 0; 
             } else {
                 regs->rax = vfs_free_fd(args->arg[0] - 2);
@@ -494,7 +492,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
 
         case 6: // vfs_move_file
-            if (args->arg <= 2) {
+            if (args->arg[0] <= 2) {
                 regs->rax = -1; 
             } else {
                 regs->rax = vfs_move_file(args->arg[0] - 2, (const char*)args->arg[1]);
