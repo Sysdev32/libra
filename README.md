@@ -44,19 +44,18 @@ Run `make clean`
 | VMM | Complete | Higher-half mapping |
 | Scheduler | Complete | Round-robin preemptive |
 | uACPI | Complete | Namespace and initialization working |
-| PCI | Not Started | |
 | SMP | Not Started | |
 | Filesystem | Complete | VFS Implemented |
 | Userspace | WIP | Crashes on load with a #DE fault |
-| AHCI | Not Started | |
-| PCIe | Not Started | |
+| AHCI | Complete | |
+| GPT | Complete | |
+| PCI | Complete | |
 | APIC | Complete | Fully working with core selection |
 | PIT | Complete | Fully working at 100hz with a sleep function |
 | HPET | Not Started | |
 | Syscalls | WIP | Complete but userspace doesn't work yet |
 | User Security | WIP | IPC and buffer safety not complete yet |
 | Accelerated Graphics Card | Not Started | |
-
 ## Release Scheme
 
 - bca / bc# → broken builds (unstable / may not boot) 15-20 iterations max
