@@ -92,12 +92,13 @@ DEPS := $(patsubst $(SRC_DIR)/%.c, $(DEP_DIR)/%.d, $(SRCS_C))
 
 KERNEL := $(ISO_DIR)/kernel.elf
 ISO    := custom_os.iso
+INITRAMFS := $(ISO_DIR)/initramfs.cpio
 
 # -------------------------
 # Targets
 # -------------------------
 
-.PHONY: all clean iso run dirs
+.PHONY: all clean iso run dirs initramfs
 
 all: $(KERNEL)
 
@@ -148,7 +149,11 @@ dirs:
 # ISO Build (UEFI)
 # -------------------------
 
-iso: $(KERNEL)
+initramfs: | dirs
+	@echo "[CPIO] Packing initramfs"
+	@cd rootfs && find . -type f | cpio -o -H newc --quiet > ../$(INITRAMFS)
+
+iso: $(KERNEL) initramfs
 	@echo "[ISO] building..."
 
 	@if [ ! -f $(ISO_DIR)/limine.conf ]; then \

@@ -3,6 +3,27 @@
 #include <string.h>
 #include <stdarg.h>
 struct flanterm_context *ctx;
+
+static uint64_t printk_irq_save(void) {
+    uint64_t flags;
+    asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
+    return flags;
+}
+
+static void printk_irq_restore(uint64_t flags) {
+    if (flags & (1ULL << 9)) {
+        asm volatile("sti" ::: "memory");
+    }
+}
+
+static void serial_write_char(char ch) {
+    uint8_t status;
+    do {
+        asm volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
+    } while ((status & 0x20) == 0);
+    asm volatile("outb %0, %1" :: "a"((uint8_t)ch), "Nd"((uint16_t)0x3F8));
+}
+
 void initConsole(struct flanterm_context *ft_ctx) {
     ctx = ft_ctx;
 }
@@ -241,6 +262,7 @@ int vsprintf(char *buf, const char *fmt, va_list args)
 void printk(LogType type, const char *fmt, ...) {
     char buf[1024];
     va_list args;
+    uint64_t irq_flags = printk_irq_save();
     
     va_start(args, fmt);
     int len = vsprintf(buf, fmt, args);
@@ -250,26 +272,16 @@ void printk(LogType type, const char *fmt, ...) {
     if (ctx == NULL) {
         for (int i = 0; i < len; i++) {
             if (buf[i] == '\n') {
-                // Send CR before LF
-                uint8_t status;
-                do {
-                    __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
-                } while ((status & 0x20) == 0);
-                __asm__ volatile("outb %0, %1" :: "a"((uint8_t)'\r'), "Nd"((uint16_t)0x3F8));
+                serial_write_char('\r');
             }
-
-            uint8_t status;
-            do {
-                __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
-            } while ((status & 0x20) == 0);
-            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)buf[i]), "Nd"((uint16_t)0x3F8));
+            serial_write_char(buf[i]);
         }
+        printk_irq_restore(irq_flags);
         return;
     }
     int color = 0;
     bool bright = true;
-    char *text = kcalloc(sizeof(char), 11);
-    text = " info   ";
+    const char *text = " info   ";
     if (type == LOG_DEBUG) {
         color = 4;
         bright = false; 
@@ -298,25 +310,19 @@ void printk(LogType type, const char *fmt, ...) {
     flanterm_set_text_bg(ctx, color, bright);
     flanterm_write(ctx, text, strlen(text));
     flanterm_set_text_bg(ctx, 0, false);
+    if (type != LOG_NONE) {
     flanterm_write(ctx, " ", 1);
+    }
     // Otherwise write through flanterm and also mirror to serial for physical COM1
     for (int i = 0; i < len; i++) {
         
         if (buf[i] == '\n') {
             flanterm_write(ctx, "\r", 1);
-            uint8_t status;
-            do {
-                __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
-            } while ((status & 0x20) == 0);
-            __asm__ volatile("outb %0, %1" :: "a"((uint8_t)'\r'), "Nd"((uint16_t)0x3F8));
+            serial_write_char('\r');
         }
         
         flanterm_write(ctx, &buf[i], 1);
-
-        uint8_t status;
-        do {
-            __asm__ volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
-        } while ((status & 0x20) == 0);
-        __asm__ volatile("outb %0, %1" :: "a"((uint8_t)buf[i]), "Nd"((uint16_t)0x3F8));
+        serial_write_char(buf[i]);
     }
+    printk_irq_restore(irq_flags);
 }

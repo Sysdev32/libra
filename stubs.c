@@ -1,5 +1,6 @@
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <stdint.h>
 #include <errno.h>
 
 #ifndef NULL
@@ -36,14 +37,25 @@ caddr_t sbrk(int incr) {
     return (caddr_t)prev_heap_end; // Return the start of the allocated segment
 }
 
+typedef struct {
+    uint64_t arg[8];
+} syscall_args_t;
+
 // --- System Call Routing to Kernel (No Case 9 needed) ---
 static inline long user_syscall3(long num, long a1, long a2, long a3) {
+    syscall_args_t args = {
+        .arg = {
+            (uint64_t)a1,
+            (uint64_t)a2,
+            (uint64_t)a3,
+        },
+    };
     long ret;
     __asm__ volatile (
-        "syscall"
+        "int $0x80"
         : "=a" (ret)
-        : "a" (num), "D" (a1), "S" (a2), "d" (a3)
-        : "rcx", "r11", "memory"
+        : "a" (num), "b" (&args)
+        : "cc", "memory"
     );
     return ret;
 }
