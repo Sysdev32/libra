@@ -688,6 +688,14 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             syscall_exit_handler(get_rsp(), args->arg[0]);
             break;
         }
+        case 13: {
+            ipc_recv((void*)args->arg[0], args->arg[1], (uint32_t*)args->arg[2]);
+            break;
+        }
+        case 14: {
+            ipc_send(args->arg[1], (void*)args->arg[2], args->arg[3]);
+            break;
+        }
         default: 
             regs->rax = -1; // Unknown syscall ID
             break;

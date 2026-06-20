@@ -9,3 +9,5 @@ void start_scheduler(void);
 void fpu_context_save(void);
 void fpu_context_restore(void);
 uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status);
+int ipc_send(uint32_t target_pid, const void *buf, uint32_t size);
+int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid);
