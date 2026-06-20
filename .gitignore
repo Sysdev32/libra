@@ -7,3 +7,5 @@ rename_tag.sh
 sign.py
 sign.bin
 check.py
+./.venv
+./disk.img

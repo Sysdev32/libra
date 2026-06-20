@@ -19,6 +19,7 @@
 #include <string.h>
 #include <uacpi/tables.h>
 #include <config.h>
+#include <drivers/fat32.h>
 #include <state.h>
 #include <uacpi/resources.h>
 #include <uacpi/internal/namespace.h>
@@ -419,6 +420,8 @@ void _start(void) {
     }
     init_ahci();
     gpt_parse_partitions(get_primary_sata_drive());
+    fat32_fs_t efi;
+    fat32_init(get_volume(0), &efi);
     if (create_kernel_task(main_kthread) < 0) {
         printk(LOG_ERROR, "Failed to create main kthread.\n");
         hlt();
