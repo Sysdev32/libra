@@ -2,8 +2,10 @@
 #include <drivers/fb.h>
 #include <string.h>
 #include <stdarg.h>
-struct flanterm_context *ctx;
 
+struct flanterm_context *ctx;
+struct limine_framebuffer* fb;
+bool grad = false;
 static uint64_t printk_irq_save(void) {
     uint64_t flags;
     asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
@@ -24,8 +26,9 @@ static void serial_write_char(char ch) {
     asm volatile("outb %0, %1" :: "a"((uint8_t)ch), "Nd"((uint16_t)0x3F8));
 }
 
-void initConsole(struct flanterm_context *ft_ctx) {
+void initConsole(struct flanterm_context *ft_ctx, struct limine_framebuffer* frb) {
     ctx = ft_ctx;
+    fb = frb;
 }
 static char *itoa(uint64_t value, char *str, int base, int uppercase) {
     char *rc = str;
@@ -260,6 +263,7 @@ int vsprintf(char *buf, const char *fmt, va_list args)
     return (int)(p - buf);
 }
 void printk(LogType type, const char *fmt, ...) {
+    if (!grad) {
     char buf[1024];
     va_list args;
     uint64_t irq_flags = printk_irq_save();
@@ -325,4 +329,55 @@ void printk(LogType type, const char *fmt, ...) {
         serial_write_char(buf[i]);
     }
     printk_irq_restore(irq_flags);
+    }
+}
+
+void draw_rect(int rect_x, int rect_y, int rect_width, int rect_height, 
+                   uint8_t r, uint8_t g, uint8_t b) 
+{
+    // Safety check for null global pointer or unallocated memory
+    if (!fb || !fb->address) return;
+
+    // Boundary Clipping
+    int x1 = rect_x;
+    int y1 = rect_y;
+    int x2 = rect_x + rect_width;
+    int y2 = rect_y + rect_height;
+
+    if (x1 < 0) x1 = 0;
+    if (y1 < 0) y1 = 0;
+    if (x2 > fb->width)  x2 = fb->width;
+    if (y2 > fb->height) y2 = fb->height;
+
+    if (x1 >= x2 || y1 >= y2) return;
+
+    int bytes_per_pixel = fb->bpp / 8;
+    uint8_t* fb_bytes = (uint8_t*)fb->address;
+
+    // Render loop
+    for (int y = y1; y < y2; y++) {
+        // Find starting memory position for this row
+        uint8_t* row_ptr = fb_bytes + (y * fb->pitch) + (x1 * bytes_per_pixel);
+
+        for (int x = x1; x < x2; x++) {
+            if (bytes_per_pixel == 3) {
+                // 24-bit RGB packed layout
+                row_ptr[0] = r;
+                row_ptr[1] = g;
+                row_ptr[2] = b;
+            } 
+            else if (bytes_per_pixel == 4) {
+                // 32-bit RGBA layout (Alpha channel defaults to fully opaque)
+                row_ptr[0] = r;
+                row_ptr[1] = g;
+                row_ptr[2] = b;
+                row_ptr[3] = 255; 
+            }
+            row_ptr += bytes_per_pixel;
+        }
+    }
+}
+void graduate() {
+    grad = true;
+    draw_rect(0, 0, fb->width, fb->height, 0, 0, 0);
 }
