@@ -1,5 +1,13 @@
 #pragma once
 #include <stdint.h>
+#define PTE_WRITABLE (1ULL << 1)
+#define HHDM_OFFSET  0xffff800000000000ULL
+#define PAGE_SIZE 4096
+
+// Signature constants defined by the AHCI/SATA specifications
+#define AHCI_SIG_SATA   0x00000101  // Standard SATA Hard Drive/SSD
+#define AHCI_SIG_ATAPI  0xEB140101  // ATAPI Optical Drive (CD/DVD)
+
 // Structure used to pass handle pointers to other kernel components
 typedef struct {
     uint64_t port_base;         // MMIO Address of this specific port
@@ -42,3 +50,4 @@ typedef struct {
 int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
 int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
 void init_ahci();
+ahci_device_t* get_primary_sata_drive(void);
