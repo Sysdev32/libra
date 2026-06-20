@@ -4,3 +4,6 @@ binutils-2.46.1
 gcc-13.2.0
 build
 rename_tag.sh
+sign.py
+sign.bin
+check.py

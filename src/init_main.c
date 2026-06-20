@@ -23,7 +23,7 @@
 #include <uacpi/internal/stdlib.h>
 #include <uacpi/types.h>
 #include <errno.h>
-
+#include <drivers/pci.h>
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -150,7 +150,6 @@ static void main_kthread(void) {
     char hi[3] = "hi";
     int fd_test = vfs_create_file(hi, "main.txt", 3);
     printk(LOG_DEBUG, "Test File FD (main.py): %d\n", fd_test);
-    
     // FIX: Create an isolated, sandboxed user address space context.
     // This routine clones kernel space (entries 256-511) and switches CR3 automatically.
     page_table_t *user_pml4 = vmm_create_address_space();
@@ -408,6 +407,12 @@ void _start(void) {
     }
     asm volatile ("sti");
     keyboard_init();
+    pci_device_t* buffer = kcalloc(256, sizeof(pci_device_t));
+    uint32_t count = 0;
+    pci_scan_bus(buffer, 256, &count);
+    for (int i=0; i<count; i++) {
+        printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", buffer[i].bus, buffer[i].device, buffer[i].function, buffer[i].class_code, buffer[i].subclass, buffer[i].device_id, buffer[i].vendor_id);
+    }
     
     if (create_kernel_task(main_kthread) < 0) {
         printk(LOG_ERROR, "Failed to create main kthread.\n");
