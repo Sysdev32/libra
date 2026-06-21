@@ -1,53 +1,60 @@
+// user.c
 #include <stdio.h>
 #include <stdlib.h>
-#include <carrera.h>
 #include <string.h>
-static const char test_keymap[128] = {
-    [0x10] = 'q', [0x11] = 'w', [0x12] = 'e', [0x13] = 'r', [0x14] = 't', [0x15] = 'y',
-    [0x1e] = 'a', [0x1f] = 's', [0x20] = 'd', [0x21] = 'f', [0x22] = 'g', [0x23] = 'h',
-    [0x2c] = 'z', [0x2d] = 'x', [0x2e] = 'c', [0x2f] = 'v', [0x30] = 'b', [0x39] = ' '
-};
-#include <stdio.h>
+#include <errno.h>
+extern int start_micropython_task(const char* code);
 
-void read_file_example() {
-    FILE *f = fopen("mytxt", "r");
-    if (!f) return;
+#define CHUNK_SIZE 512
 
-    // This gets the Newlib file descriptor (e.g., 3)
-    int newlib_fd = fileno(f); 
-
-    // This converts it back to your kernel's internal index (e.g., 1)
-    int kernel_fd = newlib_fd; 
-
-    char buffer[256];
-    
-    // fgets reads until a newline (\n) or until the buffer is full
-    while (fgets(buffer, sizeof(buffer), f) != NULL) {
-        // Print the line using your working stdout/write stub
-        printf("%s\n", buffer); 
+int main(void) {
+    setvbuf(stdout, NULL, _IONBF, 0);
+    // 1. Open file in binary read mode
+    FILE* f = fopen("main.py", "rb");
+    if (f == NULL) {
+        perror("Error opening main.py");
+        return 1;
     }
-    const char *text = "Hello from my custom kernel user-space!\n";
-    size_t data_len = strlen(text);
+
+    char* code_buffer = NULL;
+    size_t total_size = 0;
+    char chunk[CHUNK_SIZE];
+    size_t bytes_read;
+    // 2. Read the file sequentially block by block
+    while ((bytes_read = fread(chunk, 1, CHUNK_SIZE, f)) > 0) {
+        // Dynamically grow the code buffer to fit the new chunk
+        char* new_buffer = realloc(code_buffer, total_size + bytes_read + 1);
+        if (new_buffer == NULL) {
+            fprintf(stderr, "Error: System ran out of memory while reading file.\n");
+            free(code_buffer);
+            fclose(f);
+            return 1;
+        }
+        code_buffer = new_buffer;
+
+        // Append the new chunk to our master buffer
+        memcpy(code_buffer + total_size, chunk, bytes_read);
+        total_size += bytes_read;
+    }
+
     fclose(f);
-}
-typedef struct {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-    int rect_x;
-    int rect_y;
-    int rect_width;
-    int rect_height;
-} packet;
-int main() {
-    // Force stdout to unbuffered so you see exactly when crashes/loops happen
-    setvbuf(stdout, NULL, _IONBF, 0); 
-    printf("hello!\n");
-    read_file_example();
-    packet *buf = calloc(1, sizeof(packet));
-    uint32_t pid = 0;
-    ipc_recv(buf, sizeof(packet), &pid);
-    graduate();
-    draw_rect(buf->rect_x, buf->rect_y, buf->rect_width, buf->rect_height, buf->r, buf->g, buf->b);
+
+    // 3. Ensure the final script is safely null-terminated
+    if (code_buffer != NULL) {
+        code_buffer[total_size] = '\0';
+        
+        printf("--- Executing main.py Content (%zu bytes) ---\n", total_size);
+        
+        // 4. Boot MicroPython safely
+        start_micropython_task(code_buffer);
+        
+        // 5. Cleanup
+        free(code_buffer);
+    } else {
+        printf("Warning: main.py is empty.\n");
+        start_micropython_task(""); // Run empty string to safely pass initialization
+    }
+    printf("executing protection fault test now!\n");
+    asm volatile ("hlt");
     return 0;
 }

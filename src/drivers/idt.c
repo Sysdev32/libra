@@ -8,6 +8,7 @@
 #include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
 #include <stdint.h>
+extern struct flanterm_context *ft_ctx;
 uint64_t admin_seed = 0xCAFEF00DD1CE1ULL; 
 uint64_t user_seed = 0xCAFEF11DEADBEULL; 
 void outb(uint16_t port, uint8_t val) {
@@ -774,12 +775,11 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
             /* Optional: Handle key release state changes here (like clearing a 'shift_pressed' flag) */
         } 
         else {
-            // 3. This is a key press (Make code). Translate it using our keymap layout.
-            if (scancode < 128) {
                 kbd_buffer_push(scancode);
-            }
+
         }
         lapic_eoi();
+        return regs->rsp;
     }
     for (int i = 0; i < 512; i++) {
         if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {
@@ -849,12 +849,54 @@ char *strcpy(char *dest, const char *src)
 
     return orig;
 }
+static const char* user_exceptions[] = {
+    /* 0-7 */
+    "Divide-By-Zero",              // 0
+    "Debug Trap",                  // 1
+    "Non-Maskable Interrupt",      // 2
+    "Breakpoint",                  // 3
+    "Overflow",                    // 4
+    "Bound Range Fault",           // 5
+    "Invalid Instruction",         // 6
+    "Device Not Available",        // 7
+
+    /* 8-15 */
+    "Double Fault",               // 8 (kernel-level, usually not userspace)
+    "Coprocessor Segment Overrun",// 9
+    "Invalid TSS",                // 10
+    "Segment Not Present",        // 11
+    "Stack Fault",                // 12
+    "Protection Fault",   // 13
+    "Segmentation Fault",        // 14 (Page Fault)
+    "Reserved Exception",         // 15
+
+    /* 16-19 */
+    "Floating Point Error",       // 16
+    "Alignment Check Failure",    // 17
+    "Machine Check Exception",    // 18
+    "SIMD Floating Point Fault",  // 19
+
+    /* 20-31 */
+    "Reserved / Unknown",         // 20
+    "Reserved / Unknown",         // 21
+    "Reserved / Unknown",         // 22
+    "Reserved / Unknown",         // 23
+    "Reserved / Unknown",         // 24
+    "Reserved / Unknown",         // 25
+    "Reserved / Unknown",         // 26
+    "Reserved / Unknown",         // 27
+    "Reserved / Unknown",         // 28
+    "Reserved / Unknown",         // 29
+    "Reserved / Unknown",         // 30
+    "Reserved / Unknown"          // 31
+};
 uint64_t exception_handler_c(struct InterruptRegisters *regs) {
     asm volatile ("sti");
     uint64_t vector = regs->int_no; 
 
     // --- CASE A: CRITICAL ARCHITECTURAL CPU EXCEPTIONS (0-31) ---
     if (vector < 32) {
+        if (regs->cs != 0x1B) {
         char buffer[64];
         for (int i = 0; i < 64; i++) buffer[i] = 0; // Clear the buffer for safety
         if (vector > 255) {
@@ -921,6 +963,10 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         // Force definitive crash freeze so hardware doesn't pass broken state steps downward
         for (;;) {
             asm volatile("hlt");
+        }
+        } else {
+            printk(LOG_NONE, "%s", user_exceptions[vector]);
+            return terminate(regs->rsp, getpid());
         }
     } 
     

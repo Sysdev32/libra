@@ -349,6 +349,10 @@ uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
     // Force a context switch to the next ready task
     return schedule_preemptive(current_rsp);
 }
+uint64_t terminate(uint64_t current_rsp, int pid) {
+    task_table[pid].state = TASK_STATE_ZOMBIE;
+    return schedule_preemptive(current_rsp);
+}
 int getpid() {
     return current_task_id;
 }/**
