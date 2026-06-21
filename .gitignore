@@ -10,3 +10,11 @@ check.py
 .venv
 disk.img
 sysroot
+micropython
+crt0.o
+stubs.o
+user_app.elf
+user.o
+linecount.c
+linecount
+tinycc

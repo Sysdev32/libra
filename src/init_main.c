@@ -27,6 +27,7 @@
 #include <uacpi/types.h>
 #include <errno.h>
 #include <drivers/elf.h>
+struct flanterm_context *ft_ctx;
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -316,7 +317,7 @@ static void main_kthread(void) {
     // ============================================================================
     // STEP 4: Setup Heap Space (.sbrk) matching your linker script _heap_start
     // ============================================================================
-    const int user_heap_pages = 8192; 
+    const int user_heap_pages = 8192*2; 
     uint64_t user_heap_vma = user_code_vma + (program_pages_used * PAGE_SIZE);
     printk(LOG_DEBUG, "[VERBOSE] Mapping Heap starting at VMA 0x%llx\n", user_heap_vma);
     
@@ -334,7 +335,7 @@ static void main_kthread(void) {
     // ============================================================================
     // STEP 5: Map a Multi-Page Stack Region and Calculate the Initial RSP
     // ============================================================================
-    int user_stack_pages = 16; 
+    int user_stack_pages = 64; 
     printk(LOG_DEBUG, "[VERBOSE] Mapping Stack starting at VMA 0x%llx\n", user_stack_vma);
     
     for (int i = 0; i < user_stack_pages; i++) {
@@ -352,7 +353,7 @@ static void main_kthread(void) {
     verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
     printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
        verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
-       
+    flanterm_clear(ft_ctx, true);
     int pid = create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp);
     
     packet data;
@@ -430,7 +431,7 @@ void triple_fault_reboot(void) {
     // Hang just in case the CPU takes a moment to reset
     for (;;);
 }
-struct flanterm_context *ft_ctx;
+
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 pci_device_t* devices;

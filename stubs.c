@@ -137,34 +137,31 @@ int open(const char *name, int flags, int mode) {
     return kernel_fd + 2;
 }
 
-// --- Updated read stub ---
+#include <errno.h>
+#include <stdint.h>
+
 int read(int file, char *ptr, int len) {
-    if (file <= 2) return 0; // Guard clause for standard streams
-    
-    int kernel_fd = file - 2;
-    
-    if (kernel_fd < 0 || kernel_fd >= MAX_TRACKED_FDS) {
+    // 1. Normal Guard: Ensure the file descriptor is valid within bounds
+    if (file < 0 || file >= MAX_TRACKED_FDS) {
         errno = EBADF;
         return -1;
     }
     
-    // Retrieve the stateful tracking position for this descriptor
-    uint64_t current_offset = vfs_fd_offsets[kernel_fd];
+    // 2. Retrieve the offset directly using the clean file descriptor
+    uint64_t current_offset = vfs_fd_offsets[file];
     
-    // Call the updated 4-argument system router
-    // This maps correctly to vfs_read(kernel_fd, ptr, len, current_offset)
-    long ret = user_syscall4(SYS_READ, kernel_fd, (long)ptr, (long)len, current_offset);
+    // 3. Call the system router without modifying 'file'
+    long ret = user_syscall4(SYS_READ, file, (long)ptr, (long)len, current_offset);
     if (ret < 0) { 
         errno = -ret; 
         return -1; 
     }
     
-    // CRITICAL: Advance the tracking position by the precise number of bytes read
-    vfs_fd_offsets[kernel_fd] += ret;
+    // 4. Advance the tracking position by the precise number of bytes read
+    vfs_fd_offsets[file] += ret;
     
     return (int)ret;
 }
-
 // --- Updated lseek stub ---
 int lseek(int file, int offset, int dir) {
     if (file <= 2) return 0;
