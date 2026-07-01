@@ -145,7 +145,6 @@ void pmm_init(void) {
         }
     }
 }
-
 void *pmm_alloc_pages(int order) {
     if (order < 0 || order >= MAX_ORDER) return NULL;
 
@@ -154,7 +153,6 @@ void *pmm_alloc_pages(int order) {
             struct Page *block = free_lists[i];
             pmm_free_list_remove(i, block);
 
-            // Buddy Allocator core splitting mechanics
             while (i > order) {
                 i--;
                 size_t block_index = block - all_pages;
@@ -166,10 +164,21 @@ void *pmm_alloc_pages(int order) {
             block->is_free = 0;
             block->order = order;
             uint64_t phys_addr = (uint64_t)(block - all_pages) * PAGE_SIZE;
+
+            // Never hand out page zero — it's the real-mode IVT/BIOS data
+            // area and indistinguishable from NULL at the call site.
+            // Put it back and keep searching.
+            if (phys_addr == 0) {
+                block->is_free = 1;
+                block->order   = order;
+                pmm_free_list_add(order, block);
+                continue;
+            }
+
             return (void *)(phys_addr + HHDM_OFFSET);
         }
     }
-    return NULL; // System Out of Memory
+    return NULL;
 }
 
 void pmm_free_pages(void *ptr, int order) {

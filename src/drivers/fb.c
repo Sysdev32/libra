@@ -30,7 +30,7 @@ void initConsole(struct flanterm_context *ft_ctx, struct limine_framebuffer* frb
     ctx = ft_ctx;
     fb = frb;
 }
-static char *itoa(uint64_t value, char *str, int base, int uppercase) {
+char *itoa(uint64_t value, char *str, int base, int uppercase) {
     char *rc = str;
     char *ptr = str;
     char *low;
@@ -380,4 +380,47 @@ void draw_rect(int rect_x, int rect_y, int rect_width, int rect_height,
 void graduate() {
     grad = true;
     draw_rect(0, 0, fb->width, fb->height, 0, 0, 0);
+}
+void draw_image(int start_x, int start_y, int img_w, int img_h, const uint8_t *rgb_data) {
+    if (!fb || !fb->address || !rgb_data) return;
+
+    // 1. Clip the image boundaries against the framebuffer
+    int src_x = 0;
+    int src_y = 0;
+    int dst_x1 = start_x;
+    int dst_y1 = start_y;
+    int dst_x2 = start_x + img_w;
+    int dst_y2 = start_y + img_h;
+
+    if (dst_x1 < 0) { src_x = -dst_x1; dst_x1 = 0; }
+    if (dst_y1 < 0) { src_y = -dst_y1; dst_y1 = 0; }
+    if (dst_x2 > fb->width)  dst_x2 = fb->width;
+    if (dst_y2 > fb->height) dst_y2 = fb->height;
+
+    if (dst_x1 >= dst_x2 || dst_y1 >= dst_y2) return;
+
+    int bytes_per_pixel = fb->bpp / 8;
+    uint8_t *fb_bytes = (uint8_t *)fb->address;
+
+    // 2. Optimized copy loop
+    for (int y = dst_y1; y < dst_y2; y++) {
+        uint8_t *dst_row = fb_bytes + (y * fb->pitch) + (dst_x1 * bytes_per_pixel);
+        const uint8_t *src_row = rgb_data + ((src_y + (y - dst_y1)) * img_w * 3) + (src_x * 3);
+
+        if (bytes_per_pixel == 3) {
+            // Bulk copy if image matches native 24-bit FB layout exactly
+            memcpy(dst_row, src_row, (dst_x2 - dst_x1) * 3);
+        } 
+        else if (bytes_per_pixel == 4) {
+            // Blit 24-bit source to 32-bit destination row
+            for (int x = 0; x < (dst_x2 - dst_x1); x++) {
+                dst_row[0] = src_row[0]; // R
+                dst_row[1] = src_row[1]; // G
+                dst_row[2] = src_row[2]; // B
+                dst_row[3] = 255;        // A
+                dst_row += 4;
+                src_row += 3;
+            }
+        }
+    }
 }
