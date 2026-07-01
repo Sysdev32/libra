@@ -374,7 +374,7 @@ void idt_init(void) {
 
     // 2. Safely map vector 0x20 and 0x21 using slots 32 and 33 from the assembly landing pads
     idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
-    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0x8E);
+    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0xEE);
     idt_set_descriptor(0x80, intr, 0xEE); // User Mode System Calls Gate
 
     // 3. Load the IDT pointer into the processor
@@ -570,28 +570,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
     switch (regs->rax) {
         case 0: // vfs_read
-            if (args->arg[0] == 0) {
-                // --- HOOK: Redirect stdin (FD 0) to the Keyboard Buffer ---
-                uint8_t *user_buf = (uint8_t*)args->arg[1];
-                uint64_t bytes_to_read = args->arg[2];
-                
-                if (bytes_to_read == 0 || user_buf == NULL) {
-                    regs->rax = 0;
-                    break;
-                }
-
-                uint8_t scancode;
-                
-                // --- BLOCKING VIA POLLING ---
-                // Loop indefinitely until kbd_buffer_pop successfully returns a scancode
-                while (!kbd_buffer_pop(&scancode)) {
-                    asm volatile("pause");
-                }
-
-                *user_buf = scancode; 
-                regs->rax = 1; // Return 1 byte successfully read
-            } 
-            else if (args->arg[0] == 1 || args->arg[0] == 2) {
+            if (args->arg[0] == 1 || args->arg[0] == 2) {
                 regs->rax = 0; 
             } 
             else {
@@ -616,6 +595,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
         case 2: { // vfs_open
             long fd = vfs_open((const char*)args->arg[0]);
+            printk(LOG_TRACE, "FD: %d\n", fd);
             if (fd < 0) {
                 regs->rax = fd; 
             } else {
@@ -695,6 +675,64 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         }
         case 14: {
             ipc_send(args->arg[1], (void*)args->arg[2], args->arg[3]);
+            break;
+        }
+        case 15: {
+            regs->rax = getpid();
+            break;
+        }
+        case 16: {
+            regs->rsp = terminate(regs->rsp, args->arg[0]);
+            break;
+        }
+        case 17: {
+            regs->rax = vfs_fstat(args->arg[0], (struct vfs_stat*)args->arg[1]);
+            break;
+        }
+        case 18: {
+            asm volatile ("sti");
+            // --- HOOK: Redirect stdin (FD 0) to the Keyboard Buffer (Multi-byte) ---
+            uint8_t *user_buf = (uint8_t*)args->arg[0];
+            uint64_t bytes_to_read = args->arg[1];
+            
+            // Defensive check for zero bytes requested or a null buffer
+            if (bytes_to_read == 0 || user_buf == NULL) {
+                regs->rax = 0;
+                break;
+            }
+
+            uint64_t bytes_read = 0;
+
+            // Loop until we have successfully read the total number of requested bytes
+            while (bytes_read < bytes_to_read) {
+                uint8_t scancode;
+
+                // Attempt to pop a scancode from the ring buffer
+                if (kbd_buffer_pop(&scancode)) {
+                    // Safely write to the current offset in the user buffer
+                    user_buf[bytes_read] = scancode;
+                    bytes_read++;
+                } else {
+                    // --- BLOCKING VIA HALT ---
+                    // 'sti' explicitly re-enables hardware interrupts so the keyboard can fire.
+                    // 'hlt' puts the CPU to sleep until the next hardware interrupt wakes it up.
+                    asm volatile("sti; hlt" ::: "memory");
+                }
+            }
+
+            regs->rax = bytes_read; // Return total bytes successfully read (will equal bytes_to_read)
+            break;
+        }
+        case 19: {
+            regs->rax = spawn((char*)args->arg[0]);
+            break;
+        }
+        case 20: {
+            regs->rax = waitpid(args->arg[0]);
+            break;
+        }
+        case 21: {
+            draw_image(args->arg[0], args->arg[1], args->arg[2], args->arg[3], (uint8_t*)args->arg[4]);
             break;
         }
         default: 
@@ -779,7 +817,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
 
         }
         lapic_eoi();
-        return regs->rsp;
+        return 0;
     }
     for (int i = 0; i < 512; i++) {
         if ((uint64_t)handles[i].vector == vector && handles[i].intr != NULL) {

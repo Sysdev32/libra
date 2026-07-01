@@ -18,6 +18,8 @@ x86_64-elf-ld -nostdlib \
     micropython.a \
     prebuilt/libc.a \
     prebuilt/libm.a \
+    libz.a \
+    libpng.a \
     --end-group \
     -o user_app.elf
 

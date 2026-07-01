@@ -158,65 +158,195 @@ typedef struct {
     int rect_width;
     int rect_height;
 } packet;
-#define ARENA_SIZE (1024 * 1024 * 16) // 16 MB pool
-static uint8_t elf_alloc_arena[ARENA_SIZE];
-static uint64_t arena_offset = 0;
+#include <stdint.h>
+#include <stddef.h>
 
-// A simple, bulletproof allocation bypass
-void* arena_alloc(uint64_t size) {
-    // Align allocations to 16 bytes for hardware safety
-    uint64_t aligned_size = (size + 15) & ~15;
+#define ARENA_START 0x6000000ULL
+#define ARENA_END   0x8000000ULL
+#define PAGE_SIZE   0x1000ULL
 
-    if (arena_offset + aligned_size > ARENA_SIZE) {
-        return 0; // Out of memory
+#define NUM_PAGES ((ARENA_END - ARENA_START) / PAGE_SIZE)
+#define MAX_ALLOCS 128
+
+static uint8_t bitmap[NUM_PAGES / 8];
+
+struct arena_alloc {
+    void *addr;
+    size_t pages;
+    int used;
+};
+
+static struct arena_alloc allocs[MAX_ALLOCS];
+
+static inline int test_page(size_t i) {
+    return (bitmap[i / 8] >> (i % 8)) & 1;
+}
+
+static inline void set_page(size_t i) {
+    bitmap[i / 8] |= (1 << (i % 8));
+}
+
+static inline void clear_page(size_t i) {
+    bitmap[i / 8] &= ~(1 << (i % 8));
+}
+
+void *arena_alloc(size_t bytes) {
+    size_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    size_t run = 0, start = 0;
+
+    for (size_t i = 0; i < NUM_PAGES; i++) {
+        if (!test_page(i)) {
+            if (run == 0)
+                start = i;
+
+            if (++run == pages) {
+                for (size_t j = start; j < start + pages; j++)
+                    set_page(j);
+
+                void *addr = (void *)(ARENA_START + start * PAGE_SIZE);
+
+                for (size_t k = 0; k < MAX_ALLOCS; k++) {
+                    if (!allocs[k].used) {
+                        allocs[k].used = 1;
+                        allocs[k].addr = addr;
+                        allocs[k].pages = pages;
+                        break;
+                    }
+                }
+
+                return addr;
+            }
+        } else {
+            run = 0;
+        }
     }
 
-    void* ptr = &elf_alloc_arena[arena_offset];
-    arena_offset += aligned_size;
-    return ptr;
+    return NULL;
 }
 
-// Optional: Reset the pointer when you are completely done with the task
-void arena_reset(void) {
-    arena_offset = 0;
-}
-static void main_kthread(void) {
-    printk(LOG_TRACE, "main kthread started.\n");
-    char hi[3] = "hi";
-    int fd_test = vfs_create_file(hi, "main.txt", 3);
-    printk(LOG_DEBUG, "Test File FD (main.py): %d\n", fd_test);
+void arena_free(void *addr) {
+    for (size_t i = 0; i < MAX_ALLOCS; i++) {
+        if (allocs[i].used && allocs[i].addr == addr) {
+            size_t start = ((uintptr_t)addr - ARENA_START) / PAGE_SIZE;
 
+            for (size_t j = 0; j < allocs[i].pages; j++)
+                clear_page(start + j);
+
+            allocs[i].used = 0;
+            return;
+        }
+    }
+}
+#include <stdint.h>
+#include <stddef.h>
+
+#define STACK_PHYS_START 0x0A200000ULL
+#define STACK_PHYS_END   0x0C200000ULL   // 32 MiB for stacks
+
+#define PAGE_SIZE   0x1000ULL
+#define NUM_PAGES   ((STACK_PHYS_END - STACK_PHYS_START) / PAGE_SIZE)
+#define MAX_STACKS  128
+
+static uint8_t stack_bitmap[NUM_PAGES / 8];
+
+struct stack_alloc {
+    uint64_t phys;
+    size_t pages;
+    int used;
+};
+
+static struct stack_alloc stacks[MAX_STACKS];
+
+static inline int stack_test_page(size_t i) {
+    return (stack_bitmap[i / 8] >> (i % 8)) & 1;
+}
+
+static inline void stack_set_page(size_t i) {
+    stack_bitmap[i / 8] |= (1 << (i % 8));
+}
+
+static inline void stack_clear_page(size_t i) {
+    stack_bitmap[i / 8] &= ~(1 << (i % 8));
+}
+
+uint64_t stack_alloc(size_t bytes) {
+    size_t pages = (bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+    size_t run = 0, start = 0;
+
+    for (size_t i = 0; i < NUM_PAGES; i++) {
+        if (!stack_test_page(i)) {
+            if (run == 0)
+                start = i;
+
+            if (++run == pages) {
+                for (size_t j = start; j < start + pages; j++)
+                    stack_set_page(j);
+
+                uint64_t phys = STACK_PHYS_START + start * PAGE_SIZE;
+
+                for (size_t k = 0; k < MAX_STACKS; k++) {
+                    if (!stacks[k].used) {
+                        stacks[k].used = 1;
+                        stacks[k].phys = phys;
+                        stacks[k].pages = pages;
+                        break;
+                    }
+                }
+
+                return phys;
+            }
+        } else {
+            run = 0;
+        }
+    }
+
+    return 0;
+}
+
+void stack_free(uint64_t phys) {
+    for (size_t i = 0; i < MAX_STACKS; i++) {
+        if (stacks[i].used && stacks[i].phys == phys) {
+            size_t start = (phys - STACK_PHYS_START) / PAGE_SIZE;
+
+            for (size_t j = 0; j < stacks[i].pages; j++)
+                stack_clear_page(start + j);
+
+            stacks[i].used = 0;
+            return;
+        }
+    }
+}
+#define HEAP_START ((uint64_t)0x40000000)
+#define HEAP_END   ((uint64_t)0x60000000)
+int spawn(char* path) {
     // Create an isolated, sandboxed user address space context.
     page_table_t *user_pml4 = vmm_create_address_space();
     if (user_pml4 == NULL) {
         printk(LOG_ERROR, "Could not allocate isolated user address space\n");
         for(;;);
     }
-    
-    // User virtual memory space layouts matching your linker script
-    uint64_t user_code_vma  = 0x2000000; 
-    uint64_t user_stack_vma = 0x600000;
-
-    // Open the user ELF binary file
-    int user_fd = vfs_open("user_app.elf");
+    int user_fd = vfs_open(path);
     if (user_fd < 0) {
         printk(LOG_ERROR, "Could not open user_app.elf\n");
         for(;;);
     }
+    // User virtual memory space layouts matching your linker script
+
+    // Open the user ELF binary file
+    
 
     uint64_t user_flags = PTE_USER | PTE_WRITABLE;
-    
+    struct vfs_stat stat = {0};
+    vfs_fstat(user_fd, &stat);
     // Physical bases configuration
-    uint64_t safe_code_phys_base  = 0x8000000;  
-    uint64_t safe_stack_phys_base = 0xA200000;  
+    uint64_t safe_code_phys_base  = arena_alloc(stat.st_size);  
+    uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);  
 
     // Staging buffer math: 0x8000000 + (9216 * 4096) = 0xA400000
     uint64_t raw_elf_phys_base    = safe_code_phys_base + (9216 * PAGE_SIZE); 
     void* raw_elf_hhdm_ptr        = (void*)(raw_elf_phys_base + HHDM_OFFSET);
-
-    printk(LOG_DEBUG, "[VERBOSE] safe_code_phys_base:  0x%llx\n", safe_code_phys_base);
-    printk(LOG_DEBUG, "[VERBOSE] raw_elf_phys_base:     0x%llx\n", raw_elf_phys_base);
-    printk(LOG_DEBUG, "[VERBOSE] raw_elf_hhdm_ptr:      0x%llx\n", (uint64_t)raw_elf_hhdm_ptr);
 
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
@@ -232,14 +362,6 @@ static void main_kthread(void) {
         int chunks_read = vfs_read(user_fd, current_dest_ptr, PAGE_SIZE, file_cursor);
         
         if (first_chunk) {
-            printk(LOG_DEBUG, "[VERBOSE] First VFS read returned: %d bytes\n", chunks_read);
-            if (chunks_read > 0) {
-                uint8_t *b = (uint8_t *)current_dest_ptr;
-                printk(LOG_DEBUG, "[VERBOSE] First 16 bytes in staging buffer:\n");
-                printk(LOG_DEBUG, "          %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
-                       b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
-                       b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
-            }
             first_chunk = 0;
         }
 
@@ -251,27 +373,19 @@ static void main_kthread(void) {
         file_cursor += chunks_read;
         page_index++;
     }
-    
-    uint8_t *verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
-    printk(LOG_TRACE, "Cached raw ELF from VFS: %llu bytes read into temporary staging.\n", total_bytes_read);
+    uint64_t user_code_vma  = elf_vaddr(raw_elf_hhdm_ptr); 
+    uint64_t user_stack_vma = 0x600000;
     vfs_free_fd(user_fd);
 
     if (total_bytes_read <= 0) {
         printk(LOG_ERROR, "user_app.elf is empty or failed to read!\n");
         for(;;);
     }
-    
-    verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
 
     // ============================================================================
     // STEP 2: Map execution page memory window up-front 
     // ============================================================================
     int staging_pages = 8300; 
-    printk(LOG_DEBUG, "[VERBOSE] Mapping %d pages starting at VMA 0x%llx\n", staging_pages, user_code_vma);
     for (int i = 0; i < staging_pages; i++) {
         uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
         uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
@@ -279,15 +393,6 @@ static void main_kthread(void) {
         memset((void*)(current_phys + HHDM_OFFSET), 0, PAGE_SIZE);
         vmm_map_page(user_pml4, current_vma, current_phys, user_flags);
     }
-    
-    verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
-
-    // ============================================================================
-    // STEP 3: Run the HHDM-secured ELF loader (FIXED BASE ARGUMENTS)
-    // ============================================================================
-    printk(LOG_DEBUG, "[VERBOSE] Invoking load_elf with staging ptr...\n");
     // CRITICAL FIX: Explicitly passing target physical destination and virtual base offsets
     ElfLoadResult loaded_app = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
 
@@ -295,17 +400,10 @@ static void main_kthread(void) {
         printk(LOG_ERROR, "ELF Loader failed to validate or parse user_app.elf!\n");
         for(;;);
     }
-    
-    verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
 
     uint64_t program_pages_used = (loaded_app.mem_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    printk(LOG_DEBUG, "[VERBOSE] load_elf succeeded. mem_size pages count: %llu\n", program_pages_used);
-
     // Expand program mappings if size exceeded initial guest bounds
     if (program_pages_used > (uint64_t)staging_pages) {
-        printk(LOG_DEBUG, "[VERBOSE] Expanding mappings by %llu pages\n", program_pages_used - staging_pages);
         for (uint64_t i = staging_pages; i < program_pages_used; i++) {
             uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
             uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
@@ -317,27 +415,27 @@ static void main_kthread(void) {
     // ============================================================================
     // STEP 4: Setup Heap Space (.sbrk) matching your linker script _heap_start
     // ============================================================================
-    const int user_heap_pages = 8192*2; 
-    uint64_t user_heap_vma = user_code_vma + (program_pages_used * PAGE_SIZE);
-    printk(LOG_DEBUG, "[VERBOSE] Mapping Heap starting at VMA 0x%llx\n", user_heap_vma);
-    
+    const int user_heap_pages = (HEAP_END - HEAP_START) / PAGE_SIZE;
+
+    uint64_t user_heap_vma = HEAP_START;
+
     for (int heap_page = 0; heap_page < user_heap_pages; heap_page++) {
         uint64_t heap_phys = safe_code_phys_base + ((program_pages_used + heap_page) * PAGE_SIZE);
+
         void *heap_hhdm_ptr = (void *)(heap_phys + HHDM_OFFSET);
         memset(heap_hhdm_ptr, 0, PAGE_SIZE);
-        vmm_map_page(user_pml4, user_heap_vma + ((uint64_t)heap_page * PAGE_SIZE), heap_phys, user_flags);
+
+        vmm_map_page(
+            user_pml4,
+            user_heap_vma + ((uint64_t)heap_page * PAGE_SIZE),
+            heap_phys,
+            user_flags
+        );
     }
-    
-    verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
-       
     // ============================================================================
     // STEP 5: Map a Multi-Page Stack Region and Calculate the Initial RSP
     // ============================================================================
     int user_stack_pages = 64; 
-    printk(LOG_DEBUG, "[VERBOSE] Mapping Stack starting at VMA 0x%llx\n", user_stack_vma);
-    
     for (int i = 0; i < user_stack_pages; i++) {
         uint64_t stack_phys = safe_stack_phys_base + (i * PAGE_SIZE);
         void *stack_hhdm_ptr = (void *)(stack_phys + HHDM_OFFSET);
@@ -347,25 +445,10 @@ static void main_kthread(void) {
 
     uint64_t initial_rsp = user_stack_vma + (user_stack_pages * PAGE_SIZE) - 16;
 
-    printk(LOG_TRACE, "ELF Configured: Entry=0x%llx, Program Size=%llu bytes, Stack Top RSP=0x%llx\n", 
-           loaded_app.entry_point, loaded_app.mem_size, initial_rsp);
-           
-    verify_bytes = (uint8_t*)(safe_code_phys_base + HHDM_OFFSET);
-    printk(LOG_DEBUG, "Bytes at physical base destination: %02x %02x %02x %02x\n", 
-       verify_bytes[0], verify_bytes[1], verify_bytes[2], verify_bytes[3]);
-    flanterm_clear(ft_ctx, true);
-    int pid = create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp);
-    
-    packet data;
-    data.r = 255;
-    data.g = 0;
-    data.b = 255;
-    data.rect_width = 1920;
-    data.rect_height = 1080;
-    data.rect_x = 0;
-    data.rect_y = 0;
-    ipc_send(pid, &data, sizeof(data));
-
+    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, 0, 0);
+}
+static void main_kthread(void) {
+    spawn("user_app.elf");
     for (;;) {
         asm volatile("sti; hlt");
     }

@@ -188,7 +188,9 @@ run: iso
 		-drive id=disk0,file=my_disk.qcow2,if=none,format=qcow2 \
 		-device ide-hd,drive=disk0,bus=ide.0 \
 		-cdrom $(ISO) \
-		-smp 4
+		-device qemu-xhci,id=xhci \
+		-device usb-kbd,bus=xhci.0 \
+		-device usb-mouse,bus=xhci.0
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

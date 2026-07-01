@@ -3,7 +3,7 @@
 #include <stddef.h>
 #include <string.h>
 #include <drivers/fb.h>
-#define MAX_TASKS 16
+#define MAX_TASKS 512
 #define KERNEL_STACK_SIZE 4096
 #define USER_STACK_SIZE 4096
 #define HHDM_OFFSET 0xffff800000000000ULL
@@ -22,7 +22,8 @@ typedef enum {
     TASK_STATE_RUNNING,
     TASK_STATE_ZOMBIE,
     TASK_STATE_BLOCKED_SEND,    // Added: Waiting for space in a target queue
-    TASK_STATE_BLOCKED_RECEIVE
+    TASK_STATE_BLOCKED_RECEIVE,
+    TASK_STATE_WAITING
 } task_state_t;
 
 // Task Control Block (TCB)
@@ -36,6 +37,9 @@ struct task {
     int msg_head;
     int msg_tail;
     int msg_count;
+    int uid;
+    int gid;
+    int parent_pid;
 };
 
 // Task State Segment (TSS) layout for x86_64
@@ -58,7 +62,7 @@ extern void pit_init(void);
 volatile struct task task_table[MAX_TASKS];
 volatile int current_task_id = 0;
 static const uint32_t default_mxcsr = 0x1f80;
-
+bool running = false;
 static void init_fpu_context(struct task *task) {
     uint32_t mxcsr = default_mxcsr;
 
@@ -152,7 +156,9 @@ int create_kernel_task(void (*entry_point)(void)) {
 
             task_table[i].rsp = (uint64_t)ctx;
             task_table[i].state = TASK_STATE_READY;
-            
+            task_table[i].uid = 0;
+            task_table[i].gid = 0;
+            task_table[i].parent_pid = -1;
             irq_restore(flags);
             return i;
         }
@@ -164,7 +170,7 @@ int create_kernel_task(void (*entry_point)(void)) {
 /**
  * CREATE A USERSPACE TASK (Ring 3)
  */
-int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
+int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int uid, int gid) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -224,10 +230,15 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack) {
             ctx[19] = 0x202;                  // RFLAGS: Interrupts Enabled
             ctx[20] = task_table[i].user_rsp; // RSP
             ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
-
+            task_table[i].uid = uid;
+            task_table[i].gid = gid;
             task_table[i].rsp = (uint64_t)ctx;
             task_table[i].state = TASK_STATE_READY;
-            
+            if (running) {
+                task_table[i].parent_pid = current_task_id;
+            } else {
+                task_table[i].parent_pid = -1;
+            }
             irq_restore(flags);
             return i;
         }
@@ -328,7 +339,7 @@ void start_scheduler(void) {
         : "r"(safe_kernel_stack)
         : "memory"
     );
-
+    running = true;
     pit_init();
 
     asm volatile ("sti; nop" ::: "memory");
@@ -345,7 +356,9 @@ uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
     
     // Mark the task as a zombie so the scheduler cleans it up
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
-    
+    if (task_table[task_table[current_task_id].parent_pid].state == TASK_STATE_WAITING) {
+        task_table[task_table[current_task_id].parent_pid].state = TASK_STATE_READY;
+    }
     // Force a context switch to the next ready task
     return schedule_preemptive(current_rsp);
 }
@@ -458,4 +471,22 @@ int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
         irq_restore(flags);
         schedule_preemptive(current_rsp);
     }
+}
+int getuid() {
+    return task_table[current_task_id].uid;
+}
+int getgid() {
+    return task_table[current_task_id].gid;
+}
+int waitpid(uint64_t pid) {
+    if (!task_table[pid].user_rsp)
+        return -1;
+
+    task_table[current_task_id].state = TASK_STATE_WAITING;
+
+    while (task_table[pid].state != TASK_STATE_ZOMBIE)
+        __asm__ volatile("pause");
+
+    task_table[current_task_id].state = TASK_STATE_READY;
+    return 0;
 }
