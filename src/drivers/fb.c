@@ -2,10 +2,13 @@
 #include <drivers/fb.h>
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <stdbool.h>
 
 struct flanterm_context *ctx;
 struct limine_framebuffer* fb;
 bool grad = false;
+
 static uint64_t printk_irq_save(void) {
     uint64_t flags;
     asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
@@ -30,21 +33,19 @@ void initConsole(struct flanterm_context *ft_ctx, struct limine_framebuffer* frb
     ctx = ft_ctx;
     fb = frb;
 }
+
 char *itoa(uint64_t value, char *str, int base, int uppercase) {
     char *rc = str;
     char *ptr = str;
     char *low;
     
-    // Check for supported bases
     if (base < 2 || base > 36) {
         *str = '\0';
         return str;
     }
 
-    // Set up the character mapping array
     const char *digits = uppercase ? "0123456789ABCDEF" : "0123456789abcdef";
 
-    // Process digits in reverse order
     do {
         *ptr++ = digits[value % base];
         value /= base;
@@ -52,7 +53,6 @@ char *itoa(uint64_t value, char *str, int base, int uppercase) {
 
     *ptr = '\0';
 
-    // Reverse the string in-place
     low = rc;
     ptr--;
     while (low < ptr) {
@@ -63,11 +63,8 @@ char *itoa(uint64_t value, char *str, int base, int uppercase) {
 
     return rc;
 }
-#include <stdarg.h>
-#include <stdint.h>
 
-static const char* parse_length(const char *f, int *is_long, int *is_longlong)
-{
+static const char* parse_length(const char *f, int *is_long, int *is_longlong) {
     *is_long = 0;
     *is_longlong = 0;
 
@@ -80,12 +77,10 @@ static const char* parse_length(const char *f, int *is_long, int *is_longlong)
         *is_long = 1;
         return f;
     }
-
     return f;
 }
 
-static const char* parse_format(const char *f, int *zero, int *width)
-{
+static const char* parse_format(const char *f, int *zero, int *width) {
     *zero = 0;
     *width = 0;
 
@@ -98,19 +93,29 @@ static const char* parse_format(const char *f, int *zero, int *width)
         *width = (*width * 10) + (*f - '0');
         f++;
     }
-
     return f;
 }
 
-static int str_len(const char *s)
-{
+static int str_len(const char *s) {
     int i = 0;
     while (s[i]) i++;
     return i;
 }
 
-static void pad(char **buf, const char *s, int width, int zero)
-{
+void get_pixel(int x, int y, uint8_t *r, uint8_t *g, uint8_t *b) {
+    if (!fb || !fb->address) return;
+    if (x < 0 || y < 0 || x >= fb->width || y >= fb->height) return;
+
+    int bytes_per_pixel = fb->bpp / 8;
+    uint8_t *pixel = (uint8_t *)fb->address + (y * fb->pitch) + (x * bytes_per_pixel);
+
+    // Assumes RGB/BGR order depending on system architecture
+    *r = pixel[0];
+    *g = pixel[1];
+    *b = pixel[2];
+}
+
+static void pad(char **buf, const char *s, int width, int zero) {
     int len = str_len(s);
 
     while (len < width) {
@@ -123,8 +128,7 @@ static void pad(char **buf, const char *s, int width, int zero)
     }
 }
 
-int vsprintf(char *buf, const char *fmt, va_list args)
-{
+int vsprintf(char *buf, const char *fmt, va_list args) {
     char *p = buf;
 
     while (*fmt) {
@@ -133,7 +137,7 @@ int vsprintf(char *buf, const char *fmt, va_list args)
             continue;
         }
 
-        fmt++; // skip %
+        fmt++;
 
         if (*fmt == '%') {
             *p++ = '%';
@@ -150,33 +154,25 @@ int vsprintf(char *buf, const char *fmt, va_list args)
         fmt = parse_format(fmt, &zero, &width);
 
         switch (*fmt) {
-
             case 'c': {
                 *p++ = (char)va_arg(args, int);
                 break;
             }
-
             case 's': {
                 char *s = va_arg(args, char*);
                 if (!s) s = "(null)";
                 pad(&p, s, width, 0);
                 break;
             }
-
             case 'd':
             case 'i': {
                 long long v;
-
-                if (is_longlong)
-                    v = va_arg(args, long long);
-                else if (is_long)
-                    v = va_arg(args, long);
-                else
-                    v = va_arg(args, int);
+                if (is_longlong) v = va_arg(args, long long);
+                else if (is_long) v = va_arg(args, long);
+                else v = va_arg(args, int);
 
                 char tmp[32];
                 int neg = (v < 0);
-
                 if (neg) v = -v;
 
                 itoa(v, tmp, 10, 0);
@@ -188,238 +184,235 @@ int vsprintf(char *buf, const char *fmt, va_list args)
                     } else {
                         char full[64];
                         full[0] = '-';
-
                         int i = 0;
                         while (tmp[i]) {
                             full[i + 1] = tmp[i];
                             i++;
                         }
                         full[i + 1] = 0;
-
                         pad(&p, full, width, zero);
                     }
                 } else {
                     pad(&p, tmp, width, zero);
                 }
-
                 break;
             }
-
             case 'u': {
                 unsigned long long v;
-
-                if (is_longlong)
-                    v = va_arg(args, unsigned long long);
-                else if (is_long)
-                    v = va_arg(args, unsigned long);
-                else
-                    v = va_arg(args, unsigned int);
+                if (is_longlong) v = va_arg(args, unsigned long long);
+                else if (is_long) v = va_arg(args, unsigned long);
+                else v = va_arg(args, unsigned int);
 
                 char tmp[32];
                 itoa(v, tmp, 10, 0);
                 pad(&p, tmp, width, zero);
                 break;
             }
-
             case 'x':
             case 'X': {
                 unsigned long long v;
-
-                if (is_longlong)
-                    v = va_arg(args, unsigned long long);
-                else if (is_long)
-                    v = va_arg(args, unsigned long);
-                else
-                    v = va_arg(args, unsigned int);
+                if (is_longlong) v = va_arg(args, unsigned long long);
+                else if (is_long) v = va_arg(args, unsigned long);
+                else v = va_arg(args, unsigned int);
 
                 char tmp[32];
                 itoa(v, tmp, 16, (*fmt == 'X'));
                 pad(&p, tmp, width, zero);
                 break;
             }
-
             case 'p': {
                 unsigned long long v = (unsigned long long)va_arg(args, void*);
-
                 char tmp[32];
                 tmp[0] = '0';
                 tmp[1] = 'x';
-
                 itoa(v, tmp + 2, 16, 0);
                 pad(&p, tmp, width ? width : 2, zero);
                 break;
             }
-
             default:
                 *p++ = '%';
                 *p++ = *fmt;
                 break;
         }
-
         fmt++;
     }
-
     *p = '\0';
     return (int)(p - buf);
 }
+
 void printk(LogType type, const char *fmt, ...) {
     if (!grad) {
-    char buf[1024];
-    va_list args;
-    uint64_t irq_flags = printk_irq_save();
-    
-    va_start(args, fmt);
-    int len = vsprintf(buf, fmt, args);
-    va_end(args);
-    
-    // If no flanterm context is available, send directly to serial (COM1).
-    if (ctx == NULL) {
+        char buf[1024];
+        va_list args;
+        uint64_t irq_flags = printk_irq_save();
+        
+        va_start(args, fmt);
+        int len = vsprintf(buf, fmt, args);
+        va_end(args);
+        
+        if (ctx == NULL) {
+            for (int i = 0; i < len; i++) {
+                if (buf[i] == '\n') serial_write_char('\r');
+                serial_write_char(buf[i]);
+            }
+            printk_irq_restore(irq_flags);
+            return;
+        }
+
+        int color = 0;
+        bool bright = true;
+        const char *text = " info   ";
+        
+        if (type == LOG_DEBUG) { color = 4; bright = false; text = " debug  "; }
+        else if (type == LOG_ERROR) { color = 1; bright = false; text = " error  "; }
+        else if (type == LOG_WARNING) { color = 3; bright = false; text = " warning  "; }
+        else if (type == LOG_ACPI) { color = 3; bright = false; text = " uACPI  "; }
+        else if (type == LOG_NONE) { color = 0; bright = false; text = ""; }
+        else if (type == LOG_TRACE) { color = 6; bright = false; text = " trace  "; }
+
+        flanterm_set_text_bg(ctx, color, bright);
+        flanterm_write(ctx, text, strlen(text));
+        flanterm_set_text_bg(ctx, 0, false);
+        if (type != LOG_NONE) flanterm_write(ctx, " ", 1);
+
         for (int i = 0; i < len; i++) {
             if (buf[i] == '\n') {
+                flanterm_write(ctx, "\r", 1);
                 serial_write_char('\r');
             }
+            flanterm_write(ctx, &buf[i], 1);
             serial_write_char(buf[i]);
         }
         printk_irq_restore(irq_flags);
-        return;
-    }
-    int color = 0;
-    bool bright = true;
-    const char *text = " info   ";
-    if (type == LOG_DEBUG) {
-        color = 4;
-        bright = false; 
-        text = " debug  ";
-    } else if (type == LOG_ERROR) {
-        color = 1;
-        bright = false;
-        text = " error  ";
-    } else if (type == LOG_WARNING) {
-        color = 3;
-        bright = false;
-        text = " warning  ";
-    } else if (type == LOG_ACPI) {
-        color = 3;
-        bright = false;
-        text = " uACPI  ";
-    } else if (type == LOG_NONE) {
-        color = 0;
-        bright = false;
-        text = "";
-    } else if (type == LOG_TRACE) {
-        color = 6;
-        bright = false;
-        text = " trace  ";
-    }
-    flanterm_set_text_bg(ctx, color, bright);
-    flanterm_write(ctx, text, strlen(text));
-    flanterm_set_text_bg(ctx, 0, false);
-    if (type != LOG_NONE) {
-    flanterm_write(ctx, " ", 1);
-    }
-    // Otherwise write through flanterm and also mirror to serial for physical COM1
-    for (int i = 0; i < len; i++) {
-        
-        if (buf[i] == '\n') {
-            flanterm_write(ctx, "\r", 1);
-            serial_write_char('\r');
-        }
-        
-        flanterm_write(ctx, &buf[i], 1);
-        serial_write_char(buf[i]);
-    }
-    printk_irq_restore(irq_flags);
     }
 }
 
+/**
+ * @brief High-performance, optimized hardware rectangle rendering loop.
+ */
 void draw_rect(int rect_x, int rect_y, int rect_width, int rect_height, 
-                   uint8_t r, uint8_t g, uint8_t b) 
+               uint8_t r, uint8_t g, uint8_t b) 
 {
-    // Safety check for null global pointer or unallocated memory
     if (!fb || !fb->address) return;
 
-    // Boundary Clipping
-    int x1 = rect_x;
-    int y1 = rect_y;
+    // 1. Highly streamlined clipping boundaries
+    int x1 = rect_x < 0 ? 0 : rect_x;
+    int y1 = rect_y < 0 ? 0 : rect_y;
     int x2 = rect_x + rect_width;
+    int x2_max = fb->width;
     int y2 = rect_y + rect_height;
+    int y2_max = fb->height;
 
-    if (x1 < 0) x1 = 0;
-    if (y1 < 0) y1 = 0;
-    if (x2 > fb->width)  x2 = fb->width;
-    if (y2 > fb->height) y2 = fb->height;
-
+    if (x2 > x2_max) x2 = x2_max;
+    if (y2 > y2_max) y2 = y2_max;
     if (x1 >= x2 || y1 >= y2) return;
 
+    int fill_pixels = x2 - x1;
     int bytes_per_pixel = fb->bpp / 8;
     uint8_t* fb_bytes = (uint8_t*)fb->address;
 
-    // Render loop
-    for (int y = y1; y < y2; y++) {
-        // Find starting memory position for this row
-        uint8_t* row_ptr = fb_bytes + (y * fb->pitch) + (x1 * bytes_per_pixel);
+    // Fast Path: 32-bit (4 bytes per pixel) layout (XRGB / ARGB / RGBA)
+    if (bytes_per_pixel == 4) {
+        // Pack into a single 32-bit register word.
+        // Limine standard uses RGB ordering within fields; modify packing order if colors appear inverted.
+        uint32_t color32 = (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16) | (255U << 24);
 
-        for (int x = x1; x < x2; x++) {
-            if (bytes_per_pixel == 3) {
-                // 24-bit RGB packed layout
-                row_ptr[0] = r;
-                row_ptr[1] = g;
-                row_ptr[2] = b;
-            } 
-            else if (bytes_per_pixel == 4) {
-                // 32-bit RGBA layout (Alpha channel defaults to fully opaque)
-                row_ptr[0] = r;
-                row_ptr[1] = g;
-                row_ptr[2] = b;
-                row_ptr[3] = 255; 
+        for (int y = y1; y < y2; y++) {
+            uint32_t* row_ptr = (uint32_t*)(fb_bytes + (y * fb->pitch) + (x1 * 4));
+            int count = fill_pixels;
+            
+            // Unrolled loop (4 pixels / 16 bytes per iteration)
+            while (count >= 4) {
+                row_ptr[0] = color32;
+                row_ptr[1] = color32;
+                row_ptr[2] = color32;
+                row_ptr[3] = color32;
+                row_ptr += 4;
+                count -= 4;
             }
-            row_ptr += bytes_per_pixel;
+            // Clean remaining trailing pixels
+            while (count > 0) {
+                *row_ptr++ = color32;
+                count--;
+            }
+        }
+    } 
+    // Alternate Path: 24-bit (3 bytes per pixel) packed layout
+    else if (bytes_per_pixel == 3) {
+        for (int y = y1; y < y2; y++) {
+            uint8_t* row_ptr = fb_bytes + (y * fb->pitch) + (x1 * 3);
+            int count = fill_pixels;
+
+            // Unrolled loop (Fill 4 pixels across aligned 12 bytes blocks)
+            while (count >= 4) {
+                row_ptr[0] = r; row_ptr[1] = g; row_ptr[2] = b;
+                row_ptr[3] = r; row_ptr[4] = g; row_ptr[5] = b;
+                row_ptr[6] = r; row_ptr[7] = g; row_ptr[8] = b;
+                row_ptr[9] = r; row_ptr[10] = g; row_ptr[11] = b;
+                row_ptr += 12;
+                count -= 4;
+            }
+            while (count > 0) {
+                row_ptr[0] = r;
+                row_ptr[1] = g;
+                row_ptr[2] = b;
+                row_ptr += 3;
+                count--;
+            }
         }
     }
 }
+
 void graduate() {
     grad = true;
     draw_rect(0, 0, fb->width, fb->height, 0, 0, 0);
 }
+
 void draw_image(int start_x, int start_y, int img_w, int img_h, const uint8_t *rgb_data) {
     if (!fb || !fb->address || !rgb_data) return;
 
-    // 1. Clip the image boundaries against the framebuffer
     int src_x = 0;
     int src_y = 0;
-    int dst_x1 = start_x;
-    int dst_y1 = start_y;
+    int dst_x1 = start_x < 0 ? 0 : start_x;
+    int dst_y1 = start_y < 0 ? 0 : start_y;
     int dst_x2 = start_x + img_w;
     int dst_y2 = start_y + img_h;
 
-    if (dst_x1 < 0) { src_x = -dst_x1; dst_x1 = 0; }
-    if (dst_y1 < 0) { src_y = -dst_y1; dst_y1 = 0; }
-    if (dst_x2 > fb->width)  dst_x2 = fb->width;
-    if (dst_y2 > fb->height) dst_y2 = fb->height;
+    if (start_x < 0) src_x = -start_x;
+    if (start_y < 0) src_y = -start_y;
+    if (dst_x2 > (int)fb->width)  dst_x2 = fb->width;
+    if (dst_y2 > (int)fb->height) dst_y2 = fb->height;
 
     if (dst_x1 >= dst_x2 || dst_y1 >= dst_y2) return;
 
+    int fill_pixels = dst_x2 - dst_x1;
     int bytes_per_pixel = fb->bpp / 8;
     uint8_t *fb_bytes = (uint8_t *)fb->address;
 
-    // 2. Optimized copy loop
     for (int y = dst_y1; y < dst_y2; y++) {
         uint8_t *dst_row = fb_bytes + (y * fb->pitch) + (dst_x1 * bytes_per_pixel);
         const uint8_t *src_row = rgb_data + ((src_y + (y - dst_y1)) * img_w * 3) + (src_x * 3);
 
         if (bytes_per_pixel == 3) {
-            // Bulk copy if image matches native 24-bit FB layout exactly
-            memcpy(dst_row, src_row, (dst_x2 - dst_x1) * 3);
+            memcpy(dst_row, src_row, fill_pixels * 3);
         } 
         else if (bytes_per_pixel == 4) {
-            // Blit 24-bit source to 32-bit destination row
-            for (int x = 0; x < (dst_x2 - dst_x1); x++) {
-                dst_row[0] = src_row[0]; // R
-                dst_row[1] = src_row[1]; // G
-                dst_row[2] = src_row[2]; // B
-                dst_row[3] = 255;        // A
-                dst_row += 4;
+            uint32_t *dst_ptr32 = (uint32_t *)dst_row;
+            int count = fill_pixels;
+            
+            while (count >= 4) {
+                dst_ptr32[0] = src_row[0] | (src_row[1] << 8) | (src_row[2] << 16) | (255U << 24);
+                dst_ptr32[1] = src_row[3] | (src_row[4] << 8) | (src_row[5] << 16) | (255U << 24);
+                dst_ptr32[2] = src_row[6] | (src_row[7] << 8) | (src_row[8] << 16) | (255U << 24);
+                dst_ptr32[3] = src_row[9] | (src_row[10] << 8) | (src_row[11] << 16) | (255U << 24);
+                dst_ptr32 += 4;
+                src_row += 12;
+                count -= 4;
+            }
+            while (count > 0) {
+                *dst_ptr32++ = src_row[0] | (src_row[1] << 8) | (src_row[2] << 16) | (255U << 24);
                 src_row += 3;
+                count--;
             }
         }
     }

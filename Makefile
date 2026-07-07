@@ -190,7 +190,10 @@ run: iso
 		-cdrom $(ISO) \
 		-device qemu-xhci,id=xhci \
 		-device usb-kbd,bus=xhci.0 \
-		-device usb-mouse,bus=xhci.0
+		-device usb-mouse,bus=xhci.0 \
+		-netdev user,id=net0 \
+		-device rtl8139,netdev=net0 \
+		-object filter-dump,id=f1,netdev=net0,file=packets.pcap
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

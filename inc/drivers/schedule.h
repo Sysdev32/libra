@@ -2,7 +2,7 @@
 #pragma once
 #include <stdint.h>
 int create_kernel_task(void (*entry_point)(void));
-int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int uid, int gid);
+int create_user_task(void (*entry_point)(void), void* allocated_user_stack, void *pml4, int uid, int gid);
 uint64_t schedule_preemptive(uint64_t old_rsp);
 void init_scheduler(void);
 void start_scheduler(void);
@@ -15,5 +15,5 @@ uint64_t terminate(uint64_t current_rsp, int pid);
 int getuid();
 int getgid();
 int spawn(char* path);
-uint64_t get_heap_start();
-uint64_t get_heap_end();
+int ipc_recv_nonblock(void *buf, uint32_t max_size, uint32_t *out_sender_pid);
+int ipc_send_nonblock(uint32_t target_pid, const void *buf, uint32_t size);

@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <string.h>
+#include <signal.h>
 #include <drivers/fb.h>
 #define MAX_TASKS 512
 #define KERNEL_STACK_SIZE 4096
@@ -9,6 +10,9 @@
 #define HHDM_OFFSET 0xffff800000000000ULL
 #define MAX_MSG_PAYLOAD 128  // Maximum bytes per single message
 #define MAX_PROCESS_MSGS 16  // Maximum pending messages a process can hold
+
+typedef uint64_t page_table_t;
+extern page_table_t *vmm_get_current_pml4(void);
 
 // The message structure stored in the kernel
 typedef struct {
@@ -30,6 +34,7 @@ typedef enum {
 struct task {
     uint64_t rsp;               // Saved kernel stack pointer 
     uint64_t user_rsp;          // Saved userspace stack pointer (0 for kthreads)
+    page_table_t *pml4;         // Per-task page table root for CR3 switching
     task_state_t state;         
     uint8_t fpu_state[512] __attribute__((aligned(16)));
     uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16))); 
@@ -40,6 +45,9 @@ struct task {
     int uid;
     int gid;
     int parent_pid;
+    uint64_t signal_handlers[32];
+    uint32_t pending_signals;
+    uint32_t sig_mask;
 };
 
 // Task State Segment (TSS) layout for x86_64
@@ -116,6 +124,11 @@ int create_kernel_task(void (*entry_point)(void)) {
             task_table[i].msg_head = 0;
             task_table[i].msg_tail = 0;
             task_table[i].msg_count = 0;
+            task_table[i].pending_signals = 0;
+            task_table[i].sig_mask = 0;
+            for (int j = 0; j < 32; j++) {
+                task_table[i].signal_handlers[j] = 0;
+            }
             init_fpu_context((struct task *)&task_table[i]);
 
             uint64_t *kernel_stack_top = (uint64_t *)((uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE] & ~0xFULL);
@@ -155,6 +168,7 @@ int create_kernel_task(void (*entry_point)(void)) {
             ctx[21] = 0x10;                              // SS: Kernel Data Selector (Ring 0)
 
             task_table[i].rsp = (uint64_t)ctx;
+            task_table[i].pml4 = vmm_get_current_pml4();
             task_table[i].state = TASK_STATE_READY;
             task_table[i].uid = 0;
             task_table[i].gid = 0;
@@ -170,7 +184,7 @@ int create_kernel_task(void (*entry_point)(void)) {
 /**
  * CREATE A USERSPACE TASK (Ring 3)
  */
-int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int uid, int gid) {
+int create_user_task(void (*entry_point)(void), void* allocated_user_stack, void *pml4, int uid, int gid) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -197,6 +211,7 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int 
             user_stack_hhdm_top[-2] = 0; // argc
             user_stack_hhdm_top[-1] = 0; // argv
             task_table[i].user_rsp = (uint64_t)&user_virt_stack_top[-2];
+            task_table[i].pml4 = (page_table_t *)pml4;
 
             uintptr_t k_stack_raw = (uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE];
             uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL); 
@@ -232,6 +247,11 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int 
             ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
             task_table[i].uid = uid;
             task_table[i].gid = gid;
+            task_table[i].pending_signals = 0;
+            task_table[i].sig_mask = 0;
+            for (int j = 0; j < 32; j++) {
+                task_table[i].signal_handlers[j] = 0;
+            }
             task_table[i].rsp = (uint64_t)ctx;
             task_table[i].state = TASK_STATE_READY;
             if (running) {
@@ -248,6 +268,90 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack, int 
     return -1;
 }
 
+static int task_next_pending_signal(struct task *task) {
+    for (int sig = 1; sig < 32; sig++) {
+        if (task->pending_signals & (1u << sig)) {
+            return sig;
+        }
+    }
+    return 0;
+}
+
+static bool task_deliver_signal(struct task *task, int sig) {
+    if (sig <= 0 || sig >= 32) {
+        return false;
+    }
+
+    task->pending_signals &= ~(1u << sig);
+    uint64_t handler = task->signal_handlers[sig];
+
+    if (handler == (uint64_t)SIG_IGN) {
+        return false;
+    }
+
+    if (handler == 0 || handler == (uint64_t)SIG_DFL) {
+        if (sig == SIGKILL || sig == SIGTERM) {
+            task->state = TASK_STATE_ZOMBIE;
+            return true;
+        }
+        return false;
+    }
+
+    uint64_t *ctx = (uint64_t *)task->rsp;
+    uint64_t old_rip = ctx[17];
+    uint64_t old_rsp = ctx[20];
+    uint64_t new_user_rsp = old_rsp - sizeof(uint64_t);
+    *(uint64_t *)new_user_rsp = old_rip;
+    ctx[20] = new_user_rsp;
+    ctx[5] = sig;
+    ctx[17] = handler;
+    return false;
+}
+
+uint64_t set_signal_handler(int sig, uint64_t handler) {
+    if (sig <= 0 || sig >= 32) {
+        return (uint64_t)SIG_ERR;
+    }
+
+    struct task *current = (struct task *)&task_table[current_task_id];
+    uint64_t old = current->signal_handlers[sig];
+    current->signal_handlers[sig] = handler;
+    if (old == 0) {
+        return (uint64_t)SIG_DFL;
+    }
+    return old;
+}
+
+int send_signal(int pid, int sig) {
+    if (pid < 0 || pid >= MAX_TASKS) {
+        return -1;
+    }
+    if (sig <= 0 || sig >= 32) {
+        return -1;
+    }
+
+    struct task *target = (struct task *)&task_table[pid];
+    if (target->state == TASK_STATE_DEAD || target->user_rsp == 0) {
+        return -1;
+    }
+
+    if (sig == SIGKILL || sig == SIGTERM) {
+        target->state = TASK_STATE_ZOMBIE;
+        return 0;
+    }
+
+    uint64_t handler = target->signal_handlers[sig];
+    if (handler == (uint64_t)SIG_IGN) {
+        return 0;
+    }
+
+    target->pending_signals |= (1u << sig);
+    if (target->state == TASK_STATE_BLOCKED_RECEIVE || target->state == TASK_STATE_WAITING || target->state == TASK_STATE_BLOCKED_SEND) {
+        target->state = TASK_STATE_READY;
+    }
+    return 0;
+}
+
 uint64_t schedule_preemptive(uint64_t old_rsp) {
     // Save the old stack pointer to its slot
     task_table[current_task_id].rsp = old_rsp;
@@ -259,14 +363,23 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
         task_table[old_task_id].state = TASK_STATE_READY;
     }
 
-    // Find the next available ready task
+    // Find the next available ready task and deliver any pending signal first
     int next_task_id = -1;
     for (int i = 1; i <= MAX_TASKS; i++) {
         int candidate = (current_task_id + i) % MAX_TASKS;
-        if (task_table[candidate].state == TASK_STATE_READY) {
-            next_task_id = candidate;
-            break;
+        if (task_table[candidate].state != TASK_STATE_READY) {
+            continue;
         }
+
+        int sig = task_next_pending_signal((struct task *)&task_table[candidate]);
+        if (sig) {
+            if (task_deliver_signal((struct task *)&task_table[candidate], sig)) {
+                continue;
+            }
+        }
+
+        next_task_id = candidate;
+        break;
     }
 
     // If no other runnable threads exist
@@ -287,6 +400,12 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
     // Switch contexts to the new task
     current_task_id = next_task_id;
     task_table[current_task_id].state = TASK_STATE_RUNNING;
+
+    // Activate the new task's address space for the upcoming return path
+    if (task_table[current_task_id].pml4) {
+        uint64_t new_cr3_phys = (uint64_t)task_table[current_task_id].pml4 - HHDM_OFFSET;
+        asm volatile("mov %0, %%cr3" :: "r"(new_cr3_phys) : "memory");
+    }
 
     // --- ADDED CLEANUP MECHANISM ---
     // If the previous task exited and became a zombie, safely free its slot now
@@ -323,6 +442,7 @@ void init_scheduler(void) {
     }
 
     task_table[0].state = TASK_STATE_RUNNING;
+    task_table[0].pml4 = vmm_get_current_pml4();
     current_task_id = 0;
 
     uint64_t kstack_canonical = (uint64_t)&task_table[0].kernel_stack[KERNEL_STACK_SIZE];
@@ -471,6 +591,93 @@ int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
         irq_restore(flags);
         schedule_preemptive(current_rsp);
     }
+}
+#define ERR_IPC_WOULD_BLOCK -2
+
+/**
+ * NON-BLOCKING SEND
+ * Returns 0 on success, -1 on invalid arguments/dead target, and -2 if the queue is full.
+ */
+int ipc_send_nonblock(uint32_t target_pid, const void *buf, uint32_t size) {
+    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == current_task_id) {
+        return -1;
+    }
+
+    uint64_t flags = irq_save();
+    volatile struct task *target = &task_table[target_pid];
+
+    // If target died, abort
+    if (target->state == TASK_STATE_DEAD || target->state == TASK_STATE_ZOMBIE) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    // QUEUE FULL: Instead of blocking, return immediately
+    if (target->msg_count >= MAX_PROCESS_MSGS) {
+        irq_restore(flags);
+        return ERR_IPC_WOULD_BLOCK; 
+    }
+
+    // Perform the write
+    int tail = target->msg_tail;
+    kernel_msg_t *msg = (kernel_msg_t *)&target->msg_queue[tail];
+    
+    msg->sender_pid = current_task_id;
+    msg->payload_size = size;
+    memcpy(msg->data, buf, size);
+
+    target->msg_tail = (tail + 1) % MAX_PROCESS_MSGS;
+    target->msg_count++;
+
+    // WAKE UP TARGET: If the target was blocked waiting for a message, make it ready
+    if (target->state == TASK_STATE_BLOCKED_RECEIVE) {
+        target->state = TASK_STATE_READY;
+    }
+
+    irq_restore(flags);
+    return 0; // Success
+}
+
+/**
+ * NON-BLOCKING RECEIVE
+ * Returns number of bytes copied on success, or -2 if the queue is empty.
+ */
+int ipc_recv_nonblock(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
+    uint64_t flags = irq_save();
+    volatile struct task *current = &task_table[current_task_id];
+
+    // QUEUE EMPTY: Instead of blocking, return immediately
+    if (current->msg_count == 0) {
+        irq_restore(flags);
+        return ERR_IPC_WOULD_BLOCK;
+    }
+
+    // Consume the message
+    int head = current->msg_head;
+    kernel_msg_t *msg = (kernel_msg_t *)&current->msg_queue[head];
+
+    uint32_t bytes_to_copy = msg->payload_size;
+    if (bytes_to_copy > max_size) {
+        bytes_to_copy = max_size;
+    }
+
+    memcpy(buf, msg->data, bytes_to_copy);
+    if (out_sender_pid) {
+        *out_sender_pid = msg->sender_pid;
+    }
+
+    current->msg_head = (head + 1) % MAX_PROCESS_MSGS;
+    current->msg_count--;
+
+    // WAKE UP SENDERS: Wake up any task that was blocked trying to send to us
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (task_table[i].state == TASK_STATE_BLOCKED_SEND) {
+            task_table[i].state = TASK_STATE_READY;
+        }
+    }
+
+    irq_restore(flags);
+    return bytes_to_copy;
 }
 int getuid() {
     return task_table[current_task_id].uid;
