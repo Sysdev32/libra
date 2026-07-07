@@ -694,10 +694,11 @@ void _start(void) {
     for (int i=0; i<devicecount; i++) {
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
-    // init_ahci();
-    // gpt_parse_partitions(get_primary_sata_drive());
+    init_ahci();
+    gpt_parse_partitions(get_primary_sata_drive());
     fat32_fs_t efi;
     init_rtl8139();
-    for(;;);
+    discover();
+    create_kernel_task(main_kthread);
     start_scheduler();
 }

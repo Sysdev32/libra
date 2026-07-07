@@ -4,7 +4,8 @@
 #include <drivers/pci.h>
 #include <drivers/ahci.h>
 #include <drivers/fb.h>
-
+#include <drivers/net/RTL8139.h>
+uint8_t mac[6];
 /* Register offsets */
 #define RTL8139_IDR0        0x00    // MAC address (6 bytes)
 #define RTL8139_MAR0        0x08
@@ -58,12 +59,7 @@ static uint32_t rx_offset = 0;
 extern pci_device_t* devices;
 extern uint32_t devicecount;
 
-struct __attribute__((packed)) eth_frame {
-    uint8_t dst[6];
-    uint8_t src[6];
-    uint16_t ethertype;
-    uint8_t payload[46]; 
-};
+
 
 struct __attribute__((packed)) rtl8139_rx_header {
     uint16_t status;
@@ -106,41 +102,34 @@ static inline void outl(uint16_t port, uint32_t val) {
 
 static inline uint8_t rtl_read8(uint16_t reg) {
     uint8_t val = inb(rtl_dev.io_base + reg);
-    printk(LOG_TRACE, "[RTL8139] READ8  offset 0x%02X -> value 0x%02X\n", reg, val);
     return val;
 }
 
 static inline uint16_t rtl_read16(uint16_t reg) {
     uint16_t val = inw(rtl_dev.io_base + reg);
-    printk(LOG_TRACE, "[RTL8139] READ16 offset 0x%02X -> value 0x%04X\n", reg, val);
     return val;
 }
 
 static inline uint32_t rtl_read32(uint16_t reg) {
     uint32_t val = inl(rtl_dev.io_base + reg);
-    printk(LOG_TRACE, "[RTL8139] READ32 offset 0x%02X -> value 0x%08X\n", reg, val);
     return val;
 }
 
 static inline void rtl_write8(uint16_t reg, uint8_t value) {
-    printk(LOG_TRACE, "[RTL8139] WRITE8 offset 0x%02X <- value 0x%02X\n", reg, value);
     outb(rtl_dev.io_base + reg, value);
 }
 
 static inline void rtl_write16(uint16_t reg, uint16_t value) {
-    printk(LOG_TRACE, "[RTL8139] WRITE16 offset 0x%02X <- value 0x%04X\n", reg, value);
     outw(rtl_dev.io_base + reg, value);
 }
 
 static inline void rtl_write32(uint16_t reg, uint32_t value) {
-    printk(LOG_TRACE, "[RTL8139] WRITE32 offset 0x%02X <- value 0x%08X\n", reg, value);
     outl(rtl_dev.io_base + reg, value);
 }
 
 /* --- Global High-Level Drivers --- */
 
 static inline void rtl_set_tx_addr(unsigned slot, uint32_t phys) {
-    printk(LOG_TRACE, "[RTL8139] Setting TX Addr for slot %u to 0x%08X\n", slot, phys);
     rtl_write32(RTL8139_TSAD0 + slot * 4, phys);
 }
 
@@ -250,32 +239,20 @@ bool rtl8139_send(const void *packet, uint16_t len)
     tx_slot = (tx_slot + 1) & 3;
     return true;
 }
-
-/* --- Packet Reception Processing Ring --- */
 void rtl8139_receive(uint8_t* buf)
 {
-    printk(LOG_TRACE, "[RTL8139] Processing receive buffer ring...\n");
-
-    /* Spin until the hardware reports the buffer is completely empty */
-    while (!(rtl_read8(RTL8139_CMD) & RTL8139_CMD_BUFE)) {
         struct rtl8139_rx_header *hdr = (struct rtl8139_rx_header *)(rx_buffer + rx_offset);
         uint16_t status = hdr->status;
         uint16_t len    = hdr->length;
 
-        printk(LOG_TRACE, "[RTL8139] Packet located in ring! status=0x%04X len=%u at offset 0x%X\n",
-            status, len, rx_offset);
-
         uint8_t *packet = (uint8_t *)(hdr + 1);
-
-        /* Verbose payload packet HEX dump */
-        printk(LOG_TRACE, "[RTL8139] Raw Payload Data Dump:\n");
-        for (uint16_t i = 0; i < len; i++) {
-            printk(LOG_TRACE, "%02X ", packet[i]);
-            if ((i & 15) == 15)
-                printk(LOG_TRACE, "\n");
-        }
-        buf = packet;
+        printk(LOG_TRACE, "RX: status=%04X len=%u offset=%u\n", status, len, rx_offset);
         printk(LOG_TRACE, "\n");
+
+        // FIX: Physically copy the packet data into the provided buffer!
+        if (buf) {
+            memcpy(buf, packet, len);
+        }
 
         /* Header (4 bytes) + frame length, aligned to next 4-byte boundary */
         rx_offset += len + 4;
@@ -287,10 +264,8 @@ void rtl8139_receive(uint8_t* buf)
         /* Underflow protection calculation for the CAPR register update */
         uint32_t capr_val = (rx_offset >= 16) ? (rx_offset - 16) : (0x2000 + rx_offset - 16);
         rtl_write16(RTL8139_CAPR, (uint16_t)capr_val);
-    }
-    printk(LOG_TRACE, "[RTL8139] RX ring buffer complete / fully emptied.\n");
-}
 
+}
 /* --- Global Polling Strategy Entry Point --- */
 void rtl8139_poll(uint8_t* buf) 
 {
@@ -299,25 +274,19 @@ void rtl8139_poll(uint8_t* buf)
     if (isr_status == 0) {
         return; // Early return to avoid flooding trace logs when idle
     }
-
-    printk(LOG_TRACE, "[RTL8139_POLL] Activity detected! Captured ISR flags: 0x%04X\n", isr_status);
-
     /* Direct Poll: Handle incoming packet buffer data changes */
     if (isr_status & RTL8139_ISR_ROK) {
-        printk(LOG_TRACE, "[RTL8139_POLL] RX Ok (ROK) flag set. Dispatching receiver loop.\n");
         rtl8139_receive(buf);
         rtl_ack_irq(RTL8139_ISR_ROK);
     }
 
     /* Direct Poll: Handle transmission event closures */
     if (isr_status & RTL8139_ISR_TOK) {
-        printk(LOG_TRACE, "[RTL8139_POLL] TX Ok (TOK) flag caught. Frame completely pushed out.\n");
         rtl_ack_irq(RTL8139_ISR_TOK);
     }
 
     /* Clean tracking indicators for errors caught during continuous heavy polling */
     if (isr_status & (RTL8139_ISR_RER | RTL8139_ISR_TER)) {
-        printk(LOG_TRACE, "[RTL8139_POLL] WARNING: Detected transmission or reception error state: 0x%04X\n", isr_status);
         rtl_ack_irq(isr_status & (RTL8139_ISR_RER | RTL8139_ISR_TER));
     }
 }
@@ -398,7 +367,6 @@ void init_rtl8139(void) {
            (uint8_t)((mac_high >> 8) & 0xFF));
 
     struct eth_frame frame = {0};
-    uint8_t mac[6];
 
     mac[0] = (uint8_t)(mac_low);
     mac[1] = (uint8_t)(mac_low >> 8);
@@ -415,4 +383,19 @@ void init_rtl8139(void) {
     
     printk(LOG_TRACE, "[RTL8139] Dispatching validation diagnostic test packet...\n");
     rtl8139_send(&frame, sizeof(struct eth_frame));
+}
+uint8_t* get_mac() {
+    return mac;
+}
+// Example helper to check if the RTL8139 hardware buffer has data
+int rtl8139_has_packet(void) {
+    // Read the Command Register (Offset 0x37)
+    // Bit 0 (0x01) is typically the "Buffer Empty" (BUFE) flag
+    uint8_t cmd = inb(rtl_dev.io_base + 0x37);
+    
+    // If the Buffer Empty bit is set, return 0 (no packets waiting)
+    if (cmd & 0x01) {
+        return 0;
+    }
+    return 1; // Packets are waiting in the hardware ring!
 }

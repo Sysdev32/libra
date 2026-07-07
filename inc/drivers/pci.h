@@ -1,3 +1,4 @@
+#pragma once
 #include <stdint.h>
 #define MAX_PCI_DEVICES 128
 
