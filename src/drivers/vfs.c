@@ -996,3 +996,106 @@ int vfs_getdents(int fd, void *buf, size_t count, uint64_t offset) {
         return -EACCES;
     }
 }
+#include <drivers/alloc.h> // Ensure kmalloc/kfree are accessible here
+
+// We use the 'struct file' type alias internally to act as the POSIX DIR stream context
+typedef struct file DIR;
+
+/**
+ * opens a directory stream corresponding to the directory named by the path.
+ * Returns a pointer to the directory stream, or NULL on failure.
+ */
+DIR *opendir(const char *path) {
+    if (path == NULL) return NULL;
+
+    // Look up the dentry node associated with the requested path
+    struct dentry *dir_dentry = vfs_lookup(path);
+    if (dir_dentry == NULL || dir_dentry->inode == NULL) {
+        return NULL; // Directory not found
+    }
+
+    // Verify that the targeted node is actually a directory
+    if ((dir_dentry->inode->mode & S_IFMT) != S_IFDIR) {
+        return NULL; // Not a directory
+    }
+
+    // Enforce Read permission tracking on the directory itself
+    if (!permdir(dir_dentry, 0)) {
+        return NULL; // Access Denied
+    }
+
+    // Allocate a runtime descriptor tracking block for the directory stream
+    DIR *dir_stream = kmalloc(sizeof(DIR));
+    if (dir_stream == NULL) {
+        return NULL; // Out of memory
+    }
+
+    dir_stream->dentry = dir_dentry;
+    dir_stream->offset = 0; // Initialize our child index tracker to 0
+    dir_stream->flags  = 0;
+
+    return dir_stream;
+}
+
+/**
+ * Returns a pointer to a vfs_dirent structure representing the next directory entry 
+ * in the directory stream pointed to by dirp. Returns NULL on EOF or failure.
+ */
+struct vfs_dirent *readdir(DIR *dirp) {
+    // Validate stream and target node traits
+    if (dirp == NULL || dirp->dentry == NULL || dirp->dentry->inode == NULL) {
+        return NULL;
+    }
+
+    struct dentry *dir_dentry = dirp->dentry;
+
+    // Re-verify permissions before reading the stream entries
+    if (!permdir(dir_dentry, 0)) {
+        return NULL;
+    }
+
+    // Maintain a static allocation structure to safely pass back memory references
+    static struct vfs_dirent entry;
+
+    // Step through the static child array using the cursor tracking 'offset'
+    while (dirp->offset < dir_dentry->child_count) {
+        struct dentry *child = dir_dentry->children[dirp->offset];
+        dirp->offset++; // Advance cursor automatically for the next call
+
+        if (child == NULL || child->inode == NULL || child->name == NULL) {
+            continue; // Skip any unallocated slots or corrupt elements
+        }
+
+        // Map internal metadata details over to standard POSIX structure format
+        entry.d_ino = child->inode->ino_num;
+        
+        if ((child->inode->mode & S_IFMT) == S_IFDIR) {
+            entry.d_type = 4; // DT_DIR
+        } else {
+            entry.d_type = 8; // DT_REG
+        }
+
+        // Safely extract filename into static buffer zone
+        memset(entry.d_name, 0, 256);
+        strncpy(entry.d_name, child->name, 255);
+        entry.d_name[255] = '\0';
+
+        return &entry; // Return pointer to populated structural data context
+    }
+
+    return NULL; // Reached End of Directory (EOF)
+}
+
+/**
+ * Closes the directory stream associated with dirp.
+ * Returns 0 on success, or -1 on error.
+ */
+int closedir(DIR *dirp) {
+    if (dirp == NULL) {
+        return -1;
+    }
+    
+    // Deallocate the execution state tracking block
+    kfree(dirp);
+    return 0;
+}

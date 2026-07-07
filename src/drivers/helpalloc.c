@@ -2,6 +2,9 @@
 #include <drivers/fb.h>
 #include <string.h>
 #include <limine.h>
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 #define MAX_ORDER 11 
 #define PAGE_SIZE 4096
@@ -10,8 +13,16 @@
 #define PTE_PRESENT  (1ULL << 0)
 #define PTE_WRITABLE (1ULL << 1)
 #define PTE_USER     (1ULL << 2)
+#define PTE_NO_EXECUTE (1ULL << 63)
 #define PTE_FRAME    0x000FFFFFFFFFF000ULL 
 #define HHDM_OFFSET  0xffff800000000000ULL
+#define PROT_READ  0x1
+#define PROT_WRITE 0x2
+#define PROT_EXEC  0x4
+#define MAP_SHARED   0x01
+#define MAP_PRIVATE  0x02
+#define MAP_FIXED    0x10
+#define MAP_ANONYMOUS 0x20
 
 #define PML4_INDEX(addr) (((addr) >> 39) & 0x1FF)
 #define PDPT_INDEX(addr) (((addr) >> 30) & 0x1FF)
@@ -233,8 +244,8 @@ page_table_t *vmm_get_current_pml4(void) {
 
 /**
  * Creates an isolated, sandboxed user process address space context.
- * Copies kernel space mappings (entries 256-511) and immediately loads the context into CR3.
- * * @return Virtual address pointer to the newly created and active PML4 root table.
+ * Copies kernel space mappings (entries 256-511) into a fresh PML4.
+ * @return Virtual address pointer to the newly created PML4 root table.
  */
 page_table_t *vmm_create_address_space(void) {
     // 1. Request a clean physical frame for our root PML4 directory
@@ -251,12 +262,7 @@ page_table_t *vmm_create_address_space(void) {
         new_pml4[i] = kernel_pml4[i];
     }
     
-    // 3. Compute the raw physical address of our new root directory structure
-    uint64_t new_pml4_phys = (uint64_t)new_pml4 - HHDM_OFFSET;
-    
-    // 4. Update the CR3 register to context switch into our newly isolated address space
-    asm volatile("mov %0, %%cr3" :: "r"(new_pml4_phys) : "memory");
-    
+    // 3. Return the newly allocated PML4 for later activation by the scheduler.
     return new_pml4;
 }
 
@@ -297,4 +303,169 @@ void vmm_map_page(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t fla
 
     // Flush the translation lookaside buffer (TLB) for this modified page
     asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
+}
+
+static inline page_table_t *vmm_get_next_table(page_table_t *table, uint64_t index) {
+    if (!(table[index] & PTE_PRESENT)) {
+        return NULL;
+    }
+    return phys_to_virt(table[index] & PTE_FRAME);
+}
+
+static void vmm_unmap_page(page_table_t *pml4, uint64_t virt) {
+    page_table_t *pdpt = vmm_get_next_table(pml4, PML4_INDEX(virt));
+    if (!pdpt) return;
+    page_table_t *pd = vmm_get_next_table(pdpt, PDPT_INDEX(virt));
+    if (!pd) return;
+    page_table_t *pt = vmm_get_next_table(pd, PD_INDEX(virt));
+    if (!pt) return;
+
+    uint64_t entry = pt[PT_INDEX(virt)];
+    if (!(entry & PTE_PRESENT)) {
+        return;
+    }
+
+    uint64_t phys = entry & PTE_FRAME;
+    pt[PT_INDEX(virt)] = 0;
+    asm volatile("invlpg (%0)" :: "r"(virt) : "memory");
+    pmm_free_pages((void *)(phys + HHDM_OFFSET), 0);
+}
+
+static inline bool vmm_page_is_mapped(page_table_t *pml4, uint64_t virt) {
+    page_table_t *pdpt = vmm_get_next_table(pml4, PML4_INDEX(virt));
+    if (!pdpt) return false;
+    page_table_t *pd = vmm_get_next_table(pdpt, PDPT_INDEX(virt));
+    if (!pd) return false;
+    page_table_t *pt = vmm_get_next_table(pd, PD_INDEX(virt));
+    if (!pt) return false;
+    return (pt[PT_INDEX(virt)] & PTE_PRESENT) != 0;
+}
+
+static bool vmm_region_is_free(page_table_t *pml4, uint64_t start, size_t length) {
+    if (length == 0) {
+        return true;
+    }
+
+    uint64_t end = start + length;
+    if (end < start) {
+        return false;
+    }
+
+    for (uint64_t addr = start; addr < end; addr += PAGE_SIZE) {
+        if (vmm_page_is_mapped(pml4, addr)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static uint64_t vmm_find_free_region(page_table_t *pml4, uint64_t hint, size_t pages) {
+    const uint64_t USER_MMAP_LIMIT = 0x00007FFFFFFFF000ULL;
+    uint64_t bytes = pages * PAGE_SIZE;
+    uint64_t candidate = (hint + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    while (candidate + bytes <= USER_MMAP_LIMIT) {
+        if (vmm_region_is_free(pml4, candidate, bytes)) {
+            return candidate;
+        }
+        candidate += PAGE_SIZE;
+    }
+    return 0;
+}
+
+static uint64_t mmap_cursor = 0x00100000ULL;
+
+void *vmm_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
+    if (length == 0) {
+        return (void *)-1;
+    }
+
+    if (!(flags & MAP_ANONYMOUS) || fd != -1 || offset != 0) {
+        return (void *)-1;
+    }
+
+    size_t pages = (length + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint64_t target = (uint64_t)addr;
+    page_table_t *pml4 = vmm_get_current_pml4();
+
+    if (target == 0) {
+        if (mmap_cursor < 0x00100000ULL) {
+            mmap_cursor = 0x00100000ULL;
+        }
+        target = vmm_find_free_region(pml4, mmap_cursor, pages);
+        if (target == 0) {
+            return (void *)-1;
+        }
+        mmap_cursor = target + pages * PAGE_SIZE;
+    } else {
+        if (target & (PAGE_SIZE - 1)) {
+            return (void *)-1;
+        }
+        if (flags & MAP_FIXED) {
+            if (!vmm_region_is_free(pml4, target, pages * PAGE_SIZE)) {
+                return (void *)-1;
+            }
+        } else {
+            if (!vmm_region_is_free(pml4, target, pages * PAGE_SIZE)) {
+                target = vmm_find_free_region(pml4, mmap_cursor, pages);
+                if (target == 0) {
+                    return (void *)-1;
+                }
+                mmap_cursor = target + pages * PAGE_SIZE;
+            }
+        }
+    }
+
+    uint64_t pte_flags = PTE_USER | PTE_PRESENT;
+    if (prot & PROT_WRITE) {
+        pte_flags |= PTE_WRITABLE;
+    }
+    if (!(prot & PROT_EXEC)) {
+        pte_flags |= PTE_NO_EXECUTE;
+    }
+
+    for (size_t i = 0; i < pages; i++) {
+        void *page = pmm_alloc_pages(0);
+        if (!page) {
+            for (size_t j = 0; j < i; j++) {
+                vmm_unmap_page(pml4, target + j * PAGE_SIZE);
+            }
+            return (void *)-1;
+        }
+        memset(page, 0, PAGE_SIZE);
+        uint64_t phys = (uint64_t)page - HHDM_OFFSET;
+        vmm_map_page(pml4, target + i * PAGE_SIZE, phys, pte_flags);
+    }
+
+    return (void *)target;
+}
+
+int vmm_munmap(void *addr, size_t length) {
+    if (addr == NULL || length == 0) {
+        return -1;
+    }
+
+    uint64_t start = (uint64_t)addr & ~(PAGE_SIZE - 1);
+    uint64_t end = ((uint64_t)addr + length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    page_table_t *pml4 = vmm_get_current_pml4();
+
+    for (uint64_t current = start; current < end; current += PAGE_SIZE) {
+        page_table_t *pdpt = vmm_get_next_table(pml4, PML4_INDEX(current));
+        if (!pdpt) continue;
+        page_table_t *pd = vmm_get_next_table(pdpt, PDPT_INDEX(current));
+        if (!pd) continue;
+        page_table_t *pt = vmm_get_next_table(pd, PD_INDEX(current));
+        if (!pt) continue;
+
+        uint64_t entry = pt[PT_INDEX(current)];
+        if (!(entry & PTE_PRESENT)) {
+            continue;
+        }
+
+        uint64_t phys = entry & PTE_FRAME;
+        pt[PT_INDEX(current)] = 0;
+        asm volatile("invlpg (%0)" :: "r"(current) : "memory");
+        pmm_free_pages((void *)(phys + HHDM_OFFSET), 0);
+    }
+    return 0;
 }

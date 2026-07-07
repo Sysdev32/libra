@@ -321,32 +321,71 @@ void stack_free(uint64_t phys) {
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
 int spawn(char* path) {
-    // Create an isolated, sandboxed user address space context.
-    page_table_t *user_pml4 = vmm_create_address_space();
-    if (user_pml4 == NULL) {
-        printk(LOG_ERROR, "Could not allocate isolated user address space\n");
-        for(;;);
-    }
-    int user_fd = vfs_open(path);
-    if (user_fd < 0) {
-        printk(LOG_ERROR, "Could not open user_app.elf\n");
-        for(;;);
-    }
-    // User virtual memory space layouts matching your linker script
+    printk(LOG_TRACE, "[SPAWN] Entering spawn() with user path pointer: %p\n", (void*)path);
 
-    // Open the user ELF binary file
+    if (!path) {
+        printk(LOG_ERROR, "[SPAWN] Error: User-supplied path pointer is NULL!\n");
+        return -1;
+    }
+
+    // Safely copy the user-supplied path into kernel memory BEFORE
+    // creating a new address space (which will switch CR3).
+    char kpath[256];
+    printk(LOG_TRACE, "[SPAWN] Copying user path string safely to kernel buffer...\n");
     
+    for (int i = 0; i < 255; i++) {
+        char c = path[i];
+        kpath[i] = c;
+        if (c == '\0') {
+            printk(LOG_TRACE, "[SPAWN] Null-terminator found at index %d. Path string: \"%s\"\n", i, kpath);
+            break;
+        }
+        if (i == 254) {
+            kpath[255] = '\0';
+            printk(LOG_WARNING, "[SPAWN] Warning: Path string exceeded 254 characters! Truncating.\n");
+        }
+    }
+
+    printk(LOG_TRACE, "[SPAWN] Requesting creation of an isolated user address space (PML4)...\n");
+    page_table_t *user_pml4 = vmm_create_address_space();
+    
+    if (user_pml4 == NULL) {
+        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not allocate isolated user address space (PML4 is NULL)!\n");
+        for(;;);
+    }
+    printk(LOG_TRACE, "[SPAWN] Successfully allocated isolated user address space. PML4 CR3 Root: %p\n", (void*)user_pml4);
+
+    printk(LOG_TRACE, "[SPAWN] Attempting VFS open on kernel-safe path: \"%s\"\n", kpath);
+    int user_fd = vfs_open(kpath);
+    
+    if (user_fd < 0) {
+        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not open file \"%s\". VFS Error Code: %d\n", kpath, user_fd);
+        for(;;);
+    }
+    printk(LOG_TRACE, "[SPAWN] File successfully opened. Assigned File Descriptor (FD): %d\n", user_fd);
 
     uint64_t user_flags = PTE_USER | PTE_WRITABLE;
     struct vfs_stat stat = {0};
+    
+    printk(LOG_TRACE, "[SPAWN] Fetching file stats via vfs_fstat for FD %d...\n", user_fd);
     vfs_fstat(user_fd, &stat);
+    printk(LOG_TRACE, "[SPAWN] File Size Metrics: %zu bytes (Blocks allocated: %zu)\n", (size_t)stat.st_size, (size_t)stat.st_blocks);
+
     // Physical bases configuration
+    printk(LOG_TRACE, "[SPAWN] Allocating physical arenas...\n");
     uint64_t safe_code_phys_base  = arena_alloc(stat.st_size);  
+    printk(LOG_TRACE, "[SPAWN] -> safe_code_phys_base allocated: %p (Size: %zu bytes)\n", (void*)safe_code_phys_base, (size_t)stat.st_size);
+
     uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);  
+    printk(LOG_TRACE, "[SPAWN] -> safe_stack_phys_base allocated: %p (Size: 256 KB)\n", (void*)safe_stack_phys_base);
 
     // Staging buffer math: 0x8000000 + (9216 * 4096) = 0xA400000
     uint64_t raw_elf_phys_base    = safe_code_phys_base + (9216 * PAGE_SIZE); 
     void* raw_elf_hhdm_ptr        = (void*)(raw_elf_phys_base + HHDM_OFFSET);
+    
+    printk(LOG_TRACE, "[SPAWN] Staging Buffer Offset Math:\n");
+    printk(LOG_TRACE, "        -> raw_elf_phys_base: %p\n", (void*)raw_elf_phys_base);
+    printk(LOG_TRACE, "        -> raw_elf_hhdm_ptr:  %p (HHDM Offset applied)\n", raw_elf_hhdm_ptr);
 
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
@@ -356,16 +395,24 @@ int spawn(char* path) {
     // ============================================================================
     // STEP 1: Read raw ELF file sequentially into staging buffer + VERBOSE LOGS
     // ============================================================================
+    printk(LOG_TRACE, "[SPAWN] Starting raw ELF file streaming sequential read loop...\n");
     while (1) {
         void *current_dest_ptr = (void *)((uint8_t*)raw_elf_hhdm_ptr + total_bytes_read);
+        
+        printk(LOG_TRACE, "[SPAWN] Reading Page %d -> Requesting %d bytes from File Cursor %d to target RAM ptr: %p\n", 
+               page_index, PAGE_SIZE, file_cursor, current_dest_ptr);
         
         int chunks_read = vfs_read(user_fd, current_dest_ptr, PAGE_SIZE, file_cursor);
         
         if (first_chunk) {
+            printk(LOG_TRACE, "[SPAWN] First chunk read result: %d bytes. Checking ELF Magic Header...\n", chunks_read);
+            uint8_t *magic = (uint8_t*)current_dest_ptr;
+            printk(LOG_TRACE, "[SPAWN] Magic bytes: 0x%02x 0x%02x 0x%02x 0x%02x\n", magic[0], magic[1], magic[2], magic[3]);
             first_chunk = 0;
         }
 
         if (chunks_read <= 0) {
+            printk(LOG_TRACE, "[SPAWN] Stream loop terminated. vfs_read returned: %d (EOF or Error context)\n", chunks_read);
             break; 
         }
 
@@ -373,12 +420,22 @@ int spawn(char* path) {
         file_cursor += chunks_read;
         page_index++;
     }
+    
+    printk(LOG_TRACE, "[SPAWN] Read loop finished. Total cumulative bytes streamed into RAM: %zu bytes across %d chunks.\n", (size_t)total_bytes_read, page_index);
+
+    printk(LOG_TRACE, "[SPAWN] Parsing ELF virtual target entry address from raw memory pointer %p...\n", raw_elf_hhdm_ptr);
     uint64_t user_code_vma  = elf_vaddr(raw_elf_hhdm_ptr); 
     uint64_t user_stack_vma = 0x600000;
+    
+    printk(LOG_TRACE, "[SPAWN] Parsed Layout Context:\n");
+    printk(LOG_TRACE, "        -> Target User Code VMA Base: %p\n", (void*)user_code_vma);
+    printk(LOG_TRACE, "        -> Target User Stack VMA Base: %p\n", (void*)user_stack_vma);
+
+    printk(LOG_TRACE, "[SPAWN] Closing VFS File Descriptor %d and cleaning resources...\n", user_fd);
     vfs_free_fd(user_fd);
 
     if (total_bytes_read <= 0) {
-        printk(LOG_ERROR, "user_app.elf is empty or failed to read!\n");
+        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: user_app.elf read verification failed! Total bytes read is 0 or negative.\n");
         for(;;);
     }
 
@@ -386,69 +443,75 @@ int spawn(char* path) {
     // STEP 2: Map execution page memory window up-front 
     // ============================================================================
     int staging_pages = 8300; 
+    printk(LOG_TRACE, "[SPAWN] Beginning execution page table allocation window up-front mapping sequence (%d pages)...\n", staging_pages);
+    
     for (int i = 0; i < staging_pages; i++) {
         uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
         uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
+        void *clear_ptr = (void*)(current_phys + HHDM_OFFSET);
         
-        memset((void*)(current_phys + HHDM_OFFSET), 0, PAGE_SIZE);
+        // Log every 1000 pages to prevent output log drowning, but keep it trace-heavy
+        if (i == 0 || i == staging_pages - 1 || i % 1000 == 0) {
+            printk(LOG_TRACE, "[SPAWN] Mapping Execution Frame [%d/%d]: Phys %p -> VMA %p (Zeroing HHDM: %p)\n", 
+                   i, staging_pages - 1, (void*)current_phys, (void*)current_vma, clear_ptr);
+        }
+        
+        memset(clear_ptr, 0, PAGE_SIZE);
         vmm_map_page(user_pml4, current_vma, current_phys, user_flags);
     }
+    printk(LOG_TRACE, "[SPAWN] Execution page table window fully pre-mapped into PML4 root structural context.\n");
+
     // CRITICAL FIX: Explicitly passing target physical destination and virtual base offsets
+    printk(LOG_TRACE, "[SPAWN] Passing payload to ELF Dynamic Program Loader...\n");
+    printk(LOG_TRACE, "        Args: Raw HHDM Ptr: %p, Dest Phys Base: %p, Target VMA Base: %p\n", 
+           raw_elf_hhdm_ptr, (void*)safe_code_phys_base, (void*)user_code_vma);
+    
     ElfLoadResult loaded_app = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
 
+    printk(LOG_TRACE, "[SPAWN] ELF Loader execution phase concluded.\n");
+    printk(LOG_TRACE, "        -> Entry Point Result: %p\n", (void*)loaded_app.entry_point);
+
     if (loaded_app.entry_point == 0) {
-        printk(LOG_ERROR, "ELF Loader failed to validate or parse user_app.elf!\n");
+        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: ELF Loader failed to validate, parse, or resolve segments of the target ELF!\n");
         for(;;);
     }
 
-    uint64_t program_pages_used = (loaded_app.mem_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    // Expand program mappings if size exceeded initial guest bounds
-    if (program_pages_used > (uint64_t)staging_pages) {
-        for (uint64_t i = staging_pages; i < program_pages_used; i++) {
-            uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
-            uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
-            memset((void*)(current_phys + HHDM_OFFSET), 0, PAGE_SIZE);
-            vmm_map_page(user_pml4, current_vma, current_phys, user_flags);
-        }
-    }
-
-    // ============================================================================
-    // STEP 4: Setup Heap Space (.sbrk) matching your linker script _heap_start
-    // ============================================================================
-    const int user_heap_pages = (HEAP_END - HEAP_START) / PAGE_SIZE;
-
-    uint64_t user_heap_vma = HEAP_START;
-
-    for (int heap_page = 0; heap_page < user_heap_pages; heap_page++) {
-        uint64_t heap_phys = safe_code_phys_base + ((program_pages_used + heap_page) * PAGE_SIZE);
-
-        void *heap_hhdm_ptr = (void *)(heap_phys + HHDM_OFFSET);
-        memset(heap_hhdm_ptr, 0, PAGE_SIZE);
-
-        vmm_map_page(
-            user_pml4,
-            user_heap_vma + ((uint64_t)heap_page * PAGE_SIZE),
-            heap_phys,
-            user_flags
-        );
-    }
+    // The user heap will grow lazily via sbrk/mmap from userland; do not pre-map the
+    // entire reserved heap region. This avoids a 512MB eager allocation at boot.
     // ============================================================================
     // STEP 5: Map a Multi-Page Stack Region and Calculate the Initial RSP
     // ============================================================================
     int user_stack_pages = 64; 
+    printk(LOG_TRACE, "[SPAWN] Setting up stack context. Mapping user land runtime stack region (%d pages total)...\n", user_stack_pages);
+    
     for (int i = 0; i < user_stack_pages; i++) {
         uint64_t stack_phys = safe_stack_phys_base + (i * PAGE_SIZE);
+        uint64_t stack_vma  = user_stack_vma + (i * PAGE_SIZE);
         void *stack_hhdm_ptr = (void *)(stack_phys + HHDM_OFFSET);
+        
+        if (i == 0 || i == user_stack_pages - 1 || i % 16 == 0) {
+            printk(LOG_TRACE, "[SPAWN] Mapping Stack Frame [%d/%d]: Phys %p -> VMA %p (Zeroing HHDM: %p)\n", 
+                   i, user_stack_pages - 1, (void*)stack_phys, (void*)stack_vma, stack_hhdm_ptr);
+        }
+        
         memset(stack_hhdm_ptr, 0, PAGE_SIZE);
-        vmm_map_page(user_pml4, user_stack_vma + (i * PAGE_SIZE), stack_phys, user_flags);
+        vmm_map_page(user_pml4, stack_vma, stack_phys, user_flags);
     }
 
     uint64_t initial_rsp = user_stack_vma + (user_stack_pages * PAGE_SIZE) - 16;
+    printk(LOG_TRACE, "[SPAWN] Calculated Initial Stack Pointer (RSP) location: %p (16-byte alignment applied)\n", (void*)initial_rsp);
 
-    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, 0, 0);
+    printk(LOG_TRACE, "[SPAWN] Ultimate verification check before executing task switch:\n");
+    printk(LOG_TRACE, "        -> Entry point RIP Target:     %p\n", (void*)loaded_app.entry_point);
+    printk(LOG_TRACE, "        -> Target Initial RSP Context: %p\n", (void*)initial_rsp);
+    printk(LOG_TRACE, "        -> Page Table Root CR3 Context:%p\n", (void*)user_pml4);
+    
+    printk(LOG_TRACE, "[SPAWN] Spawning thread now. Yielding context to scheduler/task creator...\n");
+    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, user_pml4, 0, 0);
 }
 static void main_kthread(void) {
-    spawn("user_app.elf");
+    printk(LOG_TRACE, "MAIN KTHREAD HAS ARRIVED LOL OLLKOLLOL!!!!!\n");
+    spawn("/System/usr/bin/graphical/WindowManager");
     for (;;) {
         asm volatile("sti; hlt");
     }
@@ -631,13 +694,10 @@ void _start(void) {
     for (int i=0; i<devicecount; i++) {
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
-    init_ahci();
-    gpt_parse_partitions(get_primary_sata_drive());
+    // init_ahci();
+    // gpt_parse_partitions(get_primary_sata_drive());
     fat32_fs_t efi;
-    fat32_init(get_volume(0), &efi);
-    if (create_kernel_task(main_kthread) < 0) {
-        printk(LOG_ERROR, "Failed to create main kthread.\n");
-        hlt();
-    }
+    init_rtl8139();
+    for(;;);
     start_scheduler();
 }

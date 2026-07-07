@@ -97,3 +97,9 @@ int vfs_rmdir(const char *path);
 int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_stat(const char *path, struct vfs_stat *st);
 int vfs_fstat(int fd, struct vfs_stat *st);
+typedef struct file DIR;
+
+// --- DIRECTORY STREAMING API ---
+DIR *opendir(const char *path);
+struct vfs_dirent *readdir(DIR *dirp);
+int closedir(DIR *dirp);

@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <drivers/idt.h>
 #include <string.h>
+#include <errno.h>
 #include <drivers/fb.h>
+#include <drivers/alloc.h>
 #include <limine.h>
 #include <drivers/schedule.h>
 #include <drivers/vfs.h>
@@ -9,6 +11,8 @@
 #include <uacpi/sleep.h>
 #include <stdint.h>
 extern struct flanterm_context *ft_ctx;
+extern uint64_t set_signal_handler(int sig, uint64_t handler);
+extern int send_signal(int pid, int sig);
 uint64_t admin_seed = 0xCAFEF00DD1CE1ULL; 
 uint64_t user_seed = 0xCAFEF11DEADBEULL; 
 void outb(uint16_t port, uint8_t val) {
@@ -115,6 +119,51 @@ void ps2_wait_write(void) {
 void ps2_wait_read(void) {
     while (!(inb(0x64) & 1));
 }
+static void ps2_enable_mouse(void) {
+    // Enable PS/2 mouse port 2 and turn on data reporting.
+    ps2_wait_write();
+    outb(0x64, 0xA8); // Enable Port 2 (Mouse)
+
+    ps2_wait_write();
+    outb(0x64, 0xA9); // Test Port 2
+    ps2_wait_read();
+    if (inb(0x60) != 0x00) {
+        return; // No mouse or no PS/2 port 2 support.
+    }
+
+    // Enable mouse interrupts in the controller configuration byte.
+    ps2_wait_write();
+    outb(0x64, 0x20);
+    ps2_wait_read();
+    uint8_t config = inb(0x60);
+    config |= (1 << 1); // Enable IRQ12 for port 2
+
+    ps2_wait_write();
+    outb(0x64, 0x60);
+    ps2_wait_write();
+    outb(0x60, config);
+
+    // Select default mouse packet mode.
+    ps2_wait_write();
+    outb(0x64, 0xD4);
+    ps2_wait_write();
+    outb(0x60, 0xF6);
+    ps2_wait_read();
+    if (inb(0x60) != 0xFA) {
+        return;
+    }
+
+    // Enable mouse streaming / data reporting.
+    ps2_wait_write();
+    outb(0x64, 0xD4);
+    ps2_wait_write();
+    outb(0x60, 0xF4);
+    ps2_wait_read();
+    if (inb(0x60) != 0xFA) {
+        return;
+    }
+}
+
 void ps2_init(void) {
     // 1. Disable both PS/2 channels (Port 1 and Port 2) so they don't flood us with data
     ps2_wait_write();
@@ -153,7 +202,7 @@ void ps2_init(void) {
     ps2_wait_read();
     if (inb(0x60) != 0x55) {
         // Controller is broken or missing!
-        return; 
+        return;
     }
 
     // 6. Perform Interface Test (Port 1)
@@ -174,9 +223,9 @@ void ps2_init(void) {
     outb(0x64, 0x20);
     ps2_wait_read();
     config = inb(0x60);
-    
+
     config |= (1 << 0); // Set Bit 0: Enable Port 1 Interrupt (IRQ 1)
-    
+
     ps2_wait_write();
     outb(0x64, 0x60);
     ps2_wait_write();
@@ -189,7 +238,11 @@ void ps2_init(void) {
     if (inb(0x60) == 0xFA) { // ACK (Acknowledge)
         ps2_wait_read();
         uint8_t self_test_res = inb(0x60); // Should be 0xAA for passed
+        (void)self_test_res;
     }
+
+    // 9. Enable the PS/2 mouse hardware on port 2.
+    ps2_enable_mouse();
 }
 // --- CORE IOAPIC HARDWARE WINDOW INTERFACE ---
 
@@ -357,7 +410,7 @@ char* crop(char *dest, const char *src, int until) {
     dest[until-1] = '\0';
     return dest; // Returns the pointer to the destination buffer
 }
-
+extern void exception_stub_44(void);
 void idt_init(void) {
     memset(idt, 0, sizeof(struct IDTEntry) * 256);
     user_key = random(&user_seed);
@@ -375,6 +428,7 @@ void idt_init(void) {
     // 2. Safely map vector 0x20 and 0x21 using slots 32 and 33 from the assembly landing pads
     idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
     idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0xEE);
+    idt_set_descriptor(0x2C, (void*)exception_stub_44, 0xEE);
     idt_set_descriptor(0x80, intr, 0xEE); // User Mode System Calls Gate
 
     // 3. Load the IDT pointer into the processor
@@ -422,7 +476,8 @@ void ioapic(struct acpi_table_madt* madt) {
 
     // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
     ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
-    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0);
+    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0);        // Keyboard IRQ1
+    ioapic_set_entry(ioapic_virtual_base, isa_overrides[12].gsi, 0x2C, 0);       // Mouse IRQ12
 
 }
 typedef struct {
@@ -686,7 +741,11 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
         }
         case 17: {
-            regs->rax = vfs_fstat(args->arg[0], (struct vfs_stat*)args->arg[1]);
+            if (args->arg[0] <= 2) {
+                regs->rax = -EBADF;
+            } else {
+                regs->rax = vfs_fstat(args->arg[0] - 2, (struct vfs_stat*)args->arg[1]);
+            }
             break;
         }
         case 18: {
@@ -727,12 +786,44 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             regs->rax = spawn((char*)args->arg[0]);
             break;
         }
+        case 22: {
+            regs->rax = (uint64_t)vmm_mmap((void*)args->arg[0], args->arg[1], (int)args->arg[2], (int)args->arg[3], (int)args->arg[4], (int64_t)args->arg[5]);
+            break;
+        }
+        case 23: {
+            regs->rax = vmm_munmap((void*)args->arg[0], args->arg[1]);
+            break;
+        }
+        case 24: {
+            regs->rax = set_signal_handler((int)args->arg[0], args->arg[1]);
+            break;
+        }
+        case 25: {
+            regs->rax = send_signal((int)args->arg[0], (int)args->arg[1]);
+            break;
+        }
+        case 26: {
+            regs->rax = sys_read_mouse((void*)args->arg[0], args->arg[1]);
+            break;
+        }
         case 20: {
             regs->rax = waitpid(args->arg[0]);
             break;
         }
         case 21: {
             draw_image(args->arg[0], args->arg[1], args->arg[2], args->arg[3], (uint8_t*)args->arg[4]);
+            break;
+        }
+        case 27: {
+            get_pixel(args->arg[0], args->arg[1], (uint8_t*)args->arg[2], (uint8_t*)args->arg[3], (uint8_t*)args->arg[4]);
+            break;
+        }
+        case 28: {
+            ipc_send_nonblock(args->arg[0], (void*)args->arg[1], args->arg[2]);
+            break;
+        }
+        case 29: {
+            ipc_recv_nonblock((void*)args->arg[0], args->arg[1], args->arg[2]);
             break;
         }
         default: 
@@ -744,13 +835,31 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 // --- COMMON HARDWARE AND LEGACY INTERRUPT DISPATCH ROUTER ---
 volatile uint64_t ticks = 0;
 #define KBD_BUFFER_SIZE 256
+#define MOUSE_BUFFER_SIZE 128
+
 typedef struct {
     uint8_t data[KBD_BUFFER_SIZE];
     volatile uint32_t head;  // Must be volatile
     volatile uint32_t tail;  // Must be volatile
 } kbd_buffer_t;
 
+typedef struct {
+    int8_t dx;
+    int8_t dy;
+    uint8_t buttons;
+    uint8_t reserved;
+} mouse_event_t;
+
+typedef struct {
+    mouse_event_t data[MOUSE_BUFFER_SIZE];
+    volatile uint32_t head;
+    volatile uint32_t tail;
+} mouse_buffer_t;
+
 static volatile kbd_buffer_t kbd_buf = { .head = 0, .tail = 0 };
+static volatile mouse_buffer_t mouse_buf = { .head = 0, .tail = 0 };
+static uint8_t mouse_packet[3];
+static int mouse_phase = 0;
 
 // Call this inside your keyboard interrupt handler to save a scancode
 void kbd_buffer_push(uint8_t scancode) {
@@ -758,7 +867,7 @@ void kbd_buffer_push(uint8_t scancode) {
     
     // If the buffer is full, discard the scancode to protect kernel memory
     if (next == kbd_buf.tail) {
-        return; 
+        return;
     }
     
     kbd_buf.data[kbd_buf.head] = scancode;
@@ -775,6 +884,24 @@ int kbd_buffer_pop(uint8_t *out_scancode) {
     kbd_buf.tail = (kbd_buf.tail + 1) % KBD_BUFFER_SIZE;
     return 1; // Successfully popped a scancode
 }
+
+void mouse_buffer_push(mouse_event_t event) {
+    uint32_t next = (mouse_buf.head + 1) % MOUSE_BUFFER_SIZE;
+    if (next == mouse_buf.tail) {
+        return; // Buffer full, drop oldest mouse event to preserve kernel stability
+    }
+    mouse_buf.data[mouse_buf.head] = event;
+    mouse_buf.head = next;
+}
+
+int mouse_buffer_pop(mouse_event_t *out_event) {
+    if (mouse_buf.head == mouse_buf.tail) {
+        return 0;
+    }
+    *out_event = mouse_buf.data[mouse_buf.tail];
+    mouse_buf.tail = (mouse_buf.tail + 1) % MOUSE_BUFFER_SIZE;
+    return 1;
+}
 // System call wrapper exposed to your interrupt/syscall table
 int sys_read_key(uint8_t *user_buffer) {
     uint8_t scancode;
@@ -787,6 +914,21 @@ int sys_read_key(uint8_t *user_buffer) {
     }
     
     return 0; // No keys available right now
+}
+
+int sys_read_mouse(void *user_buffer, uint64_t count) {
+    if (user_buffer == NULL || count < sizeof(mouse_event_t)) {
+        return -1;
+    }
+
+    mouse_event_t event;
+    while (!mouse_buffer_pop(&event)) {
+        asm volatile("sti; hlt" ::: "memory");
+    }
+
+    mouse_event_t *dest = (mouse_event_t*)user_buffer;
+    *dest = event;
+    return sizeof(mouse_event_t);
 }
 uint64_t intrhandler(struct InterruptRegisters* regs) {
     uint64_t vector = regs->int_no;
@@ -811,11 +953,36 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
         // In Set 1, if bit 7 (0x80) is set, it means the user just lifted their finger off the key.
         if (scancode & 0x80) {
             /* Optional: Handle key release state changes here (like clearing a 'shift_pressed' flag) */
-        } 
-        else {
-                kbd_buffer_push(scancode);
-
+        } else {
+            kbd_buffer_push(scancode);
         }
+        lapic_eoi();
+        return 0;
+    }
+    if (vector == 44) {
+        uint8_t byte = inb(0x60);
+
+        if (mouse_phase == 0) {
+            // Synchronize to the first byte: bit 3 must be set in a valid PS/2 packet.
+            if (!(byte & 0x08)) {
+                return 0;
+            }
+        }
+
+        mouse_packet[mouse_phase++] = byte;
+        if (mouse_phase < 3) {
+            lapic_eoi();
+            return 0;
+        }
+
+        mouse_phase = 0;
+        mouse_event_t event = {
+            .dx = (int8_t)mouse_packet[1],
+            .dy = (int8_t)mouse_packet[2],
+            .buttons = mouse_packet[0] & 0x07,
+            .reserved = 0,
+        };
+        mouse_buffer_push(event);
         lapic_eoi();
         return 0;
     }
@@ -1003,7 +1170,7 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
             asm volatile("hlt");
         }
         } else {
-            printk(LOG_NONE, "%s", user_exceptions[vector]);
+            printk(LOG_NONE, "%s while executing PID %d\n", user_exceptions[vector], getpid());
             return terminate(regs->rsp, getpid());
         }
     } 

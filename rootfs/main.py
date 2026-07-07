@@ -1,2 +1,0 @@
-var = "hello"
-print("hello")

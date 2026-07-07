@@ -3,6 +3,7 @@ bits 64
 global idt_load
 global exception_vector_table
 global intr
+global exception_stub_44
 
 extern exception_handler_c
 extern intrhandler
@@ -82,6 +83,13 @@ align 16
 exception_stub_33:
     push qword 0         ; Dummy error code
     push qword 33        ; Vector index
+    jmp interrupt_common_stub
+
+; Vector 44 (0x2C) - PS/2 Mouse
+align 16
+exception_stub_44:
+    push qword 0         ; Dummy error code
+    push qword 44        ; Vector index
     jmp interrupt_common_stub
 
 ; Legacy fallback hook / System Call hook

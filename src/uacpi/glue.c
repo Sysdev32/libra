@@ -140,7 +140,7 @@ uacpi_status uacpi_kernel_io_write32(uacpi_handle handle, uacpi_size offset, uac
     asm volatile("outl %0, %1" :: "a"(value), "Nd"(port) : "memory");
     return UACPI_STATUS_OK;
 }
-#define BUMP_HEAP_SIZE (2 * 1024 * 1024) // 2MB Allocation Arena
+#define BUMP_HEAP_SIZE (256 * 1024 * 1024) // 256MB Allocation Arena
 static uint8_t uacpi_bump_heap[BUMP_HEAP_SIZE] __attribute__((aligned(16)));
 static size_t bump_heap_offset = 0;
 

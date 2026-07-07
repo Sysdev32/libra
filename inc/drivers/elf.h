@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+
 #define EI_NIDENT   16
 #define HHDM_OFFSET 0xffff800000000000ULL
 
@@ -31,18 +32,14 @@ typedef struct __attribute__((packed)) {
     uint64_t p_align;
 } Elf64_Phdr;
 
+// The Dynamic Section entry structure
 typedef struct __attribute__((packed)) {
-    uint32_t sh_name;
-    uint32_t sh_type;
-    uint64_t sh_flags;
-    uint64_t sh_addr;
-    uint64_t sh_offset;
-    uint64_t sh_size;
-    uint32_t sh_link;
-    uint32_t sh_info;
-    uint64_t sh_addralign;
-    uint64_t sh_entsize;
-} Elf64_Shdr;
+    int64_t d_tag;
+    union {
+        uint64_t d_val;
+        uint64_t d_ptr;
+    } d_un;
+} Elf64_Dyn;
 
 typedef struct __attribute__((packed)) {
     uint64_t r_offset;
@@ -58,17 +55,28 @@ typedef struct __attribute__((packed)) {
     uint64_t st_value;
     uint64_t st_size;
 } Elf64_Sym;
+
 typedef struct {
     uint64_t entry_point;
     uint64_t virtual_addr;
     uint64_t mem_size;
 } ElfLoadResult;
+
+// --- Constants ---
 #define ET_EXEC    2
 #define ET_DYN     3
+
 #define PT_LOAD    1
-#define SHT_SYMTAB 2
-#define SHT_RELA   4
-#define SHT_DYNSYM 11
+#define PT_DYNAMIC 2
+
+// Dynamic Array Tags
+#define DT_NULL    0
+#define DT_NEEDED  1
+#define DT_STRTAB  5
+#define DT_SYMTAB  6
+#define DT_RELA    7
+#define DT_RELASZ  8
+#define DT_RELAENT 9
 
 #define ELF64_R_SYM(i)  ((i) >> 32)
 #define ELF64_R_TYPE(i) ((i) & 0xffffffffULL)
@@ -77,5 +85,7 @@ typedef struct {
 #define R_X86_64_GLOB_DAT  6
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE  8
+
 ElfLoadResult load_elf(void *raw_elf_data, uint64_t physical_base, uint64_t load_vma);
 uint64_t elf_vaddr(void *raw_elf_data);
+uint64_t elf_needed_mem(void *raw_elf_data);
