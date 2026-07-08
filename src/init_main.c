@@ -145,7 +145,12 @@ void keyboard_init(void)
 
     ps2_wait_input();
     outb(0x64, 0xAE); // enable keyboard
+    ps2_wait_write();
+    outb(0x60, 0xF4);
 
+    ps2_wait_read();
+    uint8_t ack = inb(0x60);
+    printk(LOG_TRACE, "Keyboard ACK = %x\n", ack);
     // optional: clear buffer
     inb(0x60);
 }
@@ -443,34 +448,16 @@ int spawn(char* path) {
     // STEP 2: Map execution page memory window up-front 
     // ============================================================================
     int staging_pages = 8300; 
-    printk(LOG_TRACE, "[SPAWN] Beginning execution page table allocation window up-front mapping sequence (%d pages)...\n", staging_pages);
-    
     for (int i = 0; i < staging_pages; i++) {
         uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
         uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
         void *clear_ptr = (void*)(current_phys + HHDM_OFFSET);
         
-        // Log every 1000 pages to prevent output log drowning, but keep it trace-heavy
-        if (i == 0 || i == staging_pages - 1 || i % 1000 == 0) {
-            printk(LOG_TRACE, "[SPAWN] Mapping Execution Frame [%d/%d]: Phys %p -> VMA %p (Zeroing HHDM: %p)\n", 
-                   i, staging_pages - 1, (void*)current_phys, (void*)current_vma, clear_ptr);
-        }
-        
         memset(clear_ptr, 0, PAGE_SIZE);
         vmm_map_page(user_pml4, current_vma, current_phys, user_flags);
     }
-    printk(LOG_TRACE, "[SPAWN] Execution page table window fully pre-mapped into PML4 root structural context.\n");
-
-    // CRITICAL FIX: Explicitly passing target physical destination and virtual base offsets
-    printk(LOG_TRACE, "[SPAWN] Passing payload to ELF Dynamic Program Loader...\n");
-    printk(LOG_TRACE, "        Args: Raw HHDM Ptr: %p, Dest Phys Base: %p, Target VMA Base: %p\n", 
-           raw_elf_hhdm_ptr, (void*)safe_code_phys_base, (void*)user_code_vma);
     
     ElfLoadResult loaded_app = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
-
-    printk(LOG_TRACE, "[SPAWN] ELF Loader execution phase concluded.\n");
-    printk(LOG_TRACE, "        -> Entry Point Result: %p\n", (void*)loaded_app.entry_point);
-
     if (loaded_app.entry_point == 0) {
         printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: ELF Loader failed to validate, parse, or resolve segments of the target ELF!\n");
         for(;;);
@@ -482,36 +469,22 @@ int spawn(char* path) {
     // STEP 5: Map a Multi-Page Stack Region and Calculate the Initial RSP
     // ============================================================================
     int user_stack_pages = 64; 
-    printk(LOG_TRACE, "[SPAWN] Setting up stack context. Mapping user land runtime stack region (%d pages total)...\n", user_stack_pages);
-    
     for (int i = 0; i < user_stack_pages; i++) {
         uint64_t stack_phys = safe_stack_phys_base + (i * PAGE_SIZE);
         uint64_t stack_vma  = user_stack_vma + (i * PAGE_SIZE);
         void *stack_hhdm_ptr = (void *)(stack_phys + HHDM_OFFSET);
-        
-        if (i == 0 || i == user_stack_pages - 1 || i % 16 == 0) {
-            printk(LOG_TRACE, "[SPAWN] Mapping Stack Frame [%d/%d]: Phys %p -> VMA %p (Zeroing HHDM: %p)\n", 
-                   i, user_stack_pages - 1, (void*)stack_phys, (void*)stack_vma, stack_hhdm_ptr);
-        }
         
         memset(stack_hhdm_ptr, 0, PAGE_SIZE);
         vmm_map_page(user_pml4, stack_vma, stack_phys, user_flags);
     }
 
     uint64_t initial_rsp = user_stack_vma + (user_stack_pages * PAGE_SIZE) - 16;
-    printk(LOG_TRACE, "[SPAWN] Calculated Initial Stack Pointer (RSP) location: %p (16-byte alignment applied)\n", (void*)initial_rsp);
-
-    printk(LOG_TRACE, "[SPAWN] Ultimate verification check before executing task switch:\n");
-    printk(LOG_TRACE, "        -> Entry point RIP Target:     %p\n", (void*)loaded_app.entry_point);
-    printk(LOG_TRACE, "        -> Target Initial RSP Context: %p\n", (void*)initial_rsp);
-    printk(LOG_TRACE, "        -> Page Table Root CR3 Context:%p\n", (void*)user_pml4);
-    
-    printk(LOG_TRACE, "[SPAWN] Spawning thread now. Yielding context to scheduler/task creator...\n");
     return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, user_pml4, 0, 0);
 }
 static void main_kthread(void) {
-    printk(LOG_TRACE, "MAIN KTHREAD HAS ARRIVED LOL OLLKOLLOL!!!!!\n");
+    printk(LOG_TRACE, "pid: %d!\n", getpid());
     spawn("/System/usr/bin/graphical/WindowManager");
+    spawn("userspace");
     for (;;) {
         asm volatile("sti; hlt");
     }

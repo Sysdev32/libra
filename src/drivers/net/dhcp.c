@@ -216,9 +216,5 @@ uint32_t discover() {
     // 4. Memory sweeps and hardware tracking cleanup
     kfree(poll_buf);
     kfree(pkt);
-    char* buffer = kmalloc(sizeof(char) * 1024); // 1kb buffer
-    memset(buffer, 0, sizeof(char)*1024);
-    http_get_buffer("www.example.com", "/", buffer, 1024);
-    printk(LOG_TRACE, "HTML: %s\n", buffer);
     return final_ip;
 }

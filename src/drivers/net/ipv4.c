@@ -37,7 +37,9 @@ uint16_t ipv4_checksum(const void *data, size_t length)
 void set_ip(uint32_t ips) {
     ip = ips;
 }
-
+uint32_t get_ip() {
+    return ip;
+}
 /**
  * Encapsulates a network payload into an IPv4 and Ethernet frame,
  * handling automatic local gateway routing for external traffic.

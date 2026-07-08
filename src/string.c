@@ -89,6 +89,19 @@ char* strcat(char* destination, const char* source) {
     // Return the original destination pointer
     return destination;
 }
+char *strcpy(char *destination, const char *source) {
+    char *ptr = destination;
+
+    while (*source != '\0') {
+        *ptr = *source;
+        ptr++;
+        source++;
+    }
+
+    *ptr = '\0';
+
+    return destination;
+}
 char* strchr(const char* str, int c) {
     char target = (char)c;
 

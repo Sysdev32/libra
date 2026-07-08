@@ -20,5 +20,6 @@ struct __attribute__((packed)) ipv4_packet {
     uint8_t payload[];
 };
 void set_ip(uint32_t ips);
+uint32_t get_ip();
 void send_ipv4_packet(uint32_t dest_ip, uint8_t* payload, int protocol, int len);
 #define BROADCAST 0xFFFFFFFFU
