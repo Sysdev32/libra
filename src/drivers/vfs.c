@@ -2,13 +2,14 @@
 #include <drivers/alloc.h>
 #include <drivers/fb.h>
 #include <drivers/vfs.h>
+#include <drivers/fat32.h>
 #include <limine.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
 #include <errno.h>
 #include <stdint.h>
-#include <drivers/schedule.h>   
+#include <arch/x86_64/schedule.h>
 #define MAX_OPEN_FILES 32
 #define MAX_VFS_FILES  128  // Set a safe maximum for your ramdisk files
 
@@ -17,6 +18,10 @@ static struct file *global_fd_table[MAX_OPEN_FILES];
 
 static struct vfs_file files[MAX_VFS_FILES]; // Static array (no krealloc needed!)
 static size_t file_count = 0;
+
+// --- Mount table ---
+static struct vfs_mount mount_table[MAX_MOUNTS];
+static uint32_t next_dev_id = 1;  // dev_id 0 = ramdisk, start counting from 1
 int perms(int fd, int flag) {
     int bypass = 0;
     if (getuid() == 0) {

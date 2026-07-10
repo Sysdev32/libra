@@ -6,12 +6,12 @@
 #include <vendor/flanterm/flanterm.h>
 #include <vendor/flanterm/flanterm_backends/fb.h>
 #include <drivers/fb.h>
-#include <drivers/gdt.h>
+#include <arch/x86_64/gdt.h>
 #include <drivers/alloc.h>
-#include <drivers/idt.h>
-#include <drivers/schedule.h>
+#include <arch/x86_64/idt.h>
+#include <arch/x86_64/schedule.h>
 #include <drivers/vfs.h>
-#include <drivers/pci.h>
+#include <hals/pci.h>
 #include <drivers/gpt.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/utilities.h>
@@ -325,8 +325,8 @@ void stack_free(uint64_t phys) {
 }
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
-int spawn(char* path) {
-    printk(LOG_TRACE, "[SPAWN] Entering spawn() with user path pointer: %p\n", (void*)path);
+int spawn(char* path, int pid) {
+
 
     if (!path) {
         printk(LOG_ERROR, "[SPAWN] Error: User-supplied path pointer is NULL!\n");
@@ -336,13 +336,10 @@ int spawn(char* path) {
     // Safely copy the user-supplied path into kernel memory BEFORE
     // creating a new address space (which will switch CR3).
     char kpath[256];
-    printk(LOG_TRACE, "[SPAWN] Copying user path string safely to kernel buffer...\n");
-    
     for (int i = 0; i < 255; i++) {
         char c = path[i];
         kpath[i] = c;
         if (c == '\0') {
-            printk(LOG_TRACE, "[SPAWN] Null-terminator found at index %d. Path string: \"%s\"\n", i, kpath);
             break;
         }
         if (i == 254) {
@@ -351,47 +348,29 @@ int spawn(char* path) {
         }
     }
 
-    printk(LOG_TRACE, "[SPAWN] Requesting creation of an isolated user address space (PML4)...\n");
     page_table_t *user_pml4 = vmm_create_address_space();
     
     if (user_pml4 == NULL) {
         printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not allocate isolated user address space (PML4 is NULL)!\n");
         for(;;);
     }
-    printk(LOG_TRACE, "[SPAWN] Successfully allocated isolated user address space. PML4 CR3 Root: %p\n", (void*)user_pml4);
-
-    printk(LOG_TRACE, "[SPAWN] Attempting VFS open on kernel-safe path: \"%s\"\n", kpath);
     int user_fd = vfs_open(kpath);
     
     if (user_fd < 0) {
         printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not open file \"%s\". VFS Error Code: %d\n", kpath, user_fd);
         for(;;);
     }
-    printk(LOG_TRACE, "[SPAWN] File successfully opened. Assigned File Descriptor (FD): %d\n", user_fd);
-
     uint64_t user_flags = PTE_USER | PTE_WRITABLE;
     struct vfs_stat stat = {0};
     
-    printk(LOG_TRACE, "[SPAWN] Fetching file stats via vfs_fstat for FD %d...\n", user_fd);
     vfs_fstat(user_fd, &stat);
-    printk(LOG_TRACE, "[SPAWN] File Size Metrics: %zu bytes (Blocks allocated: %zu)\n", (size_t)stat.st_size, (size_t)stat.st_blocks);
 
-    // Physical bases configuration
-    printk(LOG_TRACE, "[SPAWN] Allocating physical arenas...\n");
     uint64_t safe_code_phys_base  = arena_alloc(stat.st_size);  
-    printk(LOG_TRACE, "[SPAWN] -> safe_code_phys_base allocated: %p (Size: %zu bytes)\n", (void*)safe_code_phys_base, (size_t)stat.st_size);
-
     uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);  
-    printk(LOG_TRACE, "[SPAWN] -> safe_stack_phys_base allocated: %p (Size: 256 KB)\n", (void*)safe_stack_phys_base);
-
     // Staging buffer math: 0x8000000 + (9216 * 4096) = 0xA400000
     uint64_t raw_elf_phys_base    = safe_code_phys_base + (9216 * PAGE_SIZE); 
     void* raw_elf_hhdm_ptr        = (void*)(raw_elf_phys_base + HHDM_OFFSET);
     
-    printk(LOG_TRACE, "[SPAWN] Staging Buffer Offset Math:\n");
-    printk(LOG_TRACE, "        -> raw_elf_phys_base: %p\n", (void*)raw_elf_phys_base);
-    printk(LOG_TRACE, "        -> raw_elf_hhdm_ptr:  %p (HHDM Offset applied)\n", raw_elf_hhdm_ptr);
-
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
     int page_index = 0;
@@ -400,24 +379,15 @@ int spawn(char* path) {
     // ============================================================================
     // STEP 1: Read raw ELF file sequentially into staging buffer + VERBOSE LOGS
     // ============================================================================
-    printk(LOG_TRACE, "[SPAWN] Starting raw ELF file streaming sequential read loop...\n");
     while (1) {
         void *current_dest_ptr = (void *)((uint8_t*)raw_elf_hhdm_ptr + total_bytes_read);
-        
-        printk(LOG_TRACE, "[SPAWN] Reading Page %d -> Requesting %d bytes from File Cursor %d to target RAM ptr: %p\n", 
-               page_index, PAGE_SIZE, file_cursor, current_dest_ptr);
-        
         int chunks_read = vfs_read(user_fd, current_dest_ptr, PAGE_SIZE, file_cursor);
         
         if (first_chunk) {
-            printk(LOG_TRACE, "[SPAWN] First chunk read result: %d bytes. Checking ELF Magic Header...\n", chunks_read);
-            uint8_t *magic = (uint8_t*)current_dest_ptr;
-            printk(LOG_TRACE, "[SPAWN] Magic bytes: 0x%02x 0x%02x 0x%02x 0x%02x\n", magic[0], magic[1], magic[2], magic[3]);
             first_chunk = 0;
         }
 
         if (chunks_read <= 0) {
-            printk(LOG_TRACE, "[SPAWN] Stream loop terminated. vfs_read returned: %d (EOF or Error context)\n", chunks_read);
             break; 
         }
 
@@ -425,18 +395,8 @@ int spawn(char* path) {
         file_cursor += chunks_read;
         page_index++;
     }
-    
-    printk(LOG_TRACE, "[SPAWN] Read loop finished. Total cumulative bytes streamed into RAM: %zu bytes across %d chunks.\n", (size_t)total_bytes_read, page_index);
-
-    printk(LOG_TRACE, "[SPAWN] Parsing ELF virtual target entry address from raw memory pointer %p...\n", raw_elf_hhdm_ptr);
     uint64_t user_code_vma  = elf_vaddr(raw_elf_hhdm_ptr); 
     uint64_t user_stack_vma = 0x600000;
-    
-    printk(LOG_TRACE, "[SPAWN] Parsed Layout Context:\n");
-    printk(LOG_TRACE, "        -> Target User Code VMA Base: %p\n", (void*)user_code_vma);
-    printk(LOG_TRACE, "        -> Target User Stack VMA Base: %p\n", (void*)user_stack_vma);
-
-    printk(LOG_TRACE, "[SPAWN] Closing VFS File Descriptor %d and cleaning resources...\n", user_fd);
     vfs_free_fd(user_fd);
 
     if (total_bytes_read <= 0) {
@@ -479,15 +439,18 @@ int spawn(char* path) {
     }
 
     uint64_t initial_rsp = user_stack_vma + (user_stack_pages * PAGE_SIZE) - 16;
-    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, user_pml4, 0, 0);
+    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, user_pml4, 0, 0, -1);
 }
+int launchd_pid = -1;
 static void main_kthread(void) {
     printk(LOG_TRACE, "pid: %d!\n", getpid());
-    spawn("/System/usr/bin/graphical/WindowManager");
-    spawn("userspace");
+    launchd_pid = spawn("/System/usr/bin/commandline/launchd", -1);
     for (;;) {
         asm volatile("sti; hlt");
     }
+}
+int get_launchd_pid() {
+    return launchd_pid;
 }
 int dump_namespace(uacpi_namespace_node *root)
 {
@@ -670,8 +633,7 @@ void _start(void) {
     init_ahci();
     gpt_parse_partitions(get_primary_sata_drive());
     fat32_fs_t efi;
-    init_rtl8139();
-    discover();
+    fat32_init(get_volume(0), &efi);
     create_kernel_task(main_kthread);
     start_scheduler();
 }

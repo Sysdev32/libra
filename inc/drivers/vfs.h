@@ -62,7 +62,42 @@ struct vfs_dirent {
     char d_name[256];     // Null-terminated filename string
 };
 
+// Forward declarations for filesystem backends
+struct vfs_mount;
 
+// Filesystem operation table — each mounted filesystem provides these
+struct fs_operations {
+    int  (*open)(struct vfs_mount *mnt, const char *path);
+    int  (*read)(struct vfs_mount *mnt, int local_fd, void *buf, size_t count, uint64_t offset);
+    int  (*write)(struct vfs_mount *mnt, int local_fd, const void *data, uint64_t size);
+    int  (*close)(struct vfs_mount *mnt, int local_fd);
+    int  (*stat)(struct vfs_mount *mnt, const char *path, struct vfs_stat *st);
+    int  (*mkdir)(struct vfs_mount *mnt, const char *path, uint32_t mode);
+    int  (*rmdir)(struct vfs_mount *mnt, const char *path);
+    int  (*unlink)(struct vfs_mount *mnt, const char *path);
+    int  (*getdents)(struct vfs_mount *mnt, int local_fd, void *buf, size_t count, uint64_t offset);
+};
+
+// A mounted filesystem instance
+struct vfs_mount {
+    char mount_point[256];          // Absolute path where this fs is mounted (e.g. "/mnt/efi")
+    struct fs_operations *ops;      // Backend filesystem operations
+    void *fs_private;               // Opaque pointer to fs-specific state (e.g. fat32_fs_t*)
+    uint32_t dev_id;                // Device identifier (st_dev value for stat)
+    int active;                     // 1 if this slot is in use
+};
+
+// Arguments for the mount syscall (passed from userspace)
+struct mount_syscall_args {
+    const char *source;             // Device/source identifier (e.g. "sda1")
+    const char *target;             // Mount point path (e.g. "/mnt/efi")
+    const char *fstype;             // Filesystem type string (e.g. "fat32")
+    uint32_t flags;                 // Mount flags (reserved for future use)
+};
+
+#define MAX_MOUNTS 16               // Maximum number of mounted filesystems
+#define MOUNT_RAMDISK 0             // st_dev value for the ramdisk (default)
+#define MOUNT_FLAG_NONE 0
 
 struct vfs_stat {
     uint32_t        st_dev;     /* 0 = virt, 1 = FAT32 */
@@ -103,3 +138,9 @@ typedef struct file DIR;
 DIR *opendir(const char *path);
 struct vfs_dirent *readdir(DIR *dirp);
 int closedir(DIR *dirp);
+
+// --- MOUNT API ---
+int vfs_mount_fs(const char *source, const char *target, const char *fstype, uint32_t flags);
+int vfs_umount_fs(const char *target);
+struct vfs_mount *resolve_mount(const char *path);
+int vfs_getdents(int fd, void *buf, size_t count, uint64_t offset);

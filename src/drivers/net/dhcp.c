@@ -1,7 +1,7 @@
 #include <drivers/net/IPV4.h>
 #include <drivers/net/UDP.h>
-#include <drivers/net/RTL8139.h>
-#include <drivers/pci.h>
+#include <hals/net/RTL8139.h>
+#include <hals/pci.h>
 #include <drivers/net/HTTP.h>
 #include <drivers/fb.h>
 #include <stdint.h>

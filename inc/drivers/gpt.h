@@ -1,7 +1,7 @@
 #pragma once
 
 #include <stdint.h>
-#include <drivers/ahci.h>
+#include <hals/ahci.h>
 
 #define GPT_SIGNATURE 0x5452415020494645ULL // "EFI PART" in ASCII
 #define MAX_VOLUMES 16

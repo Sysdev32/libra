@@ -1,0 +1,8 @@
+{
+    "services": [
+        {
+            "name": "networkd",
+            "path": "/System/usr/bin/commandline/networkd"
+        }
+    ]
+}

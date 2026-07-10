@@ -188,9 +188,9 @@ run: iso
 		-drive id=disk0,file=my_disk.qcow2,if=none,format=qcow2 \
 		-device ide-hd,drive=disk0,bus=ide.0 \
 		-cdrom $(ISO) \
-		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-		-device usb-mouse,bus=xhci.0 \
+		-device piix3-usb-uhci,id=uhci \
+		-device usb-kbd,bus=uhci.0 \
+		-device usb-mouse,bus=uhci.0 \
 		-netdev user,id=net0 \
 		-device rtl8139,netdev=net0 \
 		-object filter-dump,id=f1,netdev=net0,file=packets.pcap

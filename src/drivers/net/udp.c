@@ -1,7 +1,7 @@
-#include <drivers/pci.h>
+#include <hals/pci.h>
 #include <drivers/fb.h>
 #include <stdint.h>
-#include <drivers/net/RTL8139.h>
+#include <hals/net/RTL8139.h>
 #include <drivers/net/UDP.h>
 void create_udp_packet(struct udp_packet* buf, void* payload, uint64_t len, uint16_t src_prt, uint16_t dst_prt) {
     // 1. Calculate the total length of the UDP datagram (Header + Payload)
