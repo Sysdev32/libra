@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <drivers/gpt.h> // For volume_t
+#include <stdbool.h>
 
 #define FAT_ATTR_READ_ONLY 0x01
 #define FAT_ATTR_HIDDEN    0x02
@@ -9,6 +10,11 @@
 #define FAT_ATTR_DIRECTORY 0x10
 #define FAT_ATTR_ARCHIVE   0x20
 #define FAT_ATTR_LONG_NAME (FAT_ATTR_READ_ONLY | FAT_ATTR_HIDDEN | FAT_ATTR_SYSTEM | FAT_ATTR_VOLUME_ID)
+typedef struct {
+    char name[256];
+    uint32_t size;
+    bool is_directory;
+} fat32_dir_entry_t;
 
 // FAT32 Extended Boot Record (EBR) / Bios Parameter Block (BPB)
 typedef struct {

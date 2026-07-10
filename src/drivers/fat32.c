@@ -285,7 +285,7 @@ int fat32_read_file_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char* filena
         current_cluster = fat32_get_next_cluster(fs, current_cluster);
     }
     kfree(cluster_buf);
-    return 1;
+    return bytes_transferred;
 }
 
 int fat32_create_file_lfn(fat32_fs_t* fs, uint32_t parent_dir_cluster, const char* lfn_name, uint8_t attr) {

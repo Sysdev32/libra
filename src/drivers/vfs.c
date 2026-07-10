@@ -358,7 +358,7 @@ static struct limine_file *find_initramfs_module(struct limine_module_response *
 #define S_IFREG  0x8000
 
 static struct dentry *root_dentry = NULL;
-
+uint32_t global_ino_counter = 1;
 static struct dentry *create_dentry_node(const char *name, size_t name_len, uint32_t mode, uint32_t uid, uint32_t gid, uint32_t nlink, uint64_t mtime, struct dentry *parent) {
     if (parent != NULL && parent->child_count >= MAX_DIR_CHILDREN) {
         printk(LOG_ERROR, "VFS: Maximum directory child limit (%d) reached!\n", MAX_DIR_CHILDREN);
@@ -373,7 +373,6 @@ static struct dentry *create_dentry_node(const char *name, size_t name_len, uint
         return NULL;
     }
 
-    static uint32_t global_ino_counter = 1;
     in->ino_num = global_ino_counter++;
     in->mode = mode;
     in->uid = uid;
