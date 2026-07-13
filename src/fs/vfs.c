@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #include <drivers/alloc.h>
 #include <drivers/fb.h>
-#include <drivers/vfs.h>
-#include <drivers/fat32.h>
+#include <fs/vfs.h>
+#include <fs/fat32.h>
 #include <limine.h>
 #include <stddef.h>
 #include <stdint.h>

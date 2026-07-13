@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <drivers/elf.h>
-#include <drivers/vfs.h>
+#include <fs/vfs.h>
 #include <drivers/alloc.h> // Using your native kmalloc/kfree
 
 #ifndef DT_HASH

@@ -10,16 +10,16 @@
 #include <drivers/alloc.h>
 #include <arch/x86_64/idt.h>
 #include <arch/x86_64/schedule.h>
-#include <drivers/vfs.h>
+#include <fs/vfs.h>
 #include <hals/pci.h>
-#include <drivers/gpt.h>
+#include <fs/gpt.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/utilities.h>
 #include <uacpi/event.h>
 #include <string.h>
 #include <uacpi/tables.h>
 #include <config.h>
-#include <drivers/fat32.h>
+#include <fs/fat32.h>
 #include <state.h>
 #include <uacpi/resources.h>
 #include <uacpi/internal/namespace.h>
@@ -27,7 +27,8 @@
 #include <uacpi/types.h>
 #include <errno.h>
 #include <drivers/elf.h>
-#include <drivers/mnt.h>
+#include <fs/chfs.h>
+#include <fs/mnt.h>
 struct flanterm_context *ft_ctx;
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
@@ -444,7 +445,6 @@ int spawn(char* path, int pid) {
 }
 int launchd_pid = -1;
 static void main_kthread(void) {
-    printk(LOG_TRACE, "pid: %d!\n", getpid());
     launchd_pid = spawn("/System/usr/bin/commandline/launchd", -1);
     for (;;) {
         asm volatile("sti; hlt");
@@ -562,7 +562,7 @@ void _start(void) {
         0,
         0
     );
-    memory_init();
+    memory_init(); // this is basically my allocator (btw this is just a voiceover so yeah, im typing this in the actual recording)
     flanterm_set_text_fg(ft_ctx, 7, true);
     flanterm_write(ft_ctx, "\033[?25l", 6);
     initConsole(ft_ctx, framebuffer);
@@ -633,15 +633,12 @@ void _start(void) {
     }
     init_ahci();
     gpt_parse_partitions(get_primary_sata_drive());
-    fat32_fs_t efi;
-    fat32_init(get_volume(0), &efi);
+    format_chfs(get_volume(0));
     partition_t part;
-    part.fat = efi;
-    part.type = FAT32;
+    part.chfs = add_partition(get_volume(0));
+    part.type = CHFS;
     mount(&part, "/mnt");
-    int fd = open("/mnt/main.txt");
-    char msg[] = "hello\n";
-    write(fd, msg, strlen(msg));
+    create("/mnt/a.txt");
     create_kernel_task(main_kthread);
     start_scheduler();
 }

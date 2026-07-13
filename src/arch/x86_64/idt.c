@@ -6,7 +6,7 @@
 #include <drivers/alloc.h>
 #include <limine.h>
 #include <arch/x86_64/schedule.h>
-#include <drivers/vfs.h>
+#include <fs/vfs.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
 #include <stdint.h>
@@ -304,13 +304,9 @@ void ioapic_init(uint32_t physical_address) {
     // Calculate virtual address using Limine's Higher-Half Direct Map offset
     ioapic_virtual_base = (uintptr_t)physical_address + hhdm_request.response->offset;
     
-    printk(LOG_TRACE, "IOAPIC mapped at virtual address: %p\n", (void*)ioapic_virtual_base);
-
     // Read the version register to verify communication
     uint32_t version_reg = ioapic_read(ioapic_virtual_base, 0x01);
     int max_entries = ((version_reg >> 16) & 0xFF) + 1;
-
-    printk(LOG_TRACE, "IOAPIC verified. Max Redirection Entries: %d\n", max_entries);
 
     // Mask (disable) all redirection entries by default for safety
     for (int i = 0; i < max_entries; i++) {
@@ -322,7 +318,6 @@ void ioapic_init(uint32_t physical_address) {
         ioapic_write(ioapic_virtual_base, reg_high, 0x00000000);
     }
     
-    printk(LOG_TRACE, "All IOAPIC pins masked and ready for manual routing.\n");
 }
 
 void lapic_init(uint32_t physical_address) {
@@ -363,23 +358,18 @@ void parse_madt(struct acpi_table_madt *madt) {
             case 0: {
                 struct madt_local_apic *lapic = (struct madt_local_apic *)record;
                 if (lapic->flags & 1) { // Bit 0 = Processor Enabled
-                    printk(LOG_TRACE, "Found CPU Core - Processor ID: %d, APIC ID: %d\n", 
-                           lapic->acpi_processor_id, lapic->apic_id);
                     apic[lapicint++] = *lapic;
                 }   
                 break;
             }
             case 1: {
                 struct madt_io_apic *ioapic = (struct madt_io_apic *)record;
-                printk(LOG_TRACE, "Found I/O APIC - ID: %d, Address: 0x%x, GSI Base: %d\n",
-                       ioapic->io_apic_id, ioapic->io_apic_address, ioapic->gsi_base);
+                
                 ioapic_init(ioapic->io_apic_address);
                 break;
             }
             case 2: {
                 struct madt_interrupt_override *override = (struct madt_interrupt_override *)record;
-                printk(LOG_TRACE, "Interrupt Override - IRQ Source %d -> GSI %d\n",
-                       override->irq_source, override->gsi);
                 isa_overrides[override->irq_source].gsi = override->gsi;
                 break;
             }
@@ -1086,6 +1076,17 @@ int sys_socket(net_family_t family, net_protocol_t protocol) {
     return available_socket;
 }
 volatile uint64_t ticks = 0;
+struct utsname {
+    char sysname[65];
+    char nodename[65];
+    char release[65];
+    char version[65];
+    char machine[65];
+#ifdef _GNU_SOURCE
+    char domainname[65];
+#endif
+};
+char nodename[65];
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
 
@@ -1326,6 +1327,23 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         }
         case 37: {
             regs->rax = get_launchd_pid();
+            break;
+        }
+        case 38: {
+            struct utsname* u = (struct utsname*)args->arg[0];
+            strcpy(u->machine, "x86_64");
+            strcpy(u->nodename, nodename);
+            strcpy(u->release, "4.5.0-rc1");
+            strcpy(u->sysname, "La Carrera");
+            strcpy(u->version, "#1 NOSMP PREEMPT");
+            break;
+        }
+        case 39: {
+            strcpy(nodename, (char*)args->arg[0]);
+            break;
+        }
+        case 40: {
+            strcpy((char*)args->arg[0], nodename);
             break;
         }
         default: 
@@ -1679,10 +1697,8 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
                     break;
                 }
             }
-            printk(LOG_TRACE, "rlly?");
             lapic_eoi();
         }
     }
-    printk(LOG_TRACE, "ey");
     return 0;
 }

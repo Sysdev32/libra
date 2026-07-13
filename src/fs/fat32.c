@@ -1,4 +1,4 @@
-#include <drivers/fat32.h>
+#include <fs/fat32.h>
 #include <drivers/alloc.h>
 #include <drivers/fb.h>
 #include <string.h>
@@ -215,20 +215,55 @@ uint32_t fat32_find_object_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char*
     kfree(dir_buf);
     return 0;
 }
+static void extract_lfn_piece(fat32_lfn_t* lfn, char* accumulator) {
+    // FAT32 LFN sequence numbers use bits 0-4 (mask out 0x40 LAST_LONG_ENTRY flag)
+    uint8_t sequence = lfn->sequence_number & 0x1F;
+    if (sequence < 1 || sequence > 20) return; // Max 255 chars in FAT32 LFNs
 
-void fat32_list_directory_lfn(fat32_fs_t* fs, uint32_t dir_cluster) {
+    // Calculate exact starting offset (each LFN directory slot holds 13 characters)
+    uint32_t char_offset = (sequence - 1) * 13;
+
+    // Direct mapping to your struct fields
+    uint16_t* fields[3] = { lfn->name_characters1, lfn->name_characters2, lfn->name_characters3 };
+    uint8_t field_sizes[3] = { 5, 6, 2 };
+
+    uint32_t current_pos = char_offset;
+    for (int f = 0; f < 3; f++) {
+        for (int i = 0; i < field_sizes[f]; i++) {
+            uint16_t utf16_char = fields[f][i];
+
+            // 0x0000 or 0xFFFF represents the end of the filename or padding
+            if (utf16_char == 0x0000 || utf16_char == 0xFFFF) {
+                return;
+            }
+
+            // Downcast UTF-16 to ASCII safely for kernel strings
+            if (current_pos < 255) {
+                accumulator[current_pos++] = (char)(utf16_char & 0xFF);
+            }
+        }
+    }
+}
+
+fat32_dir_entry_t** fat32_list_directory_lfn(fat32_fs_t* fs, uint32_t dir_cluster) {
     uint32_t cluster_bytes = fs->sectors_per_cluster * 512;
     void* dir_buf = kmalloc(cluster_bytes);
-    if (!dir_buf) return;
+    if (!dir_buf) return NULL;
     uint64_t phys_buf = (uint64_t)dir_buf - (uint64_t)HHDM_OFFSET;
+
+    // Track dynamic array of returned entries
+    uint32_t entry_count = 0;
+    uint32_t entry_capacity = 16;
+    fat32_dir_entry_t** result_list = kmalloc(entry_capacity * sizeof(fat32_dir_entry_t*));
+    if (!result_list) { kfree(dir_buf); return NULL; }
 
     char lfn_accumulator[256];
     memset(lfn_accumulator, 0, 256);
 
     uint32_t curr_cluster = dir_cluster;
-    printk(LOG_DEBUG, "=== DIRECTORY LISTING VIA FULL LFN ===\n");
+    bool stop_parsing = false;
     
-    while (curr_cluster >= 2 && curr_cluster < 0x0FFFFFF8) {
+    while (curr_cluster >= 2 && curr_cluster < 0x0FFFFFF8 && !stop_parsing) {
         uint32_t sector = cluster_to_sector(fs, curr_cluster);
         if (!volume_read_sectors(fs->vol, sector, fs->sectors_per_cluster, phys_buf)) break;
 
@@ -236,28 +271,75 @@ void fat32_list_directory_lfn(fat32_fs_t* fs, uint32_t dir_cluster) {
         uint32_t max_slots = cluster_bytes / 32;
 
         for (uint32_t i = 0; i < max_slots; i++) {
-            if (entries[i].name[0] == FAT32_END_OF_DIR) { kfree(dir_buf); return; }
-            if (entries[i].name[0] == (char)FAT32_FREE_ENTRY) { memset(lfn_accumulator, 0, 256); continue; }
+            if (entries[i].name[0] == FAT32_END_OF_DIR) { 
+                stop_parsing = true; 
+                break; 
+            }
+            if (entries[i].name[0] == (char)FAT32_FREE_ENTRY) { 
+                memset(lfn_accumulator, 0, 256); 
+                continue; 
+            }
 
             if (entries[i].attr == FAT_ATTR_LONG_NAME) {
                 fat32_lfn_t* lfn = (fat32_lfn_t*)&entries[i];
-                fat32_extract_lfn_chars(lfn, lfn_accumulator);
+                extract_lfn_piece(lfn, lfn_accumulator);
             } else {
-                if (entries[i].attr & FAT_ATTR_VOLUME_ID) continue;
+                if (entries[i].attr & FAT_ATTR_VOLUME_ID) {
+                    memset(lfn_accumulator, 0, 256);
+                    continue;
+                }
+
+                // Allocate space for the single returning VFS structure item
+                fat32_dir_entry_t* new_entry = kmalloc(sizeof(fat32_dir_entry_t));
+                if (!new_entry) goto cleanup_error;
+
+                new_entry->size = entries[i].file_size;
+                new_entry->is_directory = (entries[i].attr & FAT_ATTR_DIRECTORY) ? true : false;
 
                 if (strlen(lfn_accumulator) > 0) {
-                    printk(LOG_DEBUG, " * %s [%s] Size: %u bytes\n", lfn_accumulator, (entries[i].attr & FAT_ATTR_DIRECTORY) ? "DIR" : "FILE", entries[i].file_size);
+                    strncpy(new_entry->name, lfn_accumulator, 255);
+                    new_entry->name[255] = '\0';
                 } else {
-                    char sfn_print[12]; memset(sfn_print, 0, 12); memcpy(sfn_print, entries[i].name, 11);
-                    printk(LOG_DEBUG, " * %s [%s] Size: %u bytes\n", sfn_print, (entries[i].attr & FAT_ATTR_DIRECTORY) ? "DIR" : "FILE", entries[i].file_size);
+                    // SFN Fallback
+                    char sfn_print[12]; 
+                    memset(sfn_print, 0, 12); 
+                    memcpy(sfn_print, entries[i].name, 11);
+                    strncpy(new_entry->name, sfn_print, 255);
+                    new_entry->name[255] = '\0';
                 }
-                memset(lfn_accumulator, 0, 256);
+
+                // Grow pointer array bounds as needed
+                if (entry_count >= entry_capacity - 1) {
+                    uint32_t new_capacity = entry_capacity * 2;
+                    fat32_dir_entry_t** new_list = kmalloc(new_capacity * sizeof(fat32_dir_entry_t*));
+                    if (!new_list) { kfree(new_entry); goto cleanup_error; }
+                    
+                    memcpy(new_list, result_list, entry_count * sizeof(fat32_dir_entry_t*));
+                    kfree(result_list);
+                    result_list = new_list;
+                    entry_capacity = new_capacity;
+                }
+
+                result_list[entry_count++] = new_entry;
+                memset(lfn_accumulator, 0, 256); // Clean for the next file entry series
             }
         }
-        curr_cluster = fat32_get_next_cluster(fs, curr_cluster);
+        if (!stop_parsing) {
+            curr_cluster = fat32_get_next_cluster(fs, curr_cluster);
+        }
     }
+
     kfree(dir_buf);
+    result_list[entry_count] = NULL; // Null terminate for easy loop iteration
+    return result_list;
+
+cleanup_error:
+    for (uint32_t i = 0; i < entry_count; i++) kfree(result_list[i]);
+    kfree(result_list);
+    kfree(dir_buf);
+    return NULL;
 }
+
 
 int fat32_read_file_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char* filename, uint8_t* out_buffer, uint32_t max_bytes) {
     fat32_entry_t object_meta;

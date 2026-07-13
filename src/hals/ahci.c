@@ -263,7 +263,6 @@ void init_ahci() {
 ahci_device_t* get_primary_sata_drive(void) {
     return primary_sata_drive.is_initialized ? &primary_sata_drive : NULL; 
 }
-
 int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys) {
     if (!drive || !drive->is_initialized) {
         printk(LOG_DEBUG, "[AHCI TRACE READ] Error: Drive unitialized.\n");
@@ -278,14 +277,12 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
     printk(LOG_DEBUG, "[AHCI TRACE READ] Request submitted. LBA: %llu, Sectors Count: %u, Orig Phys Address: 0x%llx\n", 
            start_lba, count, buf_phys);
 
-    // Track pointer alignment status
     if (buf_phys & 0x3) {
         printk(LOG_DEBUG, "[AHCI ALIGNMENT WARNING] Physical address 0x%llx is NOT 4-byte aligned! Instantiating safe bounce buffer tracking pipeline...\n", buf_phys);
         bounce_virt = pmm_alloc_pages(0); 
         bounce_phys = (uint64_t)bounce_virt - HHDM_OFFSET;
         target_phys = bounce_phys;
         memset(bounce_virt, 0, PAGE_SIZE);
-        printk(LOG_DEBUG, "[AHCI ALIGNMENT Pipeline] Bounce buffer generated -> Virt: 0x%llx, Phys: 0x%llx\n", (uint64_t)bounce_virt, bounce_phys);
     }
 
     uint32_t current_ci = *(volatile uint32_t*)(port_base + 0x38);
@@ -293,6 +290,10 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
         printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Slot 0 is stuck busy before execution! PxCI: 0x%x\n", current_ci);
         return 0;
     }
+
+    // Clear interrupt status and error registers to ensure a clean slate
+    *(volatile uint32_t*)(port_base + 0x10) = 0xFFFFFFFF;
+    *(volatile uint32_t*)(port_base + 0x30) = 0xFFFFFFFF;
 
     ahci_cmd_header_t* cmd_hdr = (ahci_cmd_header_t*)drive->cl_virt;
     memset(cmd_hdr, 0, sizeof(ahci_cmd_header_t));
@@ -326,9 +327,6 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
     prdt->dbc = ((uint32_t)count * 512) - 1;
     prdt->i = 1;
 
-    printk(LOG_DEBUG, "[AHCI TRACE READ] Dispatching to HBA -> target_phys: 0x%llx, size fields: %u bytes\n", target_phys, prdt->dbc + 1);
-
-    // Fire processing bit
     *(volatile uint32_t*)(port_base + 0x38) = (1 << 0);  
 
     uint32_t timeout = 5000000;
@@ -340,35 +338,21 @@ int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, 
         }
         if (tfd & (1 << 0)) { 
             printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Hardware device failure flag! PxTFD: 0x%x\n", tfd);
+            if (bounce_virt) pmm_free_pages(bounce_virt, 0); // avoid memory leaks
             return 0;
         }
         if (--timeout == 0) {
-            printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Transaction timed out waiting for bit loop finish! PxCI: 0x%x, PxTFD: 0x%x\n", ci, tfd);
+            printk(LOG_DEBUG, "[AHCI TRACE READ CRITICAL] Transaction timed out! PxCI: 0x%x, PxTFD: 0x%x\n", ci, tfd);
+            if (bounce_virt) pmm_free_pages(bounce_virt, 0);
             return 0;
         }
     }
 
-    // Inspect the actual memory buffer contents immediately post-hardware execution loop
     if (bounce_virt != NULL) {
-        uint8_t* b_bytes = (uint8_t*)bounce_virt;
-        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside bounce buffer (first 16 bytes): ");
-        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", b_bytes[x]);
-        printk(LOG_DEBUG, "\n");
-
         void* dest_virt = (void*)(buf_phys + HHDM_OFFSET);
-        printk(LOG_DEBUG, "[AHCI TRACE READ ALIGNMENT] Relocating data buffer via memcpy to unaligned target virtual pointer: 0x%llx\n", (uint64_t)dest_virt);
         memcpy(dest_virt, bounce_virt, (uint32_t)count * 512);
-
-        uint8_t* dest_bytes = (uint8_t*)dest_virt;
-        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside final unaligned target memory destination: ");
-        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", dest_bytes[x]);
-        printk(LOG_DEBUG, "\n");
-    } else {
-        void* direct_virt = (void*)(buf_phys + HHDM_OFFSET);
-        uint8_t* d_bytes = (uint8_t*)direct_virt;
-        printk(LOG_DEBUG, "[AHCI TRACE READ DUMP] Raw data inside direct pointer address 0x%llx (first 16 bytes): ", (uint64_t)direct_virt);
-        for(int x = 0; x < 16; x++) printk(LOG_DEBUG, "%02x ", d_bytes[x]);
-        printk(LOG_DEBUG, "\n");
+        // Clean up unaligned allocation page tracking
+        // pmm_free_pages(bounce_virt, 0); 
     }
 
     return 1;
@@ -385,8 +369,6 @@ int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count,
     void* bounce_virt = NULL;
     uint64_t bounce_phys = 0;
 
-    printk(LOG_DEBUG, "[AHCI TRACE WRITE] Request submitted. LBA: %llu, Sectors: %u, Orig Phys Address: 0x%llx\n", start_lba, count, buf_phys);
-
     if (buf_phys & 0x3) {
         printk(LOG_DEBUG, "[AHCI ALIGNMENT WARNING] Physical write address 0x%llx is NOT 4-byte aligned! Generating bounce tracking configuration...\n", buf_phys);
         bounce_virt = pmm_alloc_pages(0);
@@ -398,8 +380,13 @@ int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count,
 
     if (*(volatile uint32_t*)(port_base + 0x38) & (1 << 0)) {
         printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Port engine active slot 0 busy block.\n");
+        if (bounce_virt) pmm_free_pages(bounce_virt, 0);
         return 0;
     }
+
+    // FIX: Clear interrupt status and error codes before triggering command execution pipeline
+    *(volatile uint32_t*)(port_base + 0x10) = 0xFFFFFFFF; 
+    *(volatile uint32_t*)(port_base + 0x30) = 0xFFFFFFFF;
 
     ahci_cmd_header_t* cmd_hdr = (ahci_cmd_header_t*)drive->cl_virt;
     memset(cmd_hdr, 0, sizeof(ahci_cmd_header_t));
@@ -444,14 +431,18 @@ int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count,
         }
         if (tfd & (1 << 0)) { 
             printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Hardware Error! TFD State: 0x%x\n", tfd);
+            if (bounce_virt) pmm_free_pages(bounce_virt, 0);
             return 0;
         }
         if (--timeout == 0) {
             printk(LOG_DEBUG, "[AHCI TRACE WRITE CRITICAL] Transaction timed out!\n");
+            if (bounce_virt) pmm_free_pages(bounce_virt, 0);
             return 0;
         }
     }
 
-    printk(LOG_DEBUG, "[AHCI TRACE WRITE] Sector output transaction confirmed completed by hardware.\n");
+    // Clean up bounce page if allocated
+    // if (bounce_virt) pmm_free_pages(bounce_virt, 0);
+
     return 1;
 }

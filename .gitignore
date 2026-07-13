@@ -24,3 +24,7 @@ tree.txt
 userspace
 JetBrains_Mono
 zlib
+chfs
+chfs.c
+cross.txt
+m.bin

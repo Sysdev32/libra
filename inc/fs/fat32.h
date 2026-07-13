@@ -1,6 +1,6 @@
 #pragma once
 #include <stdint.h>
-#include <drivers/gpt.h> // For volume_t
+#include <fs/gpt.h> // For volume_t
 #include <stdbool.h>
 
 #define FAT_ATTR_READ_ONLY 0x01
@@ -93,7 +93,7 @@ int      fat32_set_cluster_value(fat32_fs_t* fs, uint32_t cluster, uint32_t valu
 uint32_t fat32_allocate_cluster(fat32_fs_t* fs);
 
 /* --- Full LFN Virtual File System Interface --- */
-void fat32_list_directory_lfn(fat32_fs_t* fs, uint32_t dir_cluster);
+fat32_dir_entry_t** fat32_list_directory_lfn(fat32_fs_t* fs, uint32_t dir_cluster);
 uint32_t fat32_find_object_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char* target_name, fat32_entry_t* out_entry);
 int  fat32_read_file_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char* filename, uint8_t* out_buffer, uint32_t max_bytes);
 int  fat32_write_file_lfn(fat32_fs_t* fs, uint32_t dir_cluster, const char* filename, const uint8_t* in_buffer, uint32_t total_bytes);

@@ -44,14 +44,17 @@ uint32_t get_ip() {
  * Encapsulates a network payload into an IPv4 and Ethernet frame,
  * handling automatic local gateway routing for external traffic.
  */
+
 void send_ipv4_packet(uint32_t dest_ip, uint8_t* payload, int protocol, int len) {
     // 1. Calculate precise layout dimensions
     size_t ip_total_length = sizeof(struct ipv4_header) + len;
     size_t frame_total_size = sizeof(struct eth_frame) + ip_total_length;
 
     // 2. Allocate one single continuous buffer for the entire physical frame
-    struct eth_frame *frame = kmalloc(frame_total_size);
+    struct eth_frame fr;
+    struct eth_frame *frame = &fr;
     if (!frame) return; 
+    printk(LOG_TRACE, "frame address: %x", (uint64_t)frame);
 
     // 3. Routing Layer Logic: Determine the proper Ethernet Destination MAC Address
     if (dest_ip == BROADCAST) {
@@ -103,7 +106,4 @@ void send_ipv4_packet(uint32_t dest_ip, uint8_t* payload, int protocol, int len)
 
     // 7. Hand the finalized physical buffer frame down to the network hardware driver
     rtl8139_send(frame, frame_total_size);
-
-    // 8. Free local heap memory allocations cleanly
-    kfree(frame);
 }

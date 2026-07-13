@@ -1,4 +1,4 @@
-#include <drivers/gpt.h>
+#include <fs/gpt.h>
 #include <drivers/fb.h>
 #include <drivers/alloc.h> // kmalloc and kfree
 #include <string.h>
