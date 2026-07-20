@@ -102,6 +102,23 @@ char *strcpy(char *destination, const char *source) {
 
     return destination;
 }
+
+char *strncpy(char *destination, const char *source, size_t n) {
+    size_t i = 0;
+
+    while (i < n && source[i] != '\0') {
+        destination[i] = source[i];
+        i++;
+    }
+
+    while (i < n) {
+        destination[i] = '\0';
+        i++;
+    }
+
+    return destination;
+}
+
 char* strchr(const char* str, int c) {
     char target = (char)c;
 

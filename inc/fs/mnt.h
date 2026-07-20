@@ -41,15 +41,17 @@ typedef enum {
     NULLD,
     ETH
 } DevFsType;
-typedef size_t (*read_func_t)(void *buf, size_t count, int offset);
-typedef size_t (*write_func_t)(const void *buf, size_t count);
-typedef int (*ioctl_func_t)(unsigned long request, void *arg);
+typedef size_t (*read_func_t)(int fd, void *buf, size_t count, int offset);
+typedef size_t (*write_func_t)(int fd, const void *buf, size_t count);
+typedef int (*ioctl_func_t)(int fd, unsigned long request, void *arg);
 typedef struct {
     DevFsType type;
     uint8_t bitmask;
     read_func_t read;
     write_func_t write;
     ioctl_func_t ioctl;
+    ahci_device_t dev;
+    int tty;
     char name[16];
     bool allocated;
 } devfs_file;
@@ -67,3 +69,8 @@ int open(char* path);
 int read(int fd, void *buf, size_t count, uint64_t offset);
 int write(int fd, const void *data, uint64_t size);
 int create(char* path);
+void register_device(read_func_t read, ioctl_func_t ioctl, write_func_t write,
+                     uint8_t bitmask, DevFsType type, char* name,
+                     ahci_device_t dev, int tty);
+extern full_t fd_table[32];
+extern devfs_file files[64];

@@ -17,7 +17,7 @@ struct __attribute__((packed)) ipv4_header {
 };
 struct __attribute__((packed)) ipv4_packet {
     struct ipv4_header hdr;
-    uint8_t payload[];
+    uint8_t payload[1500];
 };
 void set_ip(uint32_t ips);
 uint32_t get_ip();

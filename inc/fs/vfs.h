@@ -14,6 +14,7 @@ struct vfs_file {
     char path[256];     // Fixed size local buffer! No kmalloc needed for names anymore!
     uint8_t *data;
     uint64_t size;
+    uint8_t owns_data;
     uint32_t mode;
     uint32_t uid;       // ADDED: Owner User ID
     uint32_t gid;       // ADDED: Owner Group ID
@@ -64,6 +65,7 @@ struct vfs_dirent {
 
 // Forward declarations for filesystem backends
 struct vfs_mount;
+struct vfs_stat;
 
 // Filesystem operation table — each mounted filesystem provides these
 struct fs_operations {
@@ -132,6 +134,7 @@ int vfs_rmdir(const char *path);
 int vfs_mkdir(const char *path, uint32_t mode);
 int vfs_stat(const char *path, struct vfs_stat *st);
 int vfs_fstat(int fd, struct vfs_stat *st);
+int vfs_listdir(const char *path, char **buf, size_t max_len);
 typedef struct file DIR;
 
 // --- DIRECTORY STREAMING API ---

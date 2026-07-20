@@ -10,7 +10,9 @@
 #include <drivers/alloc.h>
 #include <arch/x86_64/idt.h>
 #include <arch/x86_64/schedule.h>
+#include <ioctl.h>
 #include <fs/vfs.h>
+#include <drivers/tty.h>
 #include <hals/pci.h>
 #include <fs/gpt.h>
 #include <uacpi/uacpi.h>
@@ -28,6 +30,7 @@
 #include <errno.h>
 #include <drivers/elf.h>
 #include <fs/chfs.h>
+#include <hals/net/RTL8139.h>
 #include <fs/mnt.h>
 struct flanterm_context *ft_ctx;
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
@@ -118,43 +121,127 @@ extern char __user_src_end[];
 typedef uint64_t page_table_t;
 static void ps2_wait_input(void)
 {
-    while (inb(0x64) & 2);
+    while (inb(0x64) & 0x02)
+        ;
 }
 
 static void ps2_wait_output(void)
 {
-    while (!(inb(0x64) & 1));
+    while (!(inb(0x64) & 0x01))
+        ;
 }
+
+static void ps2_flush(void)
+{
+    while (inb(0x64) & 0x01) {
+        uint8_t b = inb(0x60);
+        printk(LOG_TRACE, "[PS2] Flushed byte %02X\n", b);
+    }
+}
+
+static uint8_t ps2_read_config(void)
+{
+    ps2_wait_input();
+    outb(0x64, 0x20);
+
+    ps2_wait_output();
+    return inb(0x60);
+}
+
+static void ps2_write_config(uint8_t config)
+{
+    ps2_wait_input();
+    outb(0x64, 0x60);
+
+    ps2_wait_input();
+    outb(0x60, config);
+}
+
+static uint8_t ps2_send_device(uint8_t cmd)
+{
+    ps2_wait_input();
+    outb(0x60, cmd);
+
+    ps2_wait_output();
+    return inb(0x60);
+}
+
 void keyboard_init(void)
 {
     uint8_t config;
 
-    ps2_wait_input();
-    outb(0x64, 0xAD); // disable port 1
+    printk(LOG_TRACE, "========== PS/2 Keyboard Init ==========\n");
 
+    printk(LOG_TRACE, "[PS2] Initial status: %02X\n", inb(0x64));
+
+    ps2_flush();
+
+    /* Disable keyboard */
+    printk(LOG_TRACE, "[PS2] Disable first port (0xAD)\n");
     ps2_wait_input();
-    outb(0x64, 0x20); // read config byte
+    outb(0x64, 0xAD);
+
+    /* Read config */
+    config = ps2_read_config();
+    printk(LOG_TRACE, "[PS2] Config before: %02X\n", config);
+
+    /* Enable IRQ1 + enable first port clock */
+    config |= (1 << 0);
+    config &= ~(1 << 4);
+
+    printk(LOG_TRACE, "[PS2] Config after : %02X\n", config);
+
+    ps2_write_config(config);
+
+    /* Verify config actually changed */
+    config = ps2_read_config();
+    printk(LOG_TRACE, "[PS2] Config verify: %02X\n", config);
+
+    /* Enable first port */
+    printk(LOG_TRACE, "[PS2] Enable first port (0xAE)\n");
+    ps2_wait_input();
+    outb(0x64, 0xAE);
+
+    /* Keyboard reset */
+    printk(LOG_TRACE, "[PS2] Sending RESET (FF)\n");
+
+    uint8_t resp = ps2_send_device(0xFF);
+    printk(LOG_TRACE, "[PS2] RESET ACK = %02X\n", resp);
 
     ps2_wait_output();
-    config = inb(0x60);
+    resp = inb(0x60);
+    printk(LOG_TRACE, "[PS2] RESET RESULT = %02X\n", resp);
 
-    config |= 1;   // enable interrupt on keyboard
+    /* Read keyboard ID */
+    printk(LOG_TRACE, "[PS2] Sending READ ID (F2)\n");
 
-    ps2_wait_input();
-    outb(0x64, 0x60);
-    ps2_wait_input();
-    outb(0x60, config);
+    resp = ps2_send_device(0xF2);
+    printk(LOG_TRACE, "[PS2] F2 ACK = %02X\n", resp);
 
-    ps2_wait_input();
-    outb(0x64, 0xAE); // enable keyboard
-    ps2_wait_write();
-    outb(0x60, 0xF4);
+    while (inb(0x64) & 1) {
+        uint8_t id = inb(0x60);
+        printk(LOG_TRACE, "[PS2] ID BYTE = %02X\n", id);
+    }
+    /* Select Scan Code Set */
+    printk(LOG_TRACE, "[PS2] Setting Scan Code Set 1 (F0 01)\n");
 
-    ps2_wait_read();
-    uint8_t ack = inb(0x60);
-    printk(LOG_TRACE, "Keyboard ACK = %x\n", ack);
-    // optional: clear buffer
-    inb(0x60);
+    /* Send F0 = Select scan code set */
+    resp = ps2_send_device(0xF0);
+    printk(LOG_TRACE, "[PS2] F0 ACK = %02X\n", resp);
+
+    if (resp == 0xFA) {
+        /* Send 01 = Set 1 */
+        resp = ps2_send_device(0x01);
+        printk(LOG_TRACE, "[PS2] SET1 ACK = %02X\n", resp);
+    }
+    /* Enable scanning */
+    printk(LOG_TRACE, "[PS2] Sending ENABLE SCANNING (F4)\n");
+
+    resp = ps2_send_device(0xF4);
+    printk(LOG_TRACE, "[PS2] F4 ACK = %02X\n", resp);
+
+    printk(LOG_TRACE, "[PS2] Final status = %02X\n", inb(0x64));
+    printk(LOG_TRACE, "========== PS/2 Init Done ==========\n");
 }
 typedef struct {
     uint8_t r;
@@ -327,125 +414,257 @@ void stack_free(uint64_t phys) {
 }
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
-int spawn(char* path, int pid) {
-
-
+int spawn(const char *path, int argc, char **argv)
+{
     if (!path) {
-        printk(LOG_ERROR, "[SPAWN] Error: User-supplied path pointer is NULL!\n");
+        printk(LOG_ERROR, "[SPAWN] NULL path pointer\n");
         return -1;
     }
-
-    // Safely copy the user-supplied path into kernel memory BEFORE
-    // creating a new address space (which will switch CR3).
+    if (argc < 0 || argc > 64 || (argc > 0 && argv == NULL)) {
+        printk(LOG_ERROR, "[SPAWN] Invalid argv vector\n");
+        return -1;
+    }
     char kpath[256];
+    memset(kpath, 0, sizeof(kpath));
+
     for (int i = 0; i < 255; i++) {
         char c = path[i];
         kpath[i] = c;
-        if (c == '\0') {
+
+        if (c == '\0')
             break;
-        }
+
         if (i == 254) {
             kpath[255] = '\0';
-            printk(LOG_WARNING, "[SPAWN] Warning: Path string exceeded 254 characters! Truncating.\n");
         }
     }
-
     page_table_t *user_pml4 = vmm_create_address_space();
-    
-    if (user_pml4 == NULL) {
-        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not allocate isolated user address space (PML4 is NULL)!\n");
-        for(;;);
-    }
-    int user_fd = vfs_open(kpath);
-    
-    if (user_fd < 0) {
-        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: Could not open file \"%s\". VFS Error Code: %d\n", kpath, user_fd);
-        for(;;);
-    }
-    uint64_t user_flags = PTE_USER | PTE_WRITABLE;
-    struct vfs_stat stat = {0};
-    
-    vfs_fstat(user_fd, &stat);
 
-    uint64_t safe_code_phys_base  = arena_alloc(stat.st_size);  
-    uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);  
-    // Staging buffer math: 0x8000000 + (9216 * 4096) = 0xA400000
-    uint64_t raw_elf_phys_base    = safe_code_phys_base + (9216 * PAGE_SIZE); 
-    void* raw_elf_hhdm_ptr        = (void*)(raw_elf_phys_base + HHDM_OFFSET);
-    
+    if (!user_pml4) {
+        printk(LOG_ERROR,
+               "[SPAWN] Failed creating address space\n");
+        for(;;);
+    }
+
+
+    int user_fd = vfs_open(kpath);
+    if (user_fd < 0) {
+        printk(LOG_ERROR,
+               "[SPAWN] Cannot open '%s'\n",
+               kpath);
+        for(;;);
+    }
+
+
+    struct vfs_stat stat = {0};
+
+    vfs_fstat(user_fd, &stat);
+    uint64_t user_flags = PTE_USER | PTE_WRITABLE;
+    uint64_t safe_code_phys_base =
+        arena_alloc(stat.st_size);
+    uint64_t safe_stack_phys_base =
+        stack_alloc(256 * 1024);
+    uint64_t raw_elf_phys_base =
+        safe_code_phys_base + (9216 * PAGE_SIZE);
+
+
+    void *raw_elf_hhdm_ptr =
+        (void *)(raw_elf_phys_base + HHDM_OFFSET);
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
-    int page_index = 0;
-    int first_chunk = 1;
 
-    // ============================================================================
-    // STEP 1: Read raw ELF file sequentially into staging buffer + VERBOSE LOGS
-    // ============================================================================
-    while (1) {
-        void *current_dest_ptr = (void *)((uint8_t*)raw_elf_hhdm_ptr + total_bytes_read);
-        int chunks_read = vfs_read(user_fd, current_dest_ptr, PAGE_SIZE, file_cursor);
-        
-        if (first_chunk) {
-            first_chunk = 0;
-        }
+    while (1)
+    {
+        void *dst =
+            (void *)((uint8_t *)raw_elf_hhdm_ptr +
+                     total_bytes_read);
 
-        if (chunks_read <= 0) {
-            break; 
-        }
 
-        total_bytes_read += chunks_read;
-        file_cursor += chunks_read;
-        page_index++;
+        int read =
+            vfs_read(user_fd,
+                     dst,
+                     PAGE_SIZE,
+                     file_cursor);
+
+
+        if (read <= 0)
+            break;
+
+
+        total_bytes_read += read;
+        file_cursor += read;
     }
-    uint64_t user_code_vma  = elf_vaddr(raw_elf_hhdm_ptr); 
-    uint64_t user_stack_vma = 0x600000;
+
+    uint64_t user_code_vma =
+        elf_vaddr(raw_elf_hhdm_ptr);
     vfs_free_fd(user_fd);
 
-    if (total_bytes_read <= 0) {
-        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: user_app.elf read verification failed! Total bytes read is 0 or negative.\n");
+
+    int staging_pages = 8300;
+
+
+    for (int i = 0; i < staging_pages; i++)
+    {
+        uint64_t phys =
+            safe_code_phys_base +
+            i * PAGE_SIZE;
+
+
+        uint64_t virt =
+            user_code_vma +
+            i * PAGE_SIZE;
+
+        memset((void *)(phys + HHDM_OFFSET),
+               0,
+               PAGE_SIZE);
+
+
+        vmm_map_page(user_pml4,
+                     virt,
+                     phys,
+                     user_flags);
+    }
+
+
+
+    ElfLoadResult loaded =
+        load_elf(raw_elf_hhdm_ptr,
+                 safe_code_phys_base,
+                 user_code_vma);
+
+    if (!loaded.entry_point)
+    {
+        printk(LOG_ERROR,
+               "[SPAWN] ELF loader failed\n");
         for(;;);
     }
 
-    // ============================================================================
-    // STEP 2: Map execution page memory window up-front 
-    // ============================================================================
-    int staging_pages = 8300; 
-    for (int i = 0; i < staging_pages; i++) {
-        uint64_t current_phys = safe_code_phys_base + (i * PAGE_SIZE);
-        uint64_t current_vma  = user_code_vma + (i * PAGE_SIZE);
-        void *clear_ptr = (void*)(current_phys + HHDM_OFFSET);
-        
-        memset(clear_ptr, 0, PAGE_SIZE);
-        vmm_map_page(user_pml4, current_vma, current_phys, user_flags);
+
+
+
+    uint64_t user_stack_vma = 0x600000;
+
+
+    int stack_pages = 64;
+
+
+    for (int i = 0; i < stack_pages; i++)
+    {
+        uint64_t virt =
+            user_stack_vma +
+            i * PAGE_SIZE;
+
+
+        uint64_t phys =
+            safe_stack_phys_base +
+            i * PAGE_SIZE;
+
+        memset((void *)(phys + HHDM_OFFSET),
+               0,
+               PAGE_SIZE);
+
+
+        vmm_map_page(user_pml4,
+                     virt,
+                     phys,
+                     user_flags);
     }
-    
-    ElfLoadResult loaded_app = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
-    if (loaded_app.entry_point == 0) {
-        printk(LOG_ERROR, "[SPAWN] CRITICAL ERROR: ELF Loader failed to validate, parse, or resolve segments of the target ELF!\n");
-        for(;;);
+    uint64_t stack_top_vma =
+        user_stack_vma +
+        stack_pages * PAGE_SIZE;
+
+
+    uint64_t stack_top_hhdm =
+        safe_stack_phys_base +
+        stack_pages * PAGE_SIZE +
+        HHDM_OFFSET;
+
+    uint64_t cur_vma = stack_top_vma;
+    uint64_t cur_hhdm = stack_top_hhdm;
+
+
+    uint64_t argv_ptrs[64];
+
+
+    for (int i = argc - 1; i >= 0; i--)
+    {
+        if (argv[i] == NULL) {
+            printk(LOG_ERROR, "[SPAWN] NULL argv[%d]\n", i);
+            return -1;
+        }
+
+        size_t len =
+            strlen(argv[i]) + 1;
+
+
+        cur_vma -= len;
+        cur_hhdm -= len;
+
+
+        memcpy((void *)cur_hhdm,
+               argv[i],
+               len);
+
+
+        argv_ptrs[i] = cur_vma;
     }
 
-    // The user heap will grow lazily via sbrk/mmap from userland; do not pre-map the
-    // entire reserved heap region. This avoids a 512MB eager allocation at boot.
-    // ============================================================================
-    // STEP 5: Map a Multi-Page Stack Region and Calculate the Initial RSP
-    // ============================================================================
-    int user_stack_pages = 64; 
-    for (int i = 0; i < user_stack_pages; i++) {
-        uint64_t stack_phys = safe_stack_phys_base + (i * PAGE_SIZE);
-        uint64_t stack_vma  = user_stack_vma + (i * PAGE_SIZE);
-        void *stack_hhdm_ptr = (void *)(stack_phys + HHDM_OFFSET);
-        
-        memset(stack_hhdm_ptr, 0, PAGE_SIZE);
-        vmm_map_page(user_pml4, stack_vma, stack_phys, user_flags);
+
+
+    cur_vma &= -8ULL;
+    cur_hhdm &= -8ULL;
+
+    uint64_t stack_words = (uint64_t)argc + 2;
+    if (((cur_vma - (stack_words * 8)) & 0xFULL) != 0) {
+        cur_vma -= 8;
+        cur_hhdm -= 8;
     }
 
-    uint64_t initial_rsp = user_stack_vma + (user_stack_pages * PAGE_SIZE) - 16;
-    return create_user_task((void *)loaded_app.entry_point, (void *)initial_rsp, user_pml4, 0, 0, -1);
+    cur_vma -= 8;
+    cur_hhdm -= 8;
+
+    *(uint64_t *)cur_hhdm = 0;
+
+
+    for(int i = argc - 1; i >= 0; i--)
+    {
+        cur_vma -= 8;
+        cur_hhdm -= 8;
+
+        *(uint64_t *)cur_hhdm =
+            argv_ptrs[i];
+    }
+
+
+    uint64_t argv_start =
+        cur_vma;
+
+
+    cur_vma -= 8;
+    cur_hhdm -= 8;
+
+
+    *(uint64_t *)cur_hhdm =
+        argc;
+
+
+    int pid =
+        create_user_task(
+            (void *)loaded.entry_point,
+            (void *)cur_vma,
+            argc,
+            argv_start,
+            user_pml4,
+            0,
+            0,
+            -1);
+
+
+    return pid;
 }
 int launchd_pid = -1;
 static void main_kthread(void) {
-    launchd_pid = spawn("/System/usr/bin/commandline/launchd", -1);
+    launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL);
     for (;;) {
         asm volatile("sti; hlt");
     }
@@ -545,29 +764,15 @@ void _start(void) {
 
     // FIX 2: Explicitly cast void* address to a 32-bit unsigned integer pointer
     uint32_t *fb_ptr = (uint32_t *)framebuffer->address;
-
-    ft_ctx = flanterm_fb_init(
-        NULL,
-        NULL,
-        fb_ptr, framebuffer->width, framebuffer->height, framebuffer->pitch,
-        framebuffer->red_mask_size, framebuffer->red_mask_shift,
-        framebuffer->green_mask_size, framebuffer->green_mask_shift,
-        framebuffer->blue_mask_size, framebuffer->blue_mask_shift,
-        NULL,
-        NULL, NULL,
-        NULL, NULL,
-        NULL, NULL,
-        NULL, 0, 0, 1,
-        1.5, 1.5,
-        0,
-        0
-    );
-    memory_init(); // this is basically my allocator (btw this is just a voiceover so yeah, im typing this in the actual recording)
-    flanterm_set_text_fg(ft_ctx, 7, true);
-    flanterm_write(ft_ctx, "\033[?25l", 6);
-    initConsole(ft_ctx, framebuffer);
+    framebuffer_t fbt;
+    fbt.address = fb_ptr;
+    fbt.height = framebuffer->height;
+    fbt.pitch = framebuffer->pitch;
+    fbt.width = framebuffer->width;
+    memory_init();
+    keyboard_init();
+    tty_init(&fbt);
     init_vfs();
-    
     if (total_usable_memory / 1024 / 1024 < 128) {
         printk(LOG_ERROR, "Less than 128 MB of usable memory detected. Rebooting now..\n");
         triple_fault_reboot();
@@ -624,21 +829,47 @@ void _start(void) {
         for(;;);
     }
     asm volatile ("sti");
-    keyboard_init();
     devices = kcalloc(256, sizeof(pci_device_t));
     
     pci_scan_bus(devices, 256, &devicecount);
     for (int i=0; i<devicecount; i++) {
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
-    init_ahci();
-    gpt_parse_partitions(get_primary_sata_drive());
-    format_chfs(get_volume(0));
-    partition_t part;
-    part.chfs = add_partition(get_volume(0));
-    part.type = CHFS;
-    mount(&part, "/mnt");
-    create("/mnt/a.txt");
+    // init_ahci();
+    // gpt_parse_partitions(get_primary_sata_drive());
+    // if (get_primary_sata_drive()->size_gb < 3) {
+    //     printk(LOG_ERROR, "Unable to install.\nReason: Drive size too small: %dGB, needed at least 3GB\nNo Changes Done.\n", get_primary_sata_drive()->size_gb);
+    //     for(;;);
+    // }
+    // gpt_format_disk(get_primary_sata_drive());
+    // gpt_create_partition(get_primary_sata_drive(), "Carrintosh", 4194304); // 2gb
+    // gpt_create_partition(get_primary_sata_drive(), "EFI", 1048576);
+    // format_chfs(get_volume(0));
+    // partition_t part;
+    // part.chfs = add_partition(get_volume(0));
+    // part.type = CHFS;
+    
+    partition_t dev;
+    dev.type = DEVFS;
+    mount(&dev, "/dev");
+    tty_dev_init();
+    int fd = open("/dev/tty0");
+    if (fd >= 0) {
+        struct winsize wz;
+        if (ioctl(fd, TIOCGWINSZ, &wz) == 0) {
+            printk(LOG_TRACE, "%dx%d\n", wz.ws_col, wz.ws_row);
+        }
+
+        struct termios t;
+        if (ioctl(fd, TCGETS, &t) == 0) {
+            t.c_lflag &= ~ECHO;
+            ioctl(fd, TCSETS, &t);
+        }
+    }
+    printk(LOG_TRACE, "fd: %d\n", fd);
+    // mount(&part, "/mnt");
+    // create("/mnt/a.txt");
     create_kernel_task(main_kthread);
     start_scheduler();
+    for(;;);
 }

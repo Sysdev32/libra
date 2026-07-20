@@ -14,6 +14,7 @@
 #include <drivers/net/IPV4.h>
 #include <drivers/net/TCP.h>
 #include <drivers/net/UDP.h>
+#include <fs/mnt.h>
 #include <hals/net/RTL8139.h>
 #if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
     #define htons(x) __builtin_bswap16(x)
@@ -417,6 +418,8 @@ char* crop(char *dest, const char *src, int until) {
     return dest; // Returns the pointer to the destination buffer
 }
 extern void exception_stub_44(void);
+extern void exception_stub_33(void);
+char nodename[65] = {0};
 void idt_init(void) {
     memset(idt, 0, sizeof(struct IDTEntry) * 256);
     user_key = random(&user_seed);
@@ -433,7 +436,7 @@ void idt_init(void) {
 
     // 2. Safely map vector 0x20 and 0x21 using slots 32 and 33 from the assembly landing pads
     idt_set_descriptor(0x20, (void*)exception_vector_table[32], 0x8E);
-    idt_set_descriptor(0x21, (void*)exception_vector_table[33], 0xEE);
+    idt_set_descriptor(0x21, (void*)exception_stub_33, 0xEE);
     idt_set_descriptor(0x2C, (void*)exception_stub_44, 0xEE);
     idt_set_descriptor(0x80, intr, 0xEE); // User Mode System Calls Gate
 
@@ -451,6 +454,7 @@ void idt_init(void) {
     // 4. Disable legacy PIC
     pic_disable();
     ps2_init();
+    strcpy(nodename, "machine");
 }
 
 void lapic_eoi(void) {
@@ -1086,42 +1090,98 @@ struct utsname {
     char domainname[65];
 #endif
 };
-char nodename[65];
+volatile int last_scancode = -1;
+char kgetc() {
+    // Wait for ISR to register a new press
+    while (last_scancode == -1 && (!(last_scancode & 0x80))) {
+        __asm__ volatile("hlt"); // Save CPU power while waiting
+    }
+
+    uint8_t code = last_scancode;
+    last_scancode = -1; // Clear the latch
+
+    return kbd_us_keymap[last_scancode];
+}
+#include <stdbool.h>
+
+// Global array tracking whether an allocated descriptor belongs to the custom mount framework
+// Index maps to (system_fd - 2) slots
+bool fd_is_mnt[32] = {false};
+
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
 
     switch (regs->rax) {
-        case 0: // vfs_read
+        case 0: // read
             if (args->arg[0] == 1 || args->arg[0] == 2) {
                 regs->rax = 0; 
             } 
             else {
-                regs->rax = vfs_read(args->arg[0] - 2, (void*)args->arg[1], args->arg[2], args->arg[3]);
+                int tracking_idx = (int)(args->arg[0] - 2);
+                if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
+                    // Custom mount manager execution pipeline (Paths starting with /dev)
+                    regs->rax = read(tracking_idx, (void*)args->arg[1], args->arg[2], args->arg[3]);
+                } else {
+                    // Fallback to native VFS execution pipeline (Standard VFS fallback)
+                    regs->rax = vfs_read(tracking_idx, (void*)args->arg[1], args->arg[2], args->arg[3]);
+                }
             }
             break;
 
-        case 1: // vfs_write_file
+        case 1: // write
             if (args->arg[0] > 2) {
-                regs->rax = vfs_write_file(args->arg[0] - 2, (void*)args->arg[1], args->arg[2]);
+                int tracking_idx = (int)(args->arg[0] - 2);
+                if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
+                    // Custom mount manager execution pipeline (Paths starting with /dev)
+                    regs->rax = write(tracking_idx, (void*)args->arg[1], args->arg[2]);
+                } else {
+                    // Fallback to native VFS execution pipeline (Standard VFS fallback)
+                    regs->rax = vfs_write_file(tracking_idx, (void*)args->arg[1], args->arg[2]);
+                }
             } 
             else if (args->arg[0] == 1 || args->arg[0] == 2) {
                 char *user_str = (char*)args->arg[1];
                 unsigned long length = args->arg[2];
 
                 for (unsigned long i = 0; i < length; i++) {
-                    printk(LOG_NONE, "%c", user_str[i]);
+                    tty_putchar(user_str[i]);
                 }
                 regs->rax = length; 
             }
             break;
 
-        case 2: { // vfs_open
-            long fd = vfs_open((const char*)args->arg[0]);
-            printk(LOG_TRACE, "FD: %d\n", fd);
-            if (fd < 0) {
-                regs->rax = fd; 
+        case 2: { // open
+            const char* path = (const char*)args->arg[0];
+            
+            // Custom "/dev" prefix check
+            bool is_dev = (path != NULL && 
+                           path[0] == '/' && 
+                           path[1] == 'd' && 
+                           path[2] == 'e' && 
+                           path[3] == 'v');
+            
+            if (is_dev) {
+                long fd = open((char*)path);
+                if (fd < 0) {
+                    regs->rax = fd;
+                } else {
+                    int tracking_idx = (int)fd;
+                    if (tracking_idx >= 0 && tracking_idx < 32) {
+                        fd_is_mnt[tracking_idx] = true; // Registered to custom Mount framework
+                    }
+                    regs->rax = fd + 2;
+                }
             } else {
-                regs->rax = fd + 2; 
+                long fd = vfs_open(path);
+                if (fd < 0) {
+                    regs->rax = fd; 
+                } else {
+                    int tracking_idx = (int)fd;
+                    if (tracking_idx >= 0 && tracking_idx < 32) {
+                        fd_is_mnt[tracking_idx] = false; // Registered to standard VFS
+                    }
+                    regs->rax = fd + 2; 
+                }
             }
             break;
         }
@@ -1134,11 +1194,16 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             regs->rax = vfs_rmdir((const char*)args->arg[0]);
             break;
 
-        case 5: // vfs_free_fd (_close)
+        case 5: // close (_close)
             if (args->arg[0] <= 2) {
                 regs->rax = 0; 
             } else {
-                regs->rax = vfs_free_fd(args->arg[0] - 2);
+                int tracking_idx = (int)(args->arg[0] - 2);
+                if (tracking_idx >= 0 && tracking_idx < 32) {
+                    // Reset descriptor map tracker state
+                    fd_is_mnt[tracking_idx] = false; 
+                }
+                regs->rax = vfs_free_fd(tracking_idx);
             }
             break;
 
@@ -1150,12 +1215,38 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             }
             break;
 
-        case 7: { // vfs_create_file
-            long fd = vfs_create_file((void*)args->arg[0], (const char*)args->arg[1], args->arg[2]);
-            if (fd < 0) {
-                regs->rax = fd; 
+        case 7: { // create_file
+            const char* path = (const char*)args->arg[1];
+            
+            // Custom "/dev" prefix check
+            bool is_dev = (path != NULL && 
+                           path[0] == '/' && 
+                           path[1] == 'd' && 
+                           path[2] == 'e' && 
+                           path[3] == 'v');
+            
+            if (is_dev) {
+                long status = create((char*)path);
+                if (status < 0) {
+                    regs->rax = status;
+                } else {
+                    int tracking_idx = (int)status;
+                    if (tracking_idx >= 0 && tracking_idx < 32) {
+                        fd_is_mnt[tracking_idx] = true; // Custom mount routing
+                    }
+                    regs->rax = status + 2;
+                }
             } else {
-                regs->rax = fd + 2; 
+                long fd = vfs_create_file((void*)args->arg[0], path, args->arg[2]);
+                if (fd < 0) {
+                    regs->rax = fd; 
+                } else {
+                    int tracking_idx = (int)fd;
+                    if (tracking_idx >= 0 && tracking_idx < 32) {
+                        fd_is_mnt[tracking_idx] = false; // Native VFS fallback
+                    }
+                    regs->rax = fd + 2; 
+                }
             }
             break;
         }
@@ -1163,9 +1254,8 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         case 8: // vfs_delete_file
             regs->rax = vfs_delete_file((const char*)args->arg[0]);
             break;
+            
         case 9: {
-            // TODO: Contact launchd executable (level -1) and get permission for the process to gain administrator level
-            // TODO: Fix unsafe buffer copy
             if (args->arg[0] == 0) {
                 uint8_t signature[32];
                 sign_key_with_pid((uint8_t*)admin_key, sizeof(admin_key), getpid(), signature); 
@@ -1216,41 +1306,30 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
         }
         case 18: {
-            asm volatile ("sti");
-            // --- HOOK: Redirect stdin (FD 0) to the Keyboard Buffer (Multi-byte) ---
-            uint8_t *user_buf = (uint8_t*)args->arg[0];
-            uint64_t bytes_to_read = args->arg[1];
+            asm volatile("sti");
             
-            // Defensive check for zero bytes requested or a null buffer
+            // stdin (FD 0)
+            uint8_t *user_buf = (uint8_t *)args->arg[0];
+            uint64_t bytes_to_read = args->arg[1];
             if (bytes_to_read == 0 || user_buf == NULL) {
                 regs->rax = 0;
                 break;
             }
 
             uint64_t bytes_read = 0;
-
-            // Loop until we have successfully read the total number of requested bytes
             while (bytes_read < bytes_to_read) {
-                uint8_t scancode;
-
-                // Attempt to pop a scancode from the ring buffer
-                if (kbd_buffer_pop(&scancode)) {
-                    // Safely write to the current offset in the user buffer
-                    user_buf[bytes_read] = scancode;
-                    bytes_read++;
-                } else {
-                    // --- BLOCKING VIA HALT ---
-                    // 'sti' explicitly re-enables hardware interrupts so the keyboard can fire.
-                    // 'hlt' puts the CPU to sleep until the next hardware interrupt wakes it up.
-                    asm volatile("sti; hlt" ::: "memory");
+                while (last_scancode == -1) {
+                    asm volatile("hlt");
                 }
+                user_buf[bytes_read++] = (uint8_t)last_scancode;
+                last_scancode = -1;
             }
 
-            regs->rax = bytes_read; // Return total bytes successfully read (will equal bytes_to_read)
+            regs->rax = bytes_read;
             break;
         }
         case 19: {
-            regs->rax = spawn((char*)args->arg[0], -1);
+            regs->rax = spawn((char*)args->arg[0], args->arg[1], (char**)args->arg[2]);
             break;
         }
         case 22: {
@@ -1339,15 +1418,40 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
         }
         case 39: {
-            strcpy(nodename, (char*)args->arg[0]);
+            memset(nodename, 0, strlen(nodename));
+            strncpy(nodename, (char*)args->arg[0], args->arg[1]);
             break;
         }
         case 40: {
-            strcpy((char*)args->arg[0], nodename);
+            strncpy((char*)args->arg[0], nodename, args->arg[1]);
+            break;
+        }
+        case 41: {
+            rtc_get_time((struct timespec*)args->arg[0]);
+            break;
+        }
+        case 42: {
+            regs->rax = vfs_listdir((const char*)args->arg[0], (char**)args->arg[1], args->arg[2]);
+            break;
+        }
+        case 43: {
+            uacpi_reboot();
+            break; 
+        }
+        case 44: {
+            uacpi_enter_sleep_state(UACPI_SLEEP_STATE_S5);
+            break; 
+        }
+        case 45: {
+            regs->rax = vfs_delete_file((char*)args->arg[0]);
+            break;
+        }
+        case 46: {
+            regs->rax = ioctl(args->arg[0], args->arg[1], (void*)args->arg[2]);
             break;
         }
         default: 
-            regs->rax = -1; // Unknown syscall ID
+            regs->rax = -1; 
             break;
     }
 }
@@ -1450,6 +1554,7 @@ int sys_read_mouse(void *user_buffer, uint64_t count) {
     *dest = event;
     return sizeof(mouse_event_t);
 }
+
 uint64_t intrhandler(struct InterruptRegisters* regs) {
     uint64_t vector = regs->int_no;
 
@@ -1462,23 +1567,44 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
     // --- DISPATCH GATE B: SYSTEM PREEMPTIVE TIMER INTERRUPT (Vector 32) ---
     if (vector == 32) {
         ticks += 1;
+        tty_update_cursor();
         uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
         lapic_eoi();
         return new_rsp;
     }
     if (vector == 33) {
-        uint8_t scancode = inb(0x60);
+    uint8_t scancode = inb(0x60);
 
-        // 2. Filter out key releases (Break codes)
-        // In Set 1, if bit 7 (0x80) is set, it means the user just lifted their finger off the key.
-        if (scancode & 0x80) {
-            /* Optional: Handle key release state changes here (like clearing a 'shift_pressed' flag) */
-        } else {
-            kbd_buffer_push(scancode);
-        }
-        lapic_eoi();
-        return 0;
+    last_scancode = scancode;
+    
+    // Virtual Console Switching via Function Keys (F1 - F6)
+    if (scancode == 0x3B) {
+        tty_switch(0);
+    } else if (scancode == 0x3C) {
+        tty_switch(1);
+    } else if (scancode == 0x3D) {
+        tty_switch(2);
+    } else if (scancode == 0x3E) {
+        tty_switch(3);
+    } else if (scancode == 0x3F) {
+        tty_switch(4);
+    } else if (scancode == 0x40) {
+        tty_switch(5);
     }
+    
+    // Ensure it's a make code (press event)
+    if (!(scancode & 0x80)) {
+        char c = kbd_us_keymap[last_scancode];
+        
+        // Only forward standard printable character keys down to the TTY sub-system
+        if (c >= ' ' && c <= '~') {
+            tty_handle_input(c);
+        }
+    }
+    
+    lapic_eoi();
+    return 0;
+}
     if (vector == 44) {
         uint8_t byte = inb(0x60);
 
@@ -1679,7 +1805,58 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
             asm volatile("hlt");
         }
         } else {
-            printk(LOG_NONE, "%s while executing PID %d\n", user_exceptions[vector], getpid());
+            char buffer[64];
+            for (int i = 0; i < 64; i++) buffer[i] = 0; // Clear the buffer for safety
+            if (vector > 255) {
+                strcpy(buffer, "(invalid)");
+            }
+            
+            printk(LOG_ERROR, "Vector Index    : %d (0x%x) %s\r\n", vector, vector, buffer);
+            printk(LOG_ERROR, "Description     : %s\r\n", exception_names[vector]);
+            printk(LOG_ERROR, "Error Code Mask : 0x%x\r\n", regs->error_code);
+            printk(LOG_ERROR, "--------------------------------------------------\r\n");
+            
+            // Output code boundaries and stack tracking snapshots
+            printk(LOG_ERROR, "Faulting Instruction Pointer (RIP): %p\r\n", regs->rip);
+            printk(LOG_ERROR, "Faulting Stack Pointer       (RSP): %p\r\n", regs->rsp);
+            printk(LOG_ERROR, "Code Segment Selector        (CS) : %x\r\n", regs->cs);
+            printk(LOG_ERROR, "Processor Flag Mask      (RFLAGS) : %p\r\n", regs->rflags);
+            
+            // Specialize tracking read metrics for standard complex traps
+            switch (vector) {
+                case 13: { // General Protection Fault
+                    printk(LOG_ERROR, " -> Details: Memory segment selection or boundary access rule violation.\r\n");
+                    if (regs->error_code != 0) {
+                        printk(LOG_ERROR, " -> Broken Selector Target Segment Index: GDT/LDT Slot %d\r\n", regs->error_code >> 3);
+                    }
+                    break;
+                }
+                case 14: { // Page Fault
+                    uint64_t faulting_address = 0;
+                    asm volatile("mov %%cr2, %0" : "=r"(faulting_address));
+                    printk(LOG_ERROR, " -> Details: Attempted to touch unmapped or protected virtual address layout space.\r\n");
+                    printk(LOG_ERROR, " -> Missing Destination Target (CR2): 0x%p\r\n", faulting_address);
+                    
+                    // Decode page fault reason flags out of error code bitmask
+                    printk(LOG_ERROR, " -> Fault Parameters: %s, %s, %s\r\n",
+                        (regs->error_code & (1 << 0)) ? "Protection Violation" : "Non-Present Page",
+                        (regs->error_code & (1 << 1)) ? "Write Operation" : "Read Operation",
+                        (regs->error_code & (1 << 2)) ? "User Privilege Level" : "Supervisor Ring 0 Code"
+                    );
+                    break;
+                }
+                default:
+                    printk(LOG_ERROR, " -> Details: Fatal core execution anomaly, stalling CPU state pipeline layout.\r\n");
+                    break;
+            }
+
+            printk(LOG_ERROR, "--------------------------------------------------\r\n");
+            printk(LOG_ERROR, "Register Dump:\r\n");
+            printk(LOG_ERROR, "RAX: %p  RBX: %p  RCX: %p  RDX: %p\r\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+            printk(LOG_ERROR, "RSI: %p  RDI: %p  RBP: %p  R8 : %p\r\n", regs->rsi, regs->rdi, regs->rbp, regs->r8);
+            printk(LOG_ERROR, "R9 : %p  R10: %p  R11: %p  R12: %p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
+            printk(LOG_ERROR, "R13: %p  R14: %p  R15: %p\r\n", regs->r13, regs->r14, regs->r15);
+            printk(LOG_ERROR, "==================================================\r\n");
             return terminate(regs->rsp, getpid());
         }
     } 

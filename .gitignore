@@ -25,8 +25,9 @@ userspace
 JetBrains_Mono
 zlib
 chfs
-chfs.c
 cross.txt
 m.bin
 mtys
 my_disk.qcow2
+carrera
+iso/initramfs.cpio

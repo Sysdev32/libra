@@ -239,52 +239,174 @@ int vsprintf(char *buf, const char *fmt, va_list args) {
     *p = '\0';
     return (int)(p - buf);
 }
+// Standard 3-bit ANSI Color Palette (ANSI 0-7) mapped to 32-bit ARGB
+#define ANSI_COLOR_BLACK   0xFF000000  // 0
+#define ANSI_COLOR_RED     0xFFCD0000  // 1
+#define ANSI_COLOR_GREEN   0xFF00CD00  // 2
+#define ANSI_COLOR_YELLOW  0xFFCDCD00  // 3
+#define ANSI_COLOR_BLUE    0xFF0000EE  // 4
+#define ANSI_COLOR_MAGENTA 0xFFCD00CD  // 5
+#define ANSI_COLOR_CYAN    0xFF00CDCD  // 6
+#define ANSI_COLOR_WHITE   0xFFE5E5E5  // 7
 
-void printk(LogType type, const char *fmt, ...) {
-    if (!grad) {
-        char buf[1024];
-        va_list args;
-        uint64_t irq_flags = printk_irq_save();
-        
-        va_start(args, fmt);
-        int len = vsprintf(buf, fmt, args);
-        va_end(args);
-        
-        if (ctx == NULL) {
-            for (int i = 0; i < len; i++) {
-                if (buf[i] == '\n') serial_write_char('\r');
-                serial_write_char(buf[i]);
-            }
-            printk_irq_restore(irq_flags);
-            return;
-        }
+// A lookup array matching the 0-7 index structure
+static const uint32_t ansi_palette[8] = {
+    ANSI_COLOR_BLACK,
+    ANSI_COLOR_RED,
+    ANSI_COLOR_GREEN,
+    ANSI_COLOR_YELLOW,
+    ANSI_COLOR_BLUE,
+    ANSI_COLOR_MAGENTA,
+    ANSI_COLOR_CYAN,
+    ANSI_COLOR_WHITE
+};
+void printk(LogType type, const char *fmt, ...)
+{
+    if (grad)
+        return;
 
-        int color = 0;
-        bool bright = true;
-        const char *text = " info   ";
-        
-        if (type == LOG_DEBUG) { color = 4; bright = false; text = " debug  "; }
-        else if (type == LOG_ERROR) { color = 1; bright = false; text = " error  "; }
-        else if (type == LOG_WARNING) { color = 3; bright = false; text = " warning  "; }
-        else if (type == LOG_ACPI) { color = 3; bright = false; text = " uACPI  "; }
-        else if (type == LOG_NONE) { color = 0; bright = false; text = ""; }
-        else if (type == LOG_TRACE) { color = 6; bright = false; text = " trace  "; }
+    char buf[1024];
 
-        flanterm_set_text_bg(ctx, color, bright);
-        flanterm_write(ctx, text, strlen(text));
-        flanterm_set_text_bg(ctx, 0, false);
-        if (type != LOG_NONE) flanterm_write(ctx, " ", 1);
+    va_list args;
+    uint64_t irq_flags = printk_irq_save();
 
-        for (int i = 0; i < len; i++) {
-            if (buf[i] == '\n') {
-                flanterm_write(ctx, "\r", 1);
-                serial_write_char('\r');
-            }
-            flanterm_write(ctx, &buf[i], 1);
-            serial_write_char(buf[i]);
-        }
-        printk_irq_restore(irq_flags);
+    va_start(args, fmt);
+    int len = vsprintf(buf, fmt, args);
+    va_end(args);
+
+    /* Log prefix */
+    int color = 0;
+    const char *text = " info   ";
+
+    switch (type)
+    {
+        case LOG_DEBUG:   color = 4; text = " debug  "; break;
+        case LOG_ERROR:   color = 1; text = " error  "; break;
+        case LOG_WARNING: color = 3; text = " warning"; break;
+        case LOG_ACPI:    color = 3; text = " uACPI  "; break;
+        case LOG_TRACE:   color = 6; text = " trace  "; break;
+        case LOG_NONE:    text = ""; break;
+        default: break;
     }
+
+    if (type != LOG_NONE)
+    {
+        tty_set_colors(ansi_palette[7], ansi_palette[color]);
+        tty_write(text);
+        tty_set_colors(ansi_palette[7], ansi_palette[0]);
+        tty_putchar(' ');
+    }
+
+    uint32_t fg = ansi_palette[7];
+    uint32_t bg = ansi_palette[0];
+    bool bright = false;
+
+    tty_set_colors(fg, bg);
+
+    for (int i = 0; i < len;)
+    {
+        /* Serial always gets raw bytes */
+        if (buf[i] == '\n')
+            serial_write_char('\r');
+        serial_write_char(buf[i]);
+
+        /* ANSI escape? */
+        if (buf[i] == '\033' && buf[i + 1] == '[')
+        {
+            i += 2;
+
+            int value = 0;
+
+            while (1)
+            {
+                value = 0;
+
+                while (buf[i] >= '0' && buf[i] <= '9')
+                {
+                    value = value * 10 + (buf[i] - '0');
+                    i++;
+                }
+
+                switch (value)
+                {
+                    case 0:
+                        bright = false;
+                        fg = ansi_palette[7];
+                        bg = ansi_palette[0];
+                        break;
+
+                    case 1:
+                        bright = true;
+                        break;
+
+                    case 22:
+                        bright = false;
+                        break;
+
+                    /* Foreground */
+                    case 30 ... 37:
+                    {
+                        int idx = value - 30;
+                        fg = ansi_palette[idx];
+                        break;
+                    }
+
+                    /* Background */
+                    case 40 ... 47:
+                    {
+                        int idx = value - 40;
+                        bg = ansi_palette[idx];
+                        break;
+                    }
+
+                    /* Bright foreground */
+                    case 90 ... 97:
+                    {
+                        int idx = value - 90;
+                        fg = ansi_palette[idx];
+                        bright = true;
+                        break;
+                    }
+
+                    /* Bright background */
+                    case 100 ... 107:
+                    {
+                        int idx = value - 100;
+                        bg = ansi_palette[idx];
+                        break;
+                    }
+                }
+
+                if (buf[i] == ';')
+                {
+                    i++;
+                    continue;
+                }
+
+                if (buf[i] == 'm')
+                {
+                    i++;
+                    break;
+                }
+
+                break;
+            }
+
+            /* Optional bright effect */
+            if (bright)
+            {
+                // Replace with your own bright palette if you have one.
+            }
+
+            tty_set_colors(fg, bg);
+            continue;
+        }
+
+        tty_putchar(buf[i]);
+        i++;
+    }
+
+    printk_irq_restore(irq_flags);
 }
 
 /**

@@ -1,8 +1,8 @@
 {
     "services": [
         {
-            "name": "networkd",
-            "path": "/System/usr/bin/commandline/networkd"
+            "name": "testd",
+            "path": "/System/usr/bin/commandline/secrvice"
         }
     ]
 }

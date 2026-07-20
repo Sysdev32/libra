@@ -21,6 +21,6 @@ int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid);
 int createf(void* data, const char *name, int len);
 void draw_image(int start_x, int start_y, int img_w, int img_h, const uint8_t *rgb_data);
 int read_mouse(void *buf, int len);
-int spawn(char* path);
+int spawn(char* path, int argc, char** argv);
 int waitpid(int pid);
 #endif

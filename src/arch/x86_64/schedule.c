@@ -6,7 +6,6 @@
 #include <drivers/fb.h>
 #define MAX_TASKS 512
 #define KERNEL_STACK_SIZE 4096
-#define USER_STACK_SIZE 4096
 #define HHDM_OFFSET 0xffff800000000000ULL
 #define MAX_MSG_PAYLOAD 128  // Maximum bytes per single message
 #define MAX_PROCESS_MSGS 16  // Maximum pending messages a process can hold
@@ -184,7 +183,7 @@ int create_kernel_task(void (*entry_point)(void)) {
 /**
  * CREATE A USERSPACE TASK (Ring 3)
  */
-int create_user_task(void (*entry_point)(void), void* allocated_user_stack, void *pml4, int uid, int gid, int pid) {
+int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -192,26 +191,7 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack, void
 
             init_fpu_context((struct task *)&task_table[i]);
             
-            uint64_t user_stack_vma_top = 0x600000 + USER_STACK_SIZE;
-            uint64_t *user_virt_stack_top = (uint64_t *)(user_stack_vma_top & ~0xFULL);
-
-            uint64_t raw_phys_stack = (uint64_t)allocated_user_stack;
-            if (raw_phys_stack >= HHDM_OFFSET) {
-                raw_phys_stack -= HHDM_OFFSET;
-            }
-
-            uint64_t *user_stack_hhdm_top = (uint64_t *)(raw_phys_stack + USER_STACK_SIZE + HHDM_OFFSET);
-            user_stack_hhdm_top = (uint64_t *)((uintptr_t)user_stack_hhdm_top & ~0xFULL);
-
-            /*
-             * The user image starts in crt0.asm, which reads argc/argv from the
-             * initial stack and then CALLs main(). That means _start must enter
-             * with a 16-byte aligned RSP, so main itself lands on the standard
-             * SysV ABI boundary.
-             */
-            user_stack_hhdm_top[-2] = 0; // argc
-            user_stack_hhdm_top[-1] = 0; // argv
-            task_table[i].user_rsp = (uint64_t)&user_virt_stack_top[-2];
+            task_table[i].user_rsp = ((uint64_t)user_stack) & ~0xFULL;
             task_table[i].pml4 = (page_table_t *)pml4;
 
             uintptr_t k_stack_raw = (uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE];
@@ -224,8 +204,8 @@ int create_user_task(void (*entry_point)(void), void* allocated_user_stack, void
             ctx[1]  = 0; // RBX
             ctx[2]  = 0; // RCX
             ctx[3]  = 0; // RDX
-            ctx[4]  = 0; // RSI
-            ctx[5]  = 0; // RDI
+            ctx[4]  = rsi; // RSI
+            ctx[5]  = rdi; // RDI
             ctx[6]  = 0; // RBP
             ctx[7]  = 0; // R8
             ctx[8]  = 0; // R9

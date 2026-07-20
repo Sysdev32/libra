@@ -1,6 +1,7 @@
 #include <fs/mnt.h>
 #include <string.h>
 #include <drivers/fb.h>
+#include <drivers/alloc.h>
 #include <fs/chfs.h>
 #include <hals/ahci.h> // Required for proper struct sizing
 #define BIT(x) (1ULL << (x))
@@ -337,15 +338,21 @@ int open(char* path) {
             } else if (mountpoints[partition].part.type == DEVFS) {
                 int fi = -1;
                 for (int i=0; i<64; i++) {
-                    if (!strcmp(files[i].name, mutable_path)) {
+                    if (files[i].allocated && !strcmp(files[i].name, mutable_path)) {
                         fi = i;
                         break;
                     }
                 }
                 if (fi == -1) return -1;
+                if (last_fd >= 32) return -1;
                 int assigned_fd = last_fd;
                 fd_table[assigned_fd].file = files[fi];
+                if (fd_table[assigned_fd].file.type == DISK) {
+                    fd_table[assigned_fd].file.tty = assigned_fd;
+                }
                 fd_table[assigned_fd].mountpoint = mountpoints[partition];
+                strcpy(fd_table[assigned_fd].resolved, mutable_path);
+                last_fd++;
                 return assigned_fd;
             }
         }
@@ -390,7 +397,7 @@ int read(int fd, void *buf, size_t count, uint64_t offset) {
         return (int)buffer_crop_to_output(fd_table[fd].ord.data, fd_table[fd].ord.size, buf, (size_t)offset, count);
     } else {
         if (fd_table[fd].file.bitmask & DEVFS_READ) {
-            return (int)fd_table[fd].file.read(buf, count, offset);
+            return (int)fd_table[fd].file.read(fd_table[fd].file.tty, buf, count, (int)offset);
         } else {
             return -1;
         }
@@ -444,8 +451,9 @@ int write(int fd, const void *data, uint64_t size) {
         }
     } else if (fd_table[fd].mountpoint.part.type == DEVFS) {
         if (fd_table[fd].file.bitmask & DEVFS_WRITE) {
-            return fd_table[fd].file.write(data, size);
+            return (int)fd_table[fd].file.write(fd_table[fd].file.tty, data, (size_t)size);
         }
+        return -1;
     }
     if (fd_table[fd].mountpoint.part.type != DEVFS) {
         printk(LOG_TRACE, "[MNT] write: Re-caching dynamic data contents tracking inside runtime mirror tables structures\n");
@@ -464,6 +472,7 @@ int write(int fd, const void *data, uint64_t size) {
         printk(LOG_TRACE, "[MNT] write: Updates deployed completely\n");
         return 0;
     }
+    return -1;
 }
 
 int create(char* path) {
@@ -565,4 +574,33 @@ int create(char* path) {
     }
     printk(LOG_TRACE, "[MNT] create: Resolution routing phase aborted - Zero matching mounts mappings matches valid signatures inside registry arrays tables\n");
     return -1; 
+}
+void register_device(read_func_t read, ioctl_func_t ioctl, write_func_t write,
+                     uint8_t bitmask, DevFsType type, char* name,
+                     ahci_device_t dev, int tty) {
+    printk(LOG_TRACE, "[MNT] register_device: Registering device '%s'\n", name ? name : "NULL");
+
+    if (!name) {
+        return;
+    }
+
+    for (int i = 0; i < 64; i++) {
+        if (!files[i].allocated) {
+            files[i].read = read;
+            files[i].ioctl = ioctl;
+            files[i].write = write;
+            files[i].bitmask = bitmask;
+            files[i].type = type;
+            files[i].dev = dev;
+            files[i].tty = tty;
+            const char *dev_name = (name[0] == '/' && name[1] == 'd' && name[2] == 'e' &&
+                                    name[3] == 'v' && name[4] == '/') ? name + 4 : name;
+            strncpy(files[i].name, dev_name, sizeof(files[i].name) - 1);
+            files[i].name[sizeof(files[i].name) - 1] = '\0';
+            files[i].allocated = true;
+            return;
+        }
+    }
+
+    printk(LOG_TRACE, "[MNT] register_device: No free device slots available for '%s'\n", name);
 }

@@ -4,12 +4,11 @@ global idt_load
 global exception_vector_table
 global intr
 global exception_stub_44
-
+global exception_stub_33
 extern exception_handler_c
 extern intrhandler
 extern fpu_context_save
 extern fpu_context_restore
-
 section .text
 
 ; --- IDT REGISTER LOADER ---
@@ -119,13 +118,10 @@ interrupt_common_stub:
     push rcx
     push rbx
     push rax
-
-    call fpu_context_save
     mov rdi, rsp         ; Pass the pointer to this saved state as the 1st C argument
     call intrhandler     ; Run our timer, hardware routing, or system calls
 
     mov rbx, rax         ; Preserve the handler return value across the FPU restore
-    call fpu_context_restore
     mov rax, rbx
 
     ; Context Switch Check: If the C handler returns 0, keep the current task

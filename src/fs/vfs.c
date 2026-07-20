@@ -20,8 +20,8 @@ static struct vfs_file files[MAX_VFS_FILES]; // Static array (no krealloc needed
 static size_t file_count = 0;
 
 // --- Mount table ---
-static struct vfs_mount mount_table[MAX_MOUNTS];
-static uint32_t next_dev_id = 1;  // dev_id 0 = ramdisk, start counting from 1
+static struct vfs_mount mount_table[MAX_MOUNTS] __attribute__((unused));
+static uint32_t next_dev_id __attribute__((unused)) = 1;  // dev_id 0 = ramdisk, start counting from 1
 int perms(int fd, int flag) {
     int bypass = 0;
     if (getuid() == 0) {
@@ -57,11 +57,11 @@ int perms(int fd, int flag) {
             g_f = g_x;
             o_f = o_x;
         }
-        if (getuid() == files[fd].uid) { 
+        if ((uint32_t)getuid() == files[fd].uid) {
             if (u_f) {
                 bypass = 1;
             }
-        } else if (getgid() == files[fd].gid) {
+        } else if ((uint32_t)getgid() == files[fd].gid) {
             if (g_f) {
                 bypass = 1;
             }
@@ -73,6 +73,7 @@ int perms(int fd, int flag) {
     }
     return bypass;
 }
+
 int permdir(struct dentry *dir, int flag) {
     // Rule 1: If the directory node or its underlying inode is null, reject access
     if (dir == NULL || dir->inode == NULL) {
@@ -111,9 +112,9 @@ int permdir(struct dentry *dir, int flag) {
     }
 
     // Step through priority matching logic (First match wins)
-    if (getuid() == dir->inode->uid) { 
+    if ((uint32_t)getuid() == dir->inode->uid) {
         return u_f;
-    } else if (getgid() == dir->inode->gid) {
+    } else if ((uint32_t)getgid() == dir->inode->gid) {
         return g_f;
     } else {
         return o_f;
@@ -208,7 +209,7 @@ void rtc_get_time(struct timespec *ts) {
     if (!(regB & 0x04)) {
         sec     = (sec & 0x0F)     + ((sec / 16) * 10);
         min     = (min & 0x0F)     + ((min / 16) * 10);
-        hr      = (hr & 0x0F)      + (((hr & 0x70) / 16) * 10) | (hr & 0x80);
+        hr      = ((hr & 0x0F) + (((hr & 0x70) / 16) * 10)) | (hr & 0x80);
         dy      = (dy & 0x0F)     + ((dy / 16) * 10);
         mo      = (mo & 0x0F)     + ((mo / 16) * 10);
         yr      = (yr & 0x0F)     + ((yr / 16) * 10);
@@ -229,24 +230,6 @@ void rtc_get_time(struct timespec *ts) {
     ts->tv_nsec = 0; // CMOS cannot track sub-second nanoseconds
 }
 
-char *strncpy(char *dest, const char *src, size_t n) {
-    size_t i;
-
-    // Copy characters from src to dest up to the maximum limit 'n'
-    // or until the end of the source string is reached
-    for (i = 0; i < n && src[i] != '\0'; i++) {
-        dest[i] = src[i];
-    }
-
-    // If the source string was shorter than 'n', 
-    // POSIX rules mandate padding the remaining bytes with null characters
-    for (; i < n; i++) {
-        dest[i] = '\0';
-    }
-
-    // Always return the original destination pointer address
-    return dest;
-}
 __attribute__((used, section(".limine_requests")))
 static volatile struct limine_module_request module_request = {
     .id = LIMINE_MODULE_REQUEST_ID,
@@ -294,6 +277,7 @@ static int parse_hex8(const char text[8], uint64_t *out) {
     return 0;
 }
 
+static void clear_files(void) __attribute__((unused));
 static void clear_files(void) {
     for (size_t i = 0; i < file_count; i++) {
         // 1. DO NOT call kfree(files[i].path) anymore since it's a fixed array!
@@ -324,9 +308,12 @@ static int replace_file_data(struct vfs_file *file, const void *data, uint64_t s
         if (mirror == NULL) return -1;
         memcpy(mirror, data, (size_t)size);
     }
-    kfree(file->data);
+    if (file->owns_data && file->data != NULL) {
+        kfree(file->data);
+    }
     file->data = mirror;
     file->size = size;
+    file->owns_data = 1;
     return 0;
 }
 
@@ -411,6 +398,28 @@ static struct dentry *create_dentry_node(const char *name, size_t name_len, uint
     return d;
 }
 
+struct dentry *vfs_lookup(const char *path) {
+    if (path == NULL || path[0] != '/') return NULL;
+
+    struct dentry *current = root_dentry;
+    const char *ptr = path + 1;
+
+    while (*ptr != '\0') {
+        while (*ptr == '/') ptr++;
+        if (*ptr == '\0') break;
+
+        const char *component_start = ptr;
+        while (*ptr != '\0' && *ptr != '/') ptr++;
+        size_t component_len = (size_t)(ptr - component_start);
+
+        if (component_len > 0) {
+            current = find_child(current, component_start, component_len);
+            if (current == NULL) return NULL; 
+        }
+    }
+    return current;
+}
+
 static int append_file(const char *path, uint64_t path_size, const uint8_t *data, uint64_t size, uint32_t mode, uint32_t uid, uint32_t gid, uint64_t mtime) {
     if (path == NULL || path_size == 0) return -1;
     if (file_count >= MAX_VFS_FILES) return -1;
@@ -431,6 +440,7 @@ static int append_file(const char *path, uint64_t path_size, const uint8_t *data
     // 4. ZERO KMALLOC BYPASS: Point directly to the persistent ramdisk memory address.
     files[file_count].data = (uint8_t *)data;
     files[file_count].size = size;
+    files[file_count].owns_data = 0;
     files[file_count].mode = mode;
     files[file_count].uid = uid;
     files[file_count].gid = gid;
@@ -687,11 +697,30 @@ struct dentry *vfs_lookup_parent_by_flat_fd(int fd) {
     return parent;
 }
 int vfs_write_file(int fd, const void *data, uint64_t size) {
+    if (fd < 0 || (size_t)fd >= file_count || (size != 0 && data == NULL)) {
+        return -1;
+    }
     int bypass = perms(fd, 1);
     if (bypass) {
-        if (fd < 0 || (size_t)fd >= file_count || (size != 0 && data == NULL)) return -1;
-        return replace_file_data(&files[fd], data, size);
+        int status = replace_file_data(&files[fd], data, size);
+        if (status < 0) {
+            return status;
+        }
+
+        struct dentry *node = vfs_lookup(files[fd].path);
+        if (node != NULL && node->inode != NULL) {
+            struct timespec ts;
+            rtc_get_time(&ts);
+            node->inode->data = files[fd].data;
+            node->inode->size = files[fd].size;
+            node->inode->st_mtim = ts;
+            node->inode->st_ctim = ts;
+            files[fd].st_mtim = ts;
+            files[fd].st_ctim = ts;
+        }
+        return 0;
     }
+    return -EACCES;
 }
 
 int vfs_move_file(int fd, const char *newpath) {
@@ -719,30 +748,14 @@ int vfs_create_file(const void *data, const char *path, int dlen) {
     // Newly created files defaults to root context ownership (0/0)
     struct timespec ts;
     rtc_get_time(&ts);
-    if (append_file(path, strlen(path) + 1, data, dlen, 0x8000, 0, 0, ts.tv_sec) < 0) return -1;
-    return (int)(file_count - 1); 
-}
-
-struct dentry *vfs_lookup(const char *path) {
-    if (path == NULL || path[0] != '/') return NULL;
-
-    struct dentry *current = root_dentry;
-    const char *ptr = path + 1;
-
-    while (*ptr != '\0') {
-        while (*ptr == '/') ptr++;
-        if (*ptr == '\0') break;
-
-        const char *component_start = ptr;
-        while (*ptr != '\0' && *ptr != '/') ptr++;
-        size_t component_len = (size_t)(ptr - component_start);
-
-        if (component_len > 0) {
-            current = find_child(current, component_start, component_len);
-            if (current == NULL) return NULL; 
+    if (append_file(path, strlen(path) + 1, NULL, 0, 0x8000, 0, 0, ts.tv_sec) < 0) return -1;
+    int fd = (int)(file_count - 1);
+    if (data != NULL && dlen > 0) {
+        if (vfs_write_file(fd, data, (uint64_t)dlen) < 0) {
+            return -1;
         }
     }
-    return current;
+    return fd;
 }
 
 int vfs_free_fd(int fd) {
@@ -1000,6 +1013,42 @@ int vfs_getdents(int fd, void *buf, size_t count, uint64_t offset) {
         return -EACCES;
     }
 }
+
+int vfs_listdir(const char *path, char **buf, size_t max_len) {
+    if (path == NULL || buf == NULL) {
+        return -EINVAL;
+    }
+
+    struct dentry *dir_dentry = vfs_lookup(path);
+    if (dir_dentry == NULL || dir_dentry->inode == NULL) {
+        return -ENOENT;
+    }
+
+    if ((dir_dentry->inode->mode & S_IFMT) != S_IFDIR) {
+        return -ENOTDIR;
+    }
+
+    if (!permdir(dir_dentry, 0)) {
+        return -EACCES;
+    }
+
+    size_t written = 0;
+    for (size_t i = 0; i < dir_dentry->child_count && written < max_len; i++) {
+        struct dentry *child = dir_dentry->children[i];
+        if (child == NULL || child->name == NULL) {
+            continue;
+        }
+        if (buf[written] == NULL) {
+            return -EINVAL;
+        }
+        strncpy(buf[written], child->name, 255);
+        buf[written][255] = '\0';
+        written++;
+    }
+
+    return (int)written;
+}
+
 #include <drivers/alloc.h> // Ensure kmalloc/kfree are accessible here
 
 // We use the 'struct file' type alias internally to act as the POSIX DIR stream context

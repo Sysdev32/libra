@@ -4,6 +4,10 @@
 #include <string.h>
 #include <drivers/fb.h>
 #include <hals/ahci.h>
+#include <fs/mnt.h>
+#include <errno.h>
+#include <ioctl.h>
+#define BIT(x) (1ULL << (x))
 
 typedef uint64_t page_table_t;
 extern page_table_t *vmm_get_current_pml4(void);
@@ -12,6 +16,8 @@ extern void* pmm_alloc_pages(int order);
 
 static ahci_device_t primary_sata_drive;
 
+ahci_device_t drives[32];
+int lastd = 0;
 // Helper function to safely stop a port's DMA engines
 static void ahci_stop_port(uint64_t port_base) {
     printk(LOG_DEBUG, "[AHCI ENGINE] Attempting to stop port engines. PxCMD: 0x%x\n", *(volatile uint32_t*)(port_base + 0x18));
@@ -119,7 +125,150 @@ int ahci_send_command(uint64_t port_base, void* cl_virt, void* table_virt, uint6
 
 extern pci_device_t* devices;
 extern uint32_t devicecount;
+int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
+int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
+extern size_t buffer_crop_to_output(const void* src, size_t src_total_sz, 
+                             void* dest, size_t offset, size_t count);
+extern full_t fd_table[32];
+#define PAGE_SHIFT 12
+#define PAGE_MASK  (~((1ULL << PAGE_SHIFT) - 1))
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+#define PTE_PRESENT  (1ULL << 0)
+#define PTE_LARGE    (1ULL << 7)
 
+// Extract 9-bit indices for each level
+#define PML4_INDEX(va) (((va) >> 39) & 0x1FF)
+#define PDPT_INDEX(va) (((va) >> 30) & 0x1FF)
+#define PD_INDEX(va)   (((va) >> 21) & 0x1FF)
+#define PT_INDEX(va)   (((va) >> 12) & 0x1FF)
+#define PAGE_OFFSET(va) ((va) & 0xFFF)
+/**
+ * Inline assembly helper to read the CR3 register
+ */
+static inline uint64_t read_cr3(void) {
+    uint64_t cr3;
+    __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
+}
+
+/**
+ * Adjust this helper depending on your environment.
+ * - Linux Kernel: use return (void*)__va(phys);
+ * - Custom Kernel: use return (void*)(phys + PHYSICAL_MEMORY_OFFSET);
+ */
+static inline void* my_phys_to_virt(uint64_t phys) {
+    // Replace 0xFFFF800000000000ULL with your kernel's direct mapping base address
+    return (void*)(phys + HHDM_OFFSET);
+}
+
+/**
+ * Walks the page tables to find the physical address of a virtual address.
+ */
+bool get_physical_address(uint64_t virt_addr, uint64_t *out_phys) {
+    if (!out_phys) return false;
+
+    // 1. Read CR3 and extract PML4 base physical address
+    uint64_t cr3 = read_cr3();
+    uint64_t pml4_phys = cr3 & PTE_ADDR_MASK;
+
+    // 2. Walk PML4
+    uint64_t *pml4 = (uint64_t*)my_phys_to_virt(pml4_phys);
+    uint64_t pml4e = pml4[PML4_INDEX(virt_addr)];
+    if (!(pml4e & PTE_PRESENT)) return false;
+
+    // 3. Walk PDPT
+    uint64_t pdpt_phys = pml4e & PTE_ADDR_MASK;
+    uint64_t *pdpt = (uint64_t*)my_phys_to_virt(pdpt_phys);
+    uint64_t pdpte = pdpt[PDPT_INDEX(virt_addr)];
+    if (!(pdpte & PTE_PRESENT)) return false;
+
+    // Handle 1GB Huge Page
+    if (pdpte & PTE_LARGE) {
+        *out_phys = (pdpte & 0xFFFFFC0000000ULL) + (virt_addr & 0x3FFFFFFFULL);
+        return true;
+    }
+
+    // 4. Walk PD
+    uint64_t pd_phys = pdpte & PTE_ADDR_MASK;
+    uint64_t *pd = (uint64_t*)my_phys_to_virt(pd_phys);
+    uint64_t pde = pd[PD_INDEX(virt_addr)];
+    if (!(pde & PTE_PRESENT)) return false;
+
+    // Handle 2MB Large Page
+    if (pde & PTE_LARGE) {
+        *out_phys = (pde & 0xFFFFFFFFFE000ULL) + (virt_addr & 0x1FFFFFULL);
+        return true;
+    }
+
+    // 5. Walk PT
+    uint64_t pt_phys = pde & PTE_ADDR_MASK;
+    uint64_t *pt = (uint64_t*)my_phys_to_virt(pt_phys);
+    uint64_t pte = pt[PT_INDEX(virt_addr)];
+    if (!(pte & PTE_PRESENT)) return false;
+
+    // 6. Final 4KB Page physical translation
+    *out_phys = (pte & PTE_ADDR_MASK) + PAGE_OFFSET(virt_addr);
+    return true;
+}
+size_t ahci_read(int fd, void* buf, size_t count, int offset) {
+    // Since it's a block device read where offset is always 0, 
+    // we start reading directly from LBA 0.
+    int sector_count = count / 512;
+    int remainder    = count % 512;   
+
+    // Grab the raw device structure directly from your file descriptor table
+    ahci_device_t* dev = &fd_table[fd].file.dev; 
+
+    int i = 0;
+    // 1. Read all full 512-byte sectors sequentially starting at LBA 0
+    for (i = 0; i < sector_count; i++) {
+        uint64_t phys;
+        uintptr_t addr = (uintptr_t)buf + (i * 512);
+        
+        if (!get_physical_address(addr, &phys)) {
+            return i * 512; // Return bytes read so far if translation fails
+        }
+
+        // Read directly from LBA index 'i'
+        ahci_read_sectors(dev, i, 1, phys);
+    }
+
+    // 2. Handle the partial trailing bytes at the end of the block device read
+    if (remainder != 0) {
+        uint8_t bounce_buf[512] __attribute__((aligned(16))); 
+        uint64_t bounce_phys;
+        
+        if (get_physical_address((uintptr_t)bounce_buf, &bounce_phys)) {
+            // Read the next sequential LBA into the bounce buffer
+            ahci_read_sectors(dev, i, 1, bounce_phys);
+            
+            // Copy only the exact requested bytes into the user's buffer
+            uint8_t* dest = (uint8_t*)buf + (i * 512);
+            for (int b = 0; b < remainder; b++) {
+                dest[b] = bounce_buf[b];
+            }
+        }
+    }
+
+    return count;
+}
+size_t ahci_write(int fd, void* buf, size_t count) {
+    // todo
+    return -1;
+}
+int ahci_ioctl(int fd, unsigned long request, void* arg) {
+    if (request == IOBLKSZ) {
+        uint64_t* size = (uint64_t*)arg;
+        *size = fd_table[fd].file.dev.total_sectors*512;
+        return 0;
+    } else if (request == IOBLKSC) {
+        uint64_t* size = (uint64_t*)arg;
+        *size = fd_table[fd].file.dev.total_sectors;
+        return 0;
+    }
+    return -ENOTTY;
+}
+extern char *itoa(uint64_t value, char *str, int base, int uppercase);
 void init_ahci() {
     printk(LOG_DEBUG, "=================== AHCI INITIALIZATION LOG ===================\n");
     memset(&primary_sata_drive, 0, sizeof(ahci_device_t));
@@ -238,6 +387,15 @@ void init_ahci() {
                 primary_sata_drive.port_number = i;
                 primary_sata_drive.is_initialized = 1;
 
+                drives[lastd].port_base = port_base;
+                drives[lastd].cl_virt = cl_virt;
+                drives[lastd].table_virt = table_virt;
+                drives[lastd].table_phys = table_phys;
+                drives[lastd].total_sectors = total_sectors;
+                drives[lastd].size_gb = (uint32_t)drive_gb;
+                drives[lastd].port_number = i;
+                drives[lastd].is_initialized = 1;
+
                 printk(LOG_DEBUG, "[AHCI] Drive Registered: Port %d, Total Sectors: %llu (%d GB).\n", 
                        i, total_sectors, primary_sata_drive.size_gb);
 
@@ -253,6 +411,12 @@ void init_ahci() {
                     }
                     printk(LOG_DEBUG, "\n");
                 }
+                char name[6] = "/ada";
+                char buf[2];
+                itoa(lastd, buf, 10, false);
+                strcat(name, buf);
+                register_device((read_func_t)ahci_read, (ioctl_func_t)ahci_ioctl, (write_func_t)ahci_write, DISK_FLAGS, DISK, name, drives[lastd], 0);
+                lastd++;
                 break; 
             }
         }
