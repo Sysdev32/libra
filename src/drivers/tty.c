@@ -4,6 +4,7 @@
 #include <fs/mnt.h>
 #include "font.h"
 #include <drivers/tty.h>
+#define BIT(x) (1ULL << (x))
 
 // Standard terminal IOCTL definitions
 #define TCGETS          0x5401

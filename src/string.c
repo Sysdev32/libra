@@ -164,3 +164,26 @@ char* strrchr(const char* str, int c) {
     // Returns the address of the last match found, or NULL if it never matched
     return last_match;
 }
+
+#include <stddef.h>
+
+int strncmp(const char *s1, const char *s2, size_t count) {
+    if (count == 0) {
+        return 0;
+    }
+
+    const unsigned char *p1 = (const unsigned char *)s1;
+    const unsigned char *p2 = (const unsigned char *)s2;
+
+    while (count > 0 && *p1 && (*p1 == *p2)) {
+        p1++;
+        p2++;
+        count--;
+    }
+
+    if (count == 0) {
+        return 0;
+    }
+
+    return (int)*p1 - (int)*p2;
+}

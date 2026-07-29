@@ -14,7 +14,6 @@
 #include <fs/vfs.h>
 #include <drivers/tty.h>
 #include <hals/pci.h>
-#include <hals/nvme.h>
 #include <hals/ehci.h>
 #include <fs/gpt.h>
 #include <uacpi/uacpi.h>
@@ -838,9 +837,8 @@ void _start(void) {
     for (int i=0; i<devicecount; i++) {
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
-    xhci_init();
-    nvme_init();
-    hid_keyboard_init();
+    tests();
+    
     // init_ahci();
     // gpt_parse_partitions(get_primary_sata_drive());
     // if (get_primary_sata_drive()->size_gb < 3) {

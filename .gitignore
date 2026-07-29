@@ -36,4 +36,5 @@ altpy.a
 nvme.img
 user.ld
 userspace.carrera
-iso/libra.iso
+iso/*.iso
+*.iso
