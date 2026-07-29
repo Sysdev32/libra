@@ -32,3 +32,8 @@ my_disk.qcow2
 carrera
 iso/initramfs.cpio
 zlib
+altpy.a
+nvme.img
+user.ld
+userspace.carrera
+iso/libra.iso

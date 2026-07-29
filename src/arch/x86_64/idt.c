@@ -1567,6 +1567,7 @@ uint64_t intrhandler(struct InterruptRegisters* regs) {
     // --- DISPATCH GATE B: SYSTEM PREEMPTIVE TIMER INTERRUPT (Vector 32) ---
     if (vector == 32) {
         ticks += 1;
+        hid_keyboard_poll();
         tty_update_cursor();
         uint64_t new_rsp = schedule_preemptive((uint64_t)regs);
         lapic_eoi();
