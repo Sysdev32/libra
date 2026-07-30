@@ -6,6 +6,7 @@
 #include <drivers/alloc.h>
 #include <limine.h>
 #include <arch/x86_64/schedule.h>
+#include <drivers/hvfs.h>
 #include <fs/vfs.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
@@ -1152,7 +1153,8 @@ static void handle_syscall(struct InterruptRegisters *regs) {
 
         case 2: { // open
             const char* path = (const char*)args->arg[0];
-            
+            int flags = args->arg[1];
+            uint32_t mode = args->arg[2];
             // Custom "/dev" prefix check
             bool is_dev = (path != NULL && 
                            path[0] == '/' && 
@@ -1161,7 +1163,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
                            path[3] == 'v');
             
             if (is_dev) {
-                long fd = open((char*)path);
+                long fd = open((char*)path, flags, mode);
                 if (fd < 0) {
                     regs->rax = fd;
                 } else {
@@ -1172,7 +1174,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
                     regs->rax = fd + 2;
                 }
             } else {
-                long fd = vfs_open(path);
+                long fd = vfs_open(path, flags, mode);
                 if (fd < 0) {
                     regs->rax = fd; 
                 } else {
@@ -1278,6 +1280,7 @@ static void handle_syscall(struct InterruptRegisters *regs) {
             break;
         }
         case 12: {
+            printk(LOG_ERROR, "EXITING (IDT): %d %d\n", getpid(), args->arg[0]);
             syscall_exit_handler(get_rsp(), args->arg[0]);
             break;
         }
@@ -1448,6 +1451,34 @@ static void handle_syscall(struct InterruptRegisters *regs) {
         }
         case 46: {
             regs->rax = ioctl(args->arg[0], args->arg[1], (void*)args->arg[2]);
+            break;
+        }
+        case 47: {
+            regs->rax = hvfs_create((char*)args->arg[0]);
+            break;
+        }
+        case 48: {
+            if (args->arg[1] == HVFS_TYPE_FUNCTION) {
+                regs->rax = -ENOENT;
+                break;
+            }
+            regs->rax = hvfs_set_type((const char*)args->arg[0], args->arg[1]);
+            break;
+        }
+        case 49: {
+            regs->rax = hvfs_set((const char*)args->arg[0], (const void*)args->arg[1], args->arg[2]);
+            break;
+        }
+        case 50: {
+            regs->rax = hvfs_get((const char*)args->arg[0], (void*)args->arg[1], args->arg[2]);
+            break;
+        }
+        case 51: {
+            regs->rax = hvfs_get_type((const char*)args->arg[0], (hvfs_type_t*)args->arg[1]);
+            break;
+        }
+        case 52: {
+            regs->rax = hvfs_remove((const char*)args->arg[0]);
             break;
         }
         default: 

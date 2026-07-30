@@ -483,18 +483,19 @@ void start_scheduler(void) {
     }
 }
 
-// Update your function signature to accept the status from RSI
 uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
-    
-    // Log the exit status inside the kernel console for debugging
     printk(LOG_INFO, "Task %d exited with status: %d\n", current_task_id, (int)status);
     
-    // Mark the task as a zombie so the scheduler cleans it up
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
-    if (task_table[task_table[current_task_id].parent_pid].state == TASK_STATE_WAITING) {
-        task_table[task_table[current_task_id].parent_pid].state = TASK_STATE_READY;
+
+    // ✅ FIX: Validate parent_pid bounds and ensure the parent is active
+    int parent_pid = task_table[current_task_id].parent_pid;
+    if (parent_pid >= 0 && parent_pid < MAX_TASKS) {
+        if (task_table[parent_pid].state == TASK_STATE_WAITING) {
+            task_table[parent_pid].state = TASK_STATE_READY;
+        }
     }
-    // Force a context switch to the next ready task
+
     return schedule_preemptive(current_rsp);
 }
 uint64_t terminate(uint64_t current_rsp, int pid) {

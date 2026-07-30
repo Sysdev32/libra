@@ -134,7 +134,7 @@ void string_shift(char* str, int shift_index) {
     printk(LOG_TRACE, "[MNT] string_shift: Operation complete. Resulting string path is '%s'\n", str);
 }
 
-int open(char* path) {
+int open(char* path, int flags, uint32_t mode) {
     printk(LOG_TRACE, "[MNT] open: Request initiated for path target '%s'\n", path ? path : "NULL");
     if (!path || path[0] == '\0') {
         printk(LOG_TRACE, "[MNT] open: Rejected - Path reference empty or null pointer\n");
@@ -181,7 +181,7 @@ int open(char* path) {
             // --- ROUTING BRANCH: VFS ---
             if (mountpoints[partition].part.type == VFS) {
                 printk(LOG_TRACE, "[MNT] open: Executing routing branch -> Virtual File System (VFS)\n");
-                return vfs_open(mutable_path);
+                return vfs_open(mutable_path, flags, mode);
             } 
             
             // --- ROUTING BRANCH: FAT32 ---
@@ -434,7 +434,7 @@ int write(int fd, const void *data, uint64_t size) {
 
     if (fd_table[fd].mountpoint.part.type == VFS) {
         printk(LOG_TRACE, "[MNT] write [VFS]: Initiating block sector modifications across target pipeline path: '%s'\n", fd_table[fd].resolved);
-        int fdi = vfs_open(fd_table[fd].resolved);
+        int fdi = vfs_open(fd_table[fd].resolved, O_WRONLY, 0);
         vfs_write_file(fdi, data, (size_t)size);
     } 
     else if (fd_table[fd].mountpoint.part.type == FAT32) {

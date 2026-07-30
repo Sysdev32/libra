@@ -10,19 +10,21 @@
 #define PAGE_SIZE 4096
 
 // --- VMM DEFINITIONS & FLAGS ---
-#define PTE_PRESENT  (1ULL << 0)
-#define PTE_WRITABLE (1ULL << 1)
-#define PTE_USER     (1ULL << 2)
+#define PTE_PRESENT    (1ULL << 0)
+#define PTE_WRITABLE   (1ULL << 1)
+#define PTE_USER       (1ULL << 2)
 #define PTE_NO_EXECUTE (1ULL << 63)
-#define PTE_FRAME    0x000FFFFFFFFFF000ULL 
-#define HHDM_OFFSET  0xffff800000000000ULL
-#define PROT_READ  0x1
-#define PROT_WRITE 0x2
-#define PROT_EXEC  0x4
-#define MAP_SHARED   0x01
-#define MAP_PRIVATE  0x02
-#define MAP_FIXED    0x10
-#define MAP_ANONYMOUS 0x20
+#define PTE_FRAME      0x000FFFFFFFFFF000ULL 
+#define HHDM_OFFSET    0xffff800000000000ULL
+
+#define PROT_READ      0x1
+#define PROT_WRITE     0x2
+#define PROT_EXEC      0x4
+
+#define MAP_SHARED     0x01
+#define MAP_PRIVATE    0x02
+#define MAP_FIXED      0x10
+#define MAP_ANONYMOUS  0x20
 
 #define PML4_INDEX(addr) (((addr) >> 39) & 0x1FF)
 #define PDPT_INDEX(addr) (((addr) >> 30) & 0x1FF)
@@ -54,6 +56,7 @@ uint64_t physical_mem_highest = 0;
 struct Page *free_lists[MAX_ORDER] = {NULL};
 
 // --- DOUBLY LINKED LIST HELPERS ---
+
 static void pmm_free_list_add(int order, struct Page *page) {
     if (order < 0 || order >= MAX_ORDER || page == NULL) return;
     page->order = order;
@@ -87,7 +90,7 @@ static void pmm_free_list_remove(int order, struct Page *page) {
 void pmm_init(void) {
     struct limine_memmap_response *map = memmap_request.response;
     if (map == NULL) {
-        for(;;);
+        for (;;);
     }
 
     // Step 1: Discover highest physical address boundary
@@ -141,7 +144,7 @@ void pmm_init(void) {
                     continue; 
                 }
 
-                // Explicitly prevent PMM from reclaiming hardcoded testing areas
+                // Explicitly prevent PMM from reclaiming hardcoded memory areas
                 if (addr >= 0x8000000 && addr < 0xA000000) {
                     continue;
                 }
@@ -156,6 +159,7 @@ void pmm_init(void) {
         }
     }
 }
+
 void *pmm_alloc_pages(int order) {
     if (order < 0 || order >= MAX_ORDER) return NULL;
 
@@ -176,9 +180,7 @@ void *pmm_alloc_pages(int order) {
             block->order = order;
             uint64_t phys_addr = (uint64_t)(block - all_pages) * PAGE_SIZE;
 
-            // Never hand out page zero — it's the real-mode IVT/BIOS data
-            // area and indistinguishable from NULL at the call site.
-            // Put it back and keep searching.
+            // Never hand out page zero — it's the real-mode IVT/BIOS data area
             if (phys_addr == 0) {
                 block->is_free = 1;
                 block->order   = order;
@@ -224,16 +226,12 @@ static inline void *phys_to_virt(uint64_t phys) {
     return (void *)(phys + HHDM_OFFSET);
 }
 
-// Internal tool for tree traversal routines to claim single physical sheets
 static inline void *vmm_get_phys_page(void) {
     void *virt = pmm_alloc_pages(0);
     if (!virt) return NULL;
     return (void *)((uint64_t)virt - HHDM_OFFSET);
 }
 
-/**
- * Retrieves a virtual address pointer to Limine's current active root page table structure.
- */
 page_table_t *vmm_get_current_pml4(void) {
     uint64_t cr3;
     asm volatile("mov %%cr3, %0" : "=r"(cr3));
@@ -242,13 +240,7 @@ page_table_t *vmm_get_current_pml4(void) {
     return (page_table_t *)pml4_virt;
 }
 
-/**
- * Creates an isolated, sandboxed user process address space context.
- * Copies kernel space mappings (entries 256-511) into a fresh PML4.
- * @return Virtual address pointer to the newly created PML4 root table.
- */
 page_table_t *vmm_create_address_space(void) {
-    // 1. Request a clean physical frame for our root PML4 directory
     void *virt_page = pmm_alloc_pages(0);
     if (!virt_page) return NULL;
     
@@ -256,25 +248,26 @@ page_table_t *vmm_create_address_space(void) {
     page_table_t *new_pml4 = (page_table_t *)virt_page;
     page_table_t *kernel_pml4 = vmm_get_current_pml4();
     
-    // 2. Clone the higher-half kernel space maps (indices 256 to 511)
-    // This isolates user space mappings completely while leaving kernel space intact
+    // Copy upper-half kernel space maps (indices 256 to 511)
     for (int i = 256; i < 512; i++) {
         new_pml4[i] = kernel_pml4[i];
     }
     
-    // 3. Return the newly allocated PML4 for later activation by the scheduler.
     return new_pml4;
 }
 
 void vmm_map_page(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t flags) {
     size_t pml4_idx = PML4_INDEX(virt);
+    
+    // Prevent user flags from inadvertently escalating shared kernel-space PML4 entries
+    uint64_t table_user_flag = (pml4_idx < 256) ? (flags & PTE_USER) : 0;
+
     if (!(pml4[pml4_idx] & PTE_PRESENT)) {
         uint64_t new_table_phys = (uint64_t)vmm_get_phys_page();
         memset(phys_to_virt(new_table_phys), 0, PAGE_SIZE);
-        pml4[pml4_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+        pml4[pml4_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | table_user_flag;
     } else {
-        // Safe traversal protection: Propagate PTE_USER if the child page mapping uses it
-        if (flags & PTE_USER) pml4[pml4_idx] |= PTE_USER;
+        if (table_user_flag) pml4[pml4_idx] |= PTE_USER;
     }
     page_table_t *pdpt = phys_to_virt(pml4[pml4_idx] & PTE_FRAME);
 
@@ -282,9 +275,9 @@ void vmm_map_page(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t fla
     if (!(pdpt[pdpt_idx] & PTE_PRESENT)) {
         uint64_t new_table_phys = (uint64_t)vmm_get_phys_page();
         memset(phys_to_virt(new_table_phys), 0, PAGE_SIZE);
-        pdpt[pdpt_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+        pdpt[pdpt_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | table_user_flag;
     } else {
-        if (flags & PTE_USER) pdpt[pdpt_idx] |= PTE_USER;
+        if (table_user_flag) pdpt[pdpt_idx] |= PTE_USER;
     }
     page_table_t *pd = phys_to_virt(pdpt[pdpt_idx] & PTE_FRAME);
 
@@ -292,16 +285,15 @@ void vmm_map_page(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t fla
     if (!(pd[pd_idx] & PTE_PRESENT)) {
         uint64_t new_table_phys = (uint64_t)vmm_get_phys_page();
         memset(phys_to_virt(new_table_phys), 0, PAGE_SIZE);
-        pd[pd_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | (flags & PTE_USER);
+        pd[pd_idx] = new_table_phys | PTE_PRESENT | PTE_WRITABLE | table_user_flag;
     } else {
-        if (flags & PTE_USER) pd[pd_idx] |= PTE_USER;
+        if (table_user_flag) pd[pd_idx] |= PTE_USER;
     }
     page_table_t *pt = phys_to_virt(pd[pd_idx] & PTE_FRAME);
 
     size_t pt_idx = PT_INDEX(virt);
     pt[pt_idx] = (phys & PTE_FRAME) | PTE_PRESENT | flags;
 
-    // Flush the translation lookaside buffer (TLB) for this modified page
     asm volatile("invlpg (%0)" ::"r"(virt) : "memory");
 }
 
@@ -342,14 +334,10 @@ static inline bool vmm_page_is_mapped(page_table_t *pml4, uint64_t virt) {
 }
 
 static bool vmm_region_is_free(page_table_t *pml4, uint64_t start, size_t length) {
-    if (length == 0) {
-        return true;
-    }
+    if (length == 0) return true;
 
     uint64_t end = start + length;
-    if (end < start) {
-        return false;
-    }
+    if (end < start) return false;
 
     for (uint64_t addr = start; addr < end; addr += PAGE_SIZE) {
         if (vmm_page_is_mapped(pml4, addr)) {
@@ -376,9 +364,7 @@ static uint64_t vmm_find_free_region(page_table_t *pml4, uint64_t hint, size_t p
 static uint64_t mmap_cursor = 0x00100000ULL;
 
 void *vmm_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t offset) {
-    if (length == 0) {
-        return (void *)-1;
-    }
+    if (length == 0) return (void *)-1;
 
     if (!(flags & MAP_ANONYMOUS) || fd != -1 || offset != 0) {
         return (void *)-1;
@@ -393,14 +379,11 @@ void *vmm_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t o
             mmap_cursor = 0x00100000ULL;
         }
         target = vmm_find_free_region(pml4, mmap_cursor, pages);
-        if (target == 0) {
-            return (void *)-1;
-        }
+        if (target == 0) return (void *)-1;
         mmap_cursor = target + pages * PAGE_SIZE;
     } else {
-        if (target & (PAGE_SIZE - 1)) {
-            return (void *)-1;
-        }
+        if (target & (PAGE_SIZE - 1)) return (void *)-1;
+        
         if (flags & MAP_FIXED) {
             if (!vmm_region_is_free(pml4, target, pages * PAGE_SIZE)) {
                 return (void *)-1;
@@ -408,21 +391,15 @@ void *vmm_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t o
         } else {
             if (!vmm_region_is_free(pml4, target, pages * PAGE_SIZE)) {
                 target = vmm_find_free_region(pml4, mmap_cursor, pages);
-                if (target == 0) {
-                    return (void *)-1;
-                }
+                if (target == 0) return (void *)-1;
                 mmap_cursor = target + pages * PAGE_SIZE;
             }
         }
     }
 
     uint64_t pte_flags = PTE_USER | PTE_PRESENT;
-    if (prot & PROT_WRITE) {
-        pte_flags |= PTE_WRITABLE;
-    }
-    if (!(prot & PROT_EXEC)) {
-        pte_flags |= PTE_NO_EXECUTE;
-    }
+    if (prot & PROT_WRITE) pte_flags |= PTE_WRITABLE;
+    if (!(prot & PROT_EXEC)) pte_flags |= PTE_NO_EXECUTE;
 
     for (size_t i = 0; i < pages; i++) {
         void *page = pmm_alloc_pages(0);
@@ -441,9 +418,7 @@ void *vmm_mmap(void *addr, size_t length, int prot, int flags, int fd, int64_t o
 }
 
 int vmm_munmap(void *addr, size_t length) {
-    if (addr == NULL || length == 0) {
-        return -1;
-    }
+    if (addr == NULL || length == 0) return -1;
 
     uint64_t start = (uint64_t)addr & ~(PAGE_SIZE - 1);
     uint64_t end = ((uint64_t)addr + length + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
@@ -458,9 +433,7 @@ int vmm_munmap(void *addr, size_t length) {
         if (!pt) continue;
 
         uint64_t entry = pt[PT_INDEX(current)];
-        if (!(entry & PTE_PRESENT)) {
-            continue;
-        }
+        if (!(entry & PTE_PRESENT)) continue;
 
         uint64_t phys = entry & PTE_FRAME;
         pt[PT_INDEX(current)] = 0;

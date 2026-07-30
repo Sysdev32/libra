@@ -65,7 +65,7 @@ typedef struct {
 } full_t;
 int8_t mount(partition_t *partition, char *path);
 void umount(int8_t mnt);
-int open(char* path);
+int open(char* path, int flags, uint32_t mode);
 int read(int fd, void *buf, size_t count, uint64_t offset);
 int write(int fd, const void *data, uint64_t size);
 int create(char* path);

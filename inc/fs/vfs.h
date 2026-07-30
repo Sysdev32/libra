@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
-
+#define O_RDONLY    00000000
+#define O_WRONLY    00000001
+#define O_RDWR      00000002
+#define O_ACCMODE   00000003
+#define O_CREAT     00000100
+#define O_EXCL      00000200
+#define O_TRUNC     00001000
+#define O_APPEND    00002000
 #include <stddef.h>
 #include <stdint.h>
 struct timespec {
@@ -123,7 +130,7 @@ struct vfs_stat {
 // --- FUNCTION PROTOTYPES ---
 int init_vfs(void);
 size_t vfs_file_count(void);
-int vfs_open(const char *path);
+int vfs_open(const char *path, int flags, uint32_t mode);
 int vfs_write_file(int fd, const void *data, uint64_t size);
 int vfs_move_file(int fd, const char *newpath);
 int vfs_create_file(const void *data, const char *path, int dlen);

@@ -195,8 +195,6 @@ run: iso
 		-drive file=nvme.img,if=none,id=nvme0,format=raw \
 		-device nvme,drive=nvme0,serial=deadbeef \
 		-device qemu-xhci,id=xhci \
-		-device usb-kbd,bus=xhci.0 \
-  		-device usb-mouse,bus=xhci.0
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

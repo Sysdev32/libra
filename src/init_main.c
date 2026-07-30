@@ -449,7 +449,7 @@ int spawn(const char *path, int argc, char **argv)
     }
 
 
-    int user_fd = vfs_open(kpath);
+    int user_fd = vfs_open(kpath, O_RDONLY, 0);
     if (user_fd < 0) {
         printk(LOG_ERROR,
                "[SPAWN] Cannot open '%s'\n",
@@ -857,7 +857,7 @@ void _start(void) {
     dev.type = DEVFS;
     mount(&dev, "/dev");
     tty_dev_init();
-    int fd = open("/dev/tty0");
+    int fd = open("/dev/tty0", 2, 0);
     if (fd >= 0) {
         struct winsize wz;
         if (ioctl(fd, TIOCGWINSZ, &wz) == 0) {

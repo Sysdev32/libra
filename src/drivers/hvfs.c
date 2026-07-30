@@ -1,5 +1,5 @@
 #include <drivers/hvfs.h>
-
+#include <hals/ahci.h>
 /* Root node of the HVFS hierarchy */
 static hvfs_node_t *g_root = NULL;
 
@@ -246,7 +246,7 @@ int hvfs_remove(const char *path) {
     hvfs_destroy_node_recursive(node);
     return 0;
 }
-
+// CVE-2026-0001 (fixed)
 int hvfs_call(const char *path, void *args) {
     hvfs_node_t *node = hvfs_lookup_path(path);
     if (!node) return -ENOENT;
@@ -254,11 +254,14 @@ int hvfs_call(const char *path, void *args) {
     if (node->type != HVFS_TYPE_FUNCTION || !node->value || node->size != sizeof(hvfs_func_t)) {
         return -EINVAL;
     }
+    if ((uint64_t)node->value > HHDM_OFFSET) {
+        hvfs_func_t func = *(hvfs_func_t *)node->value;
+        if (!func) return -EINVAL;
 
-    hvfs_func_t func = *(hvfs_func_t *)node->value;
-    if (!func) return -EINVAL;
-
-    return func(args);
+        return func(args);
+    } else {
+        return -EINVAL;
+    }
 }
 
 int hvfs_listdir(const char *path, char *buffer, size_t max_len) {

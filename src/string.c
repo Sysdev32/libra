@@ -187,3 +187,26 @@ int strncmp(const char *s1, const char *s2, size_t count) {
 
     return (int)*p1 - (int)*p2;
 }
+#include <stddef.h>
+
+char *strncat(char *dest, const char *src, size_t count) {
+    char *p = dest;
+
+    // Find the end of the destination string
+    while (*p != '\0') {
+        p++;
+    }
+
+    // Append characters from src up to count or until src reaches '\0'
+    while (count > 0 && *src != '\0') {
+        *p = *src;
+        p++;
+        src++;
+        count--;
+    }
+
+    // Always null-terminate the destination string
+    *p = '\0';
+
+    return dest;
+}
