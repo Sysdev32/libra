@@ -81,3 +81,15 @@ Our VFS supports these operations:
 - read
 - write
 Each one is very versatile and useful.
+## HVFS™
+
+Although VFS and HVFS™ sound very similar, HVFS™ is fundementally distinct from VFS.
+
+HVFS™ stands for Hierarchical Value and Function System
+
+HVFS™ is a tree similar to the Windows Registery but here are the changes:
+1. HVFS™ acts as a non-numbered syscall pathway
+2. HVFS™ is simpler and is made to the needs of Libra/Carrera
+
+### How to use HVFS™
+

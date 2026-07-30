@@ -9,6 +9,7 @@
 #include <string.h>
 #include <errno.h>
 #include <arch/x86_64/schedule.h>
+#include <fcntl.h>
 
 #define MAX_OPEN_FILES 32
 #define MAX_VFS_FILES  128  // Set a safe maximum for your ramdisk files
@@ -245,10 +246,8 @@ static void clear_files(void) __attribute__((unused));
 static void clear_files(void) {
     for (size_t i = 0; i < file_count; i++) {
         memset(files[i].path, 0, 256);
-        if (files[i].owns_data && files[i].data != NULL) {
             kfree(files[i].data);
             files[i].data = NULL;
-        }
         files[i].size = 0;
         files[i].mode = 0;
         files[i].uid = 0;
@@ -380,7 +379,6 @@ static int append_file(const char *path, uint64_t path_size, const uint8_t *data
 
     files[file_count].data = (uint8_t *)data;
     files[file_count].size = size;
-    files[file_count].owns_data = 0;
     files[file_count].mode = mode;
     files[file_count].uid = uid;
     files[file_count].gid = gid;
@@ -700,7 +698,6 @@ int vfs_create_file(const void *data, const char *path, int dlen) {
             memcpy(allocated_data, data, (size_t)dlen);
             files[fd].data = allocated_data;
             files[fd].size = (uint64_t)dlen;
-            files[fd].owns_data = 1;
 
             if (child != NULL && child->inode != NULL) {
                 child->inode->data = allocated_data;
@@ -762,9 +759,7 @@ int vfs_delete_file(const char *path) {
         else if (stored_path[0] == '.' && stored_path[1] == '/') stored_path += 2;
 
         if (strcmp(stored_path, lookup_path) == 0) {
-            if (files[i].owns_data && files[i].data != NULL) {
                 kfree(files[i].data);
-            }
             for (size_t j = i; j < file_count - 1; j++) {
                 files[j] = files[j + 1];
             }

@@ -47,6 +47,8 @@ struct task {
     uint64_t signal_handlers[32];
     uint32_t pending_signals;
     uint32_t sig_mask;
+    char name[32];
+    char cwd[512];
 };
 
 // Task State Segment (TSS) layout for x86_64
@@ -226,6 +228,8 @@ int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, 
             ctx[19] = 0x202;                  // RFLAGS: Interrupts Enabled
             ctx[20] = task_table[i].user_rsp; // RSP
             ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
+            memset(task_table[i].cwd, 0, 512);
+            task_table[i].cwd[0] = '/';
             if (pid == -1) {
                 task_table[i].uid = uid;
                 task_table[i].gid = gid;
@@ -484,8 +488,6 @@ void start_scheduler(void) {
 }
 
 uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
-    printk(LOG_INFO, "Task %d exited with status: %d\n", current_task_id, (int)status);
-    
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
 
     // ✅ FIX: Validate parent_pid bounds and ensure the parent is active
@@ -500,6 +502,13 @@ uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
 }
 uint64_t terminate(uint64_t current_rsp, int pid) {
     task_table[pid].state = TASK_STATE_ZOMBIE;
+    // ✅ FIX: Validate parent_pid bounds and ensure the parent is active
+    int parent_pid = task_table[pid].parent_pid;
+    if (parent_pid >= 0 && parent_pid < MAX_TASKS) {
+        if (task_table[parent_pid].state == TASK_STATE_WAITING) {
+            task_table[parent_pid].state = TASK_STATE_READY;
+        }
+    }
     return schedule_preemptive(current_rsp);
 }
 int getpid() {
@@ -712,4 +721,7 @@ int waitpid(uint64_t pid) {
 
     task_table[current_task_id].state = TASK_STATE_READY;
     return 0;
+}
+char* getpcwd() {
+    return task_table[current_task_id].cwd;
 }

@@ -118,5 +118,18 @@ int hvfs_call(const char *path, void *args);
  * @return Number of children found on success, or negative error code on failure (-ENOENT, -EINVAL).
  */
 int hvfs_listdir(const char *path, char *buffer, size_t max_len);
+typedef struct hvfs_stat {
+    hvfs_type_t type;
+    size_t size;
+    size_t child_count;
+    int has_value;
+} hvfs_stat_t;
 
+/**
+ * @brief Retrieves metadata and status information for a given key path.
+ * @param path The key path to stat.
+ * @param statbuf Pointer to an hvfs_stat_t structure to receive metadata.
+ * @return 0 on success, or a negative error code (-EINVAL, -ENOENT).
+ */
+int hvfs_stat(const char *path, hvfs_stat_t *statbuf);
 #endif /* HVFS_H */

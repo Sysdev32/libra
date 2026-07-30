@@ -1,8 +1,10 @@
 #include <stdint.h>
 #include <hals/pci.h>
+
 // Port addresses for PCI Configuration Mechanism 1
 #define PCI_CONFIG_ADDRESS 0x0CF8
 #define PCI_CONFIG_DATA    0x0CFC
+
 static pci_device_t pci_inventory[MAX_PCI_DEVICES];
 static uint32_t pci_inventory_count = 0;
 
@@ -20,11 +22,9 @@ static inline void pci_set_address(uint8_t bus, uint8_t device, uint8_t function
     address |= ((uint32_t)(function & 0x07) << 8);  // Bits 10-8: Function Number
     address |= ((uint32_t)(offset & 0xFC));         // Bits 7-2: Register Offset
 
-    // Fixed: Forced "d" constraint maps the port to DX explicitly
     uint16_t port = PCI_CONFIG_ADDRESS;
     __asm__ volatile("outl %0, %1" : : "a"(address), "d"(port));
 }
-
 
 /* ==========================================
  *              READ FUNCTIONS
@@ -76,6 +76,10 @@ void pci_write8(uint8_t bus, uint8_t device, uint8_t function, uint8_t offset, u
     __asm__ volatile("outb %0, %1" : : "a"(value), "d"(port));
 }
 
+/* ==========================================
+ *               BUS SCANNING
+ * ========================================== */
+
 void pci_scan_bus(pci_device_t* out_buffer, uint32_t max_capacity, uint32_t* out_count) {
     uint32_t count = 0;
 
@@ -119,6 +123,7 @@ void pci_scan_bus(pci_device_t* out_buffer, uint32_t max_capacity, uint32_t* out
                 dev_slot->function   = func;
                 dev_slot->class_code = pci_read8((uint8_t)bus, dev, func, 0x0B);
                 dev_slot->subclass   = pci_read8((uint8_t)bus, dev, func, 0x0A);
+                dev_slot->prog_if    = pci_read8((uint8_t)bus, dev, func, 0x09);
 
                 count++;
             }
@@ -129,7 +134,7 @@ void pci_scan_bus(pci_device_t* out_buffer, uint32_t max_capacity, uint32_t* out
 }
 
 /* ==========================================
- *          FILTER BY CLASS & SUBCLASS
+ *     FILTER BY CLASS, SUBCLASS & PROG IF
  * ========================================== */
 
 /**
@@ -138,13 +143,14 @@ void pci_scan_bus(pci_device_t* out_buffer, uint32_t max_capacity, uint32_t* out
  * @param src_inventory Pointer to the array containing the full list of devices to filter.
  * @param src_count     Total number of entries in the source array.
  * @param class_code    Target hardware category class (e.g., 0x01 for Storage)
- * @param subclass      Target hardware subcategory (e.g., 0x06 for SATA)
+ * @param subclass      Target hardware subcategory (e.g., 0x08 for NVM)
+ * @param prog_if       Target programming interface (e.g., 0x02 for NVMe)
  * @param out_buffer    Pointer to a user-allocated array where matches will be written.
  * @param max_capacity  Maximum number of items out_buffer can safely hold.
  * @param out_count     Pointer to a variable where the total matched count will be saved.
  */
 void pci_find_by_class(const pci_device_t* src_inventory, uint32_t src_count, 
-                       uint8_t class_code, uint8_t subclass, 
+                       uint8_t class_code, uint8_t subclass, uint8_t prog_if,
                        pci_device_t* out_buffer, uint32_t max_capacity, uint32_t* out_count) {
     uint32_t match_count = 0;
 
@@ -155,7 +161,9 @@ void pci_find_by_class(const pci_device_t* src_inventory, uint32_t src_count,
     }
 
     for (uint32_t i = 0; i < src_count; i++) {
-        if (src_inventory[i].class_code == class_code && src_inventory[i].subclass == subclass) {
+        if (src_inventory[i].class_code == class_code && 
+            src_inventory[i].subclass   == subclass   &&
+            src_inventory[i].prog_if    == prog_if) {
             
             // Prevent writing beyond user destination buffer size
             if (match_count >= max_capacity) {

@@ -1,6 +1,7 @@
 #pragma once
 #include <fs/vfs.h>
 #include <fs/fat32.h>
+#include <fcntl.h>
 #define DEVFS_IOCTL BIT(0)
 #define DEVFS_READ BIT(1)
 #define DEVFS_WRITE BIT(2)

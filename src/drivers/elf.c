@@ -1,7 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <drivers/elf.h>
-#include <fs/vfs.h>
+#include <fs/mnt.h>
 #include <drivers/alloc.h> // Using your native kmalloc/kfree
 
 #ifndef DT_HASH
@@ -130,7 +130,7 @@ static void load_shared_library(const char *lib_name) {
     }
 
     // 3. Open file via VFS
-    int fd = vfs_open(path);
+    int fd = vfs_open(path, O_RDONLY, 0);
     if (fd < 0) return; // Library not found
 
     // 4. Stat the file to get its size

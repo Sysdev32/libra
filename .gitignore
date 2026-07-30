@@ -35,6 +35,8 @@ zlib
 altpy.a
 nvme.img
 user.ld
-userspace.carrera
+userspace.c
 iso/*.iso
 *.iso
+sdk.tar.xz
+user.ld

@@ -132,10 +132,6 @@ struct madt_local_x2apic {
     uint32_t flags;            // Same flags as Type 0
     uint32_t acpi_id;
 };
-
-typedef struct {
-    uint64_t arg[8];
-} arg;
 void sleep_ms(uint64_t ms);
 void parse_madt(struct acpi_table_madt *madt);
 void idt_init(void);

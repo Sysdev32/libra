@@ -21,7 +21,7 @@ static void printk_irq_restore(uint64_t flags) {
     }
 }
 
-static void serial_write_char(char ch) {
+void serial_write_char(char ch) {
     uint8_t status;
     do {
         asm volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));

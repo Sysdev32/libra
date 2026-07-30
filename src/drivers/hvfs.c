@@ -294,3 +294,24 @@ int hvfs_listdir(const char *path, char *buffer, size_t max_len) {
 
     return child_count;
 }
+int hvfs_stat(const char *path, hvfs_stat_t *statbuf) {
+    if (!statbuf) return -EINVAL;
+
+    hvfs_node_t *node = hvfs_lookup_path(path);
+    if (!node) return -ENOENT;
+
+    /* Count direct children */
+    size_t count = 0;
+    hvfs_node_t *child = node->first_child;
+    while (child) {
+        count++;
+        child = child->next_sibling;
+    }
+
+    statbuf->type = node->type;
+    statbuf->size = node->size;
+    statbuf->child_count = count;
+    statbuf->has_value = (node->value != NULL) ? 1 : 0;
+
+    return 0;
+}

@@ -17,17 +17,159 @@
 #include <drivers/net/UDP.h>
 #include <fs/mnt.h>
 #include <hals/net/RTL8139.h>
-#if __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
-    #define htons(x) __builtin_bswap16(x)
-    #define htonl(x) __builtin_bswap32(x)
-    #define ntohs(x) __builtin_bswap16(x)
-    #define ntohl(x) __builtin_bswap32(x)
-#else
-    #define htons(x) (x)
-    #define htonl(x) (x)
-    #define ntohs(x) (x)
-    #define ntohl(x) (x)
-#endif
+#include <systable.h>
+// --- Freestanding String Helpers ---
+#define PATH_MAX 512
+size_t k_strlen(const char *s) {
+    size_t len = 0;
+    while (s[len]) len++;
+    return len;
+}
+
+void k_memcpy(void *dest, const void *src, size_t n) {
+    char *d = (char *)dest;
+    const char *s = (const char *)src;
+    for (size_t i = 0; i < n; i++) d[i] = s[i];
+}
+
+void k_strcpy(char *dest, const char *src) {
+    while ((*dest++ = *src++));
+}
+
+// System stub: Replace this with your actual VFS directory check.
+// Returns 1 if the path exists and is a directory, 0 otherwise.
+__attribute__((weak)) int vfs_is_directory(const char *path) {
+    (void)path;
+    return 1; // Default stub assumes directory exists
+}
+
+// --- Path Canonicalizer (Handles '.', '..', and relative paths) ---
+
+int canonicalize_path(const char *input, char *out, size_t out_size) {
+    char segments[64][64]; // Max depth 64, max segment length 64
+    int depth = 0;
+    size_t idx = 0;
+
+    // Split input into components
+    while (input[idx] != '\0') {
+        // Skip consecutive slashes
+        while (input[idx] == '/') idx++;
+        if (input[idx] == '\0') break;
+
+        // Extract segment
+        size_t seg_len = 0;
+        char seg[64];
+        while (input[idx] != '\0' && input[idx] != '/') {
+            if (seg_len < sizeof(seg) - 1) {
+                seg[seg_len++] = input[idx];
+            }
+            idx++;
+        }
+        seg[seg_len] = '\0';
+
+        // Evaluate segment
+        if (seg[0] == '.' && seg[1] == '\0') {
+            // "." -> stay in current directory
+            continue;
+        } else if (seg[0] == '.' && seg[1] == '.' && seg[2] == '\0') {
+            // ".." -> move up one level
+            if (depth > 0) {
+                depth--;
+            }
+        } else {
+            // Regular directory name -> push to stack
+            if (depth < 64) {
+                k_strcpy(segments[depth], seg);
+                depth++;
+            } else {
+                return -1; // Path too deep
+            }
+        }
+    }
+
+    // Reconstruct normalized absolute path
+    if (depth == 0) {
+        if (out_size < 2) return -1;
+        out[0] = '/';
+        out[1] = '\0';
+        return 0;
+    }
+
+    size_t pos = 0;
+    for (int i = 0; i < depth; i++) {
+        if (pos + 1 >= out_size) return -1;
+        out[pos++] = '/';
+
+        size_t slen = k_strlen(segments[i]);
+        if (pos + slen >= out_size) return -1;
+        
+        k_memcpy(out + pos, segments[i], slen);
+        pos += slen;
+    }
+    out[pos] = '\0';
+
+    return 0;
+}
+
+// --- Freestanding chdir & getcwd ---
+
+int chdir(const char *path) {
+    char* current_cwd = getpcwd();
+    if (!path || path[0] == '\0') return -1;
+
+    char combined[PATH_MAX];
+    char canonical[PATH_MAX];
+
+    // 1. Resolve relative vs absolute path
+    if (path[0] == '/') {
+        // Absolute path
+        if (k_strlen(path) >= PATH_MAX) return -1;
+        k_strcpy(combined, path);
+    } else {
+        // Relative path: prepend CWD
+        size_t cwd_len = k_strlen(current_cwd);
+        size_t path_len = k_strlen(path);
+
+        if (cwd_len + 1 + path_len >= PATH_MAX) return -1;
+
+        k_strcpy(combined, current_cwd);
+        if (combined[cwd_len - 1] != '/') {
+            combined[cwd_len] = '/';
+            combined[cwd_len + 1] = '\0';
+        }
+        
+        // Append relative path
+        size_t end = k_strlen(combined);
+        k_strcpy(combined + end, path);
+    }
+
+    // 2. Canonicalize '.', '..', and extra slashes
+    if (canonicalize_path(combined, canonical, PATH_MAX) != 0) {
+        return -1;
+    }
+    struct vfs_stat st;
+    if (vfs_stat(canonical, &st) == -1) {
+        return -1;
+    }
+    if (!((st.st_mode & 0170000) == 0040000)) {
+        return -1;
+    }
+    // 4. Update working directory
+    k_strcpy(current_cwd, canonical);
+    return 0;
+}
+
+char *getcwd(char *buf, size_t size) {
+    char* current_cwd = getpcwd();
+    if (!buf) return 0;
+
+    size_t len = k_strlen(current_cwd) + 1;
+    if (size < len) return 0; // Buffer too small
+
+    k_memcpy(buf, current_cwd, len);
+    return buf;
+}
+
 extern struct flanterm_context *ft_ctx;
 extern uint64_t set_signal_handler(int sig, uint64_t handler);
 extern int send_signal(int pid, int sig);
@@ -495,88 +637,6 @@ typedef struct {
     uint64_t key;
     int claimedlevel;
 } permission;
-// --- VIRTUAL FILE SYSTEM SYSTEM-CALL ISOLATED ROUTER ---
-#include <stdint.h>
-#include <string.h>
-
-// --- Minimal Freestanding SHA-256 Implementation ---
-#define ROTR(x, n) (((x) >> (n)) | ((x) << (32 - (n))))
-#define Ch(x, y, z) (((x) & (y)) ^ (~(x) & (z)))
-#define Maj(x, y, z) (((x) & (y)) ^ (((x) & (z)) ^ ((y) & (z))))
-#define Sigma0(x) (ROTR(x, 2) ^ ROTR(x, 13) ^ ROTR(x, 22))
-#define Sigma1(x) (ROTR(x, 6) ^ ROTR(x, 11) ^ ROTR(x, 25))
-#define sigma0(x) (ROTR(x, 7) ^ ROTR(x, 18) ^ ((x) >> 3))
-#define sigma1(x) (ROTR(x, 17) ^ ROTR(x, 19) ^ ((x) >> 10))
-
-static const uint32_t K[64] = {
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-    0xbefa4fa4, 0x0654be30, 0x14abbc42, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb
-};
-
-void sha256_transform(uint32_t state[8], const uint8_t data[64]) {
-    uint32_t a, b, c, d, e, f, g, h, t1, t2, W[64];
-    int i;
-
-    for (i = 0; i < 16; i++) {
-        W[i] = ((uint32_t)data[i * 4] << 24) | ((uint32_t)data[i * 4 + 1] << 16) |
-               ((uint32_t)data[i * 4 + 2] << 8) | ((uint32_t)data[i * 4 + 3]);
-    }
-    for (i = 16; i < 64; i++) {
-        W[i] = sigma1(W[i - 2]) + W[i - 7] + sigma0(W[i - 15]) + W[i - 16];
-    }
-
-    a = state[0]; b = state[1]; c = state[2]; d = state[3];
-    e = state[4]; f = state[5]; g = state[6]; h = state[7];
-
-    for (i = 0; i < 64; i++) {
-        t1 = h + Sigma1(e) + Ch(e, f, g) + K[i] + W[i];
-        t2 = Sigma0(a) + Maj(a, b, c);
-        h = g; g = f; f = e; e = d + t1; d = c; c = b; b = a; a = t1 + t2;
-    }
-
-    state[0] += a; state[1] += b; state[2] += c; state[3] += d;
-    state[4] += e; state[5] += f; state[6] += g; state[7] += h;
-}
-
-void sha256_hash(const uint8_t* data, uint32_t length, uint8_t output[32]) {
-    uint32_t state[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    uint8_t buffer[128];
-    uint32_t bits = length * 8;
-    
-    // Copy data into buffer and apply standard padding
-    for (uint32_t i = 0; i < length; i++) buffer[i] = data[i];
-    buffer[length] = 0x80;
-    
-    uint32_t pad_len = length + 1;
-    while ((pad_len % 64) != 56) {
-        buffer[pad_len++] = 0x00;
-    }
-    
-    // Append bit length at the end (Big Endian)
-    buffer[pad_len++] = (bits >> 24) & 0xFF;
-    buffer[pad_len++] = (bits >> 16) & 0xFF;
-    buffer[pad_len++] = (bits >> 8) & 0xFF;
-    buffer[pad_len++] = bits & 0xFF;
-
-    for (uint32_t i = 0; i < pad_len; i += 64) {
-        sha256_transform(state, &buffer[i]);
-    }
-
-    for (int i = 0; i < 8; i++) {
-        output[i * 4]     = (state[i] >> 24) & 0xFF;
-        output[i * 4 + 1] = (state[i] >> 16) & 0xFF;
-        output[i * 4 + 2] = (state[i] >> 8) & 0xFF;
-        output[i * 4 + 3] = state[i] & 0xFF;
-    }
-}
-
-// --- Freestanding HMAC-SHA256 Function ---
 // Signs a data key combined with a specific process identifier (PID)
 void sign_key_with_pid(const uint8_t* key, uint32_t key_len, uint32_t pid, uint8_t out_signature[32]) {
     uint8_t k_ipad[64] = {0};
@@ -630,418 +690,7 @@ uint64_t signature_to_uint64_direct(const uint8_t* signature) {
     }
     return result;
 }
-typedef enum {
-    NET_AF_IPV4,
-    NET_AF_IPV6,
-    NET_AF_ARP,
-    NET_AF_RAW
-} net_family_t;
 
-typedef enum {
-    NET_PROTO_TCP,
-    NET_PROTO_UDP,
-    NET_PROTO_ICMP,
-    NET_PROTO_RAW
-} net_protocol_t;
-typedef struct net_socket net_socket;
-typedef struct {
-    uint64_t connect_udp_port;
-    uint64_t connect_tcp_port;
-    uint64_t my_udp_port;
-    uint64_t my_tcp_port;
-    uint32_t dest_ip;
-    int index;
-    uint8_t connected;
-    char path[256];
-} metadata;
-typedef struct net_addr {
-    uint32_t ipv4;      // Network byte order
-    uint16_t port;      // Network byte order
-} net_addr;
-typedef int (*net_recv_t)(
-    struct net_socket *socket,
-    void *buffer,
-    size_t length
-);
-
-typedef int (*net_send_t)(
-    struct net_socket *socket,
-    const void *buffer,
-    size_t length
-);
-
-typedef int (*net_connect_t)(
-    struct net_socket *socket,
-    const char *addr
-);
-
-typedef int (*net_close_t)(
-    struct net_socket *socket
-);
-struct net_socket {
-    net_family_t family;
-    net_protocol_t protocol;
-    net_recv_t recv;
-    net_close_t close;
-    net_connect_t connect;
-    net_send_t send;
-    metadata md;
-};
-typedef struct {
-    char scheme[16];    // "http", "https", etc.
-    char host[256];     // "example.com" or "192.168.1.10"
-    uint16_t port;      // 80, 443, etc.
-    char path[256];     // "/index.html"
-} net_url_t;
-int udp_recv(struct net_socket* socket, void* buffer, size_t length) {
-    void* poll = kmalloc(1024 * 4);
-    uint16_t len = 0;
-    while (1) {
-        rtl8139_poll(poll);  
-        struct eth_frame *frame = (struct eth_frame*)poll;
-        if (ntohs(frame->ethertype) == 0x0800) {
-            struct ipv4_packet *ipv4 = (struct ipv4_packet*)frame->payload;
-            if (ipv4->hdr.protocol == 17) {
-                struct udp_packet *udp = (struct udp_packet*)ipv4->payload;
-                len = udp->hdr.length;
-                if (len > length) {
-                    len = length;
-                }
-                memcpy(buffer, udp->data, len);
-                break;
-            }
-        }
-    } 
-    kfree(poll);
-    return len;
-}
-
-int is_ipv4(const char *s) {
-    int dots = 0;
-
-    while (*s) {
-        if (*s == '.') {
-            dots++;
-        } else if (*s < '0' || *s > '9') {
-            return 0;
-        }
-        s++;
-    }
-
-    return dots == 3;
-}
-int net_parse_url(const char *url, net_url_t *out)
-{
-    if (!url || !out)
-        return -1;
-
-    memset(out, 0, sizeof(*out));
-
-    const char *p = url;
-
-    /* Parse scheme */
-    while (*p && *p != ':' && *p != '/')
-        p++;
-
-    if (p[0] == ':' && p[1] == '/' && p[2] == '/') {
-        memcpy(out->scheme, url, p - url);
-        out->scheme[p - url] = '\0';
-        url = p + 3;
-    } else {
-        memcpy(out->scheme, "http", 5);
-    }
-
-    /* Parse host */
-    p = url;
-    while (*p && *p != ':' && *p != '/')
-        p++;
-
-    memcpy(out->host, url, p - url);
-    out->host[p - url] = '\0';
-
-    url = p;
-
-    /* Parse port */
-    if (*url == ':') {
-        url++;
-
-        out->port = 0;
-        while (*url >= '0' && *url <= '9') {
-            out->port = out->port * 10 + (*url - '0');
-            url++;
-        }
-    } else {
-        if (!strcmp(out->scheme, "https"))
-            out->port = 443;
-        else
-            out->port = 80;
-    }
-
-    /* Parse path */
-    if (*url == '/') {
-        p = url;
-        while (*p)
-            p++;
-
-        memcpy(out->path, url, p - url);
-        out->path[p - url] = '\0';
-    } else {
-        out->path[0] = '/';
-        out->path[1] = '\0';
-    }
-
-    return 0;
-}
-struct net_socket sockets[64];
-int udp_send(struct net_socket* socket, const void* buffer, size_t length) {
-    if (!socket->md.connected) return -1;
-    size_t pkt_len = sizeof(struct udp_packet) + length;
-
-    struct udp_packet *pkt = kmalloc(pkt_len);
-
-    create_udp_packet(pkt, buffer, length,
-                    socket->md.my_udp_port,
-                    socket->md.connect_udp_port);
-
-    send_ipv4_packet(socket->md.dest_ip, pkt, 17, pkt_len);
-    kfree(pkt);
-    return length;
-}
-int ipv4_parse(const char *str, uint32_t *out)
-{
-    uint32_t ip = 0;
-    uint32_t octet = 0;
-    int dots = 0;
-
-    while (*str) {
-        if (*str >= '0' && *str <= '9') {
-            octet = octet * 10 + (*str - '0');
-            if (octet > 255)
-                return -1;
-        } else if (*str == '.') {
-            if (dots >= 3)
-                return -1;
-
-            ip = (ip << 8) | octet;
-            octet = 0;
-            dots++;
-        } else {
-            return -1;
-        }
-
-        str++;
-    }
-
-    if (dots != 3)
-        return -1;
-
-    ip = (ip << 8) | octet;
-
-    *out = ip; // Stored in network byte order (big-endian)
-    return 0;
-}
-int last_port = 41952;
-int last_socket = -1;
-int udp_connect(struct net_socket* socket, const char* addr) {
-    net_url_t url;
-    net_parse_url(addr, &url);
-    socket->md.connect_udp_port = url.port;
-    socket->md.my_udp_port = last_port++;
-    socket->md.connected = 1;
-    if (is_ipv4(url.host)) {
-        ipv4_parse(url.path, &socket->md.dest_ip);
-    } else {
-        socket->md.dest_ip = dns_lookup(url.path);
-    }
-    strcpy(socket->md.path, url.path);
-    return 0;
-}
-int udp_close(struct net_socket* socket) {
-    // do nothing for now lol
-}
-// ==========================================
-// RAW PROTOCOL HANDLERS
-// ==========================================
-
-int raw_recv(struct net_socket* socket, void* buffer, size_t length) {
-    void* poll = kmalloc(1024 * 4);
-    uint16_t len = 0;
-    while (1) {
-        rtl8139_poll(poll);
-        struct eth_frame *frame = (struct eth_frame*)poll;
-        // In a raw socket, we grab the raw payload of the ethernet frame
-        if (ntohs(frame->ethertype) == 0x0800) {
-            // Adjust copy limits based on max buffer length
-            len = (1024 * 4) - sizeof(struct eth_frame);
-            if (len > length) {
-                len = length;
-            }
-            memcpy(buffer, frame->payload, len);
-            break;
-        }
-    }
-    kfree(poll);
-    return len;
-}
-
-int raw_send(struct net_socket* socket, const void* buffer, size_t length) {
-    if (!socket->md.connected) return -1;
-    // For raw networking, we route the raw buffer through IPv4 directly 
-    // using a dummy protocol or a protocol stored in metadata if applicable.
-    send_ipv4_packet(socket->md.dest_ip, (uint8_t*)buffer, 255, length); 
-    return length;
-}
-
-int raw_connect(struct net_socket* socket, const char* addr) {
-    net_url_t url;
-    net_parse_url(addr, &url);
-    socket->md.connected = 1;
-    if (is_ipv4(url.host)) {
-        ipv4_parse(url.host, &socket->md.dest_ip);
-    } else {
-        socket->md.dest_ip = dns_lookup(url.host);
-    }
-    strcpy(socket->md.path, url.path);
-    return 0;
-}
-
-int raw_close(struct net_socket* socket) {
-    socket->md.connected = 0;
-    return 0;
-}
-
-// ==========================================
-// TCP PROTOCOL HANDLERS
-// ==========================================
-
-int tcp_connect(struct net_socket* socket, const char* addr) {
-    net_url_t url;
-    net_parse_url(addr, &url);
-    
-    socket->md.connect_tcp_port = url.port;
-    socket->md.my_tcp_port = last_port++;
-    
-    if (is_ipv4(url.host)) {
-        ipv4_parse(url.host, &socket->md.dest_ip);
-    } else {
-        socket->md.dest_ip = dns_lookup(url.host);
-    }
-    strcpy(socket->md.path, url.path);
-
-    // 1. Send SYN packet to establish connection
-    size_t pkt_len = sizeof(struct tcp_packet);
-    struct tcp_packet *syn_pkt = kmalloc(pkt_len);
-    
-    create_tcp_packet(syn_pkt, NULL, 0, 
-                      socket->md.my_tcp_port, 
-                      socket->md.connect_tcp_port, 
-                      100, 0, TCP_FLAG_SYN);
-                      
-    send_ipv4_packet(socket->md.dest_ip, (uint8_t*)syn_pkt, 6, pkt_len);
-    kfree(syn_pkt);
-
-    // 2. Poll for SYN-ACK response
-    void* poll = kmalloc(1024 * 4);
-    while (1) {
-        rtl8139_poll(poll);
-        struct eth_frame *frame = (struct eth_frame*)poll;
-        if (ntohs(frame->ethertype) == 0x0800) {
-            struct ipv4_packet *ipv4 = (struct ipv4_packet*)frame->payload;
-            if (ipv4->hdr.protocol == 6) { // TCP Protocol number is 6
-                struct tcp_packet *tcp = (struct tcp_packet*)ipv4->payload;
-                if ((tcp->hdr.flags & TCP_FLAG_SYN) && (tcp->hdr.flags & TCP_FLAG_ACK)) {
-                    // Properly matched remote server reply
-                    break;
-                }
-            }
-        }
-    }
-    kfree(poll);
-
-    // 3. Complete Handshake by sending ACK
-    struct tcp_packet *ack_pkt = kmalloc(pkt_len);
-    create_tcp_packet(ack_pkt, NULL, 0, 
-                      socket->md.my_tcp_port, 
-                      socket->md.connect_tcp_port, 
-                      101, 101, TCP_FLAG_ACK);
-                      
-    send_ipv4_packet(socket->md.dest_ip, (uint8_t*)ack_pkt, 6, pkt_len);
-    kfree(ack_pkt);
-
-    socket->md.connected = 1;
-    return 0;
-}
-
-int tcp_send(struct net_socket* socket, const void* buffer, size_t length) {
-    if (!socket->md.connected) return -1;
-
-    size_t pkt_len = sizeof(struct tcp_packet) + length;
-    struct tcp_packet *pkt = kmalloc(pkt_len);
-
-    create_tcp_packet(pkt, (void*)buffer, length,
-                      socket->md.my_tcp_port,
-                      socket->md.connect_tcp_port,
-                      101, 101, TCP_FLAG_ACK | TCP_FLAG_PSH);
-
-    send_ipv4_packet(socket->md.dest_ip, (uint8_t*)pkt, 6, pkt_len);
-    kfree(pkt);
-    return length;
-}
-
-int tcp_recv(struct net_socket* socket, void* buffer, size_t length) {
-    if (!socket->md.connected) return -1;
-
-    void* poll = kmalloc(1024 * 4);
-    uint16_t data_len = 0;
-    
-    while (1) {
-        rtl8139_poll(poll);
-        struct eth_frame *frame = (struct eth_frame*)poll;
-        if (ntohs(frame->ethertype) == 0x0800) {
-            struct ipv4_packet *ipv4 = (struct ipv4_packet*)frame->payload;
-            if (ipv4->hdr.protocol == 6) { 
-                struct tcp_packet *tcp = (struct tcp_packet*)ipv4->payload;
-                
-                // Calculate size of TCP options / headers to locate raw data offset
-                uint32_t header_len = (tcp->hdr.data_offset >> 4) * 4;
-                uint32_t total_ip_len = ntohs(ipv4->hdr.total_length);
-                uint32_t ip_header_len = (ipv4->hdr.version_ihl & 0x0F) * 4;
-                
-                data_len = total_ip_len - ip_header_len - header_len;
-                
-                if (data_len > 0) {
-                    if (data_len > length) {
-                        data_len = length;
-                    }
-                    // tcp->hdr.data_offset location calculation
-                    uint8_t* tcp_data_ptr = ((uint8_t*)tcp) + header_len;
-                    memcpy(buffer, tcp_data_ptr, data_len);
-                    break;
-                }
-            }
-        }
-    }
-    kfree(poll);
-    return data_len;
-}
-
-int tcp_close(struct net_socket* socket) {
-    if (!socket->md.connected) return 0;
-
-    size_t pkt_len = sizeof(struct tcp_packet);
-    struct tcp_packet *pkt = kmalloc(pkt_len);
-
-    create_tcp_packet(pkt, NULL, 0, 
-                      socket->md.my_tcp_port, 
-                      socket->md.connect_tcp_port, 
-                      102, 102, TCP_FLAG_FIN | TCP_FLAG_ACK);
-
-    send_ipv4_packet(socket->md.dest_ip, (uint8_t*)pkt, 6, pkt_len);
-    kfree(pkt);
-
-    socket->md.connected = 0;
-    return 0;
-}
 
 // ==========================================
 // HIGH-LEVEL HTTP WRAPPERS
@@ -1051,46 +700,9 @@ int tcp_close(struct net_socket* socket) {
 // SYSTEM SOCKET MULTIPLEXER
 // ==========================================
 
-int sys_socket(net_family_t family, net_protocol_t protocol) {
-    int available_socket = ++last_socket; // Increments to accurate next index
-    
-    sockets[available_socket].family = family;
-    sockets[available_socket].protocol = protocol;
-    sockets[available_socket].md.index = available_socket;
-    sockets[available_socket].md.connected = 0;
 
-    if (protocol == NET_PROTO_UDP) {
-        sockets[available_socket].close = udp_close;
-        sockets[available_socket].connect = udp_connect;
-        sockets[available_socket].recv = udp_recv;
-        sockets[available_socket].send = udp_send;
-    } 
-    else if (protocol == NET_PROTO_TCP) {
-        sockets[available_socket].close = tcp_close;
-        sockets[available_socket].connect = tcp_connect;
-        sockets[available_socket].recv = tcp_recv;
-        sockets[available_socket].send = tcp_send;
-    } 
-    else if (protocol == NET_PROTO_RAW) {
-        sockets[available_socket].close = raw_close;
-        sockets[available_socket].connect = raw_connect;
-        sockets[available_socket].recv = raw_recv;
-        sockets[available_socket].send = raw_send;
-    }
-    
-    return available_socket;
-}
 volatile uint64_t ticks = 0;
-struct utsname {
-    char sysname[65];
-    char nodename[65];
-    char release[65];
-    char version[65];
-    char machine[65];
-#ifdef _GNU_SOURCE
-    char domainname[65];
-#endif
-};
+
 volatile int last_scancode = -1;
 char kgetc() {
     // Wait for ISR to register a new press
@@ -1107,386 +719,11 @@ char kgetc() {
 
 // Global array tracking whether an allocated descriptor belongs to the custom mount framework
 // Index maps to (system_fd - 2) slots
-bool fd_is_mnt[32] = {false};
 
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
-
-    switch (regs->rax) {
-        case 0: // read
-            if (args->arg[0] == 1 || args->arg[0] == 2) {
-                regs->rax = 0; 
-            } 
-            else {
-                int tracking_idx = (int)(args->arg[0] - 2);
-                if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
-                    // Custom mount manager execution pipeline (Paths starting with /dev)
-                    regs->rax = read(tracking_idx, (void*)args->arg[1], args->arg[2], args->arg[3]);
-                } else {
-                    // Fallback to native VFS execution pipeline (Standard VFS fallback)
-                    regs->rax = vfs_read(tracking_idx, (void*)args->arg[1], args->arg[2], args->arg[3]);
-                }
-            }
-            break;
-
-        case 1: // write
-            if (args->arg[0] > 2) {
-                int tracking_idx = (int)(args->arg[0] - 2);
-                if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
-                    // Custom mount manager execution pipeline (Paths starting with /dev)
-                    regs->rax = write(tracking_idx, (void*)args->arg[1], args->arg[2]);
-                } else {
-                    // Fallback to native VFS execution pipeline (Standard VFS fallback)
-                    regs->rax = vfs_write_file(tracking_idx, (void*)args->arg[1], args->arg[2]);
-                }
-            } 
-            else if (args->arg[0] == 1 || args->arg[0] == 2) {
-                char *user_str = (char*)args->arg[1];
-                unsigned long length = args->arg[2];
-
-                for (unsigned long i = 0; i < length; i++) {
-                    tty_putchar(user_str[i]);
-                }
-                regs->rax = length; 
-            }
-            break;
-
-        case 2: { // open
-            const char* path = (const char*)args->arg[0];
-            int flags = args->arg[1];
-            uint32_t mode = args->arg[2];
-            // Custom "/dev" prefix check
-            bool is_dev = (path != NULL && 
-                           path[0] == '/' && 
-                           path[1] == 'd' && 
-                           path[2] == 'e' && 
-                           path[3] == 'v');
-            
-            if (is_dev) {
-                long fd = open((char*)path, flags, mode);
-                if (fd < 0) {
-                    regs->rax = fd;
-                } else {
-                    int tracking_idx = (int)fd;
-                    if (tracking_idx >= 0 && tracking_idx < 32) {
-                        fd_is_mnt[tracking_idx] = true; // Registered to custom Mount framework
-                    }
-                    regs->rax = fd + 2;
-                }
-            } else {
-                long fd = vfs_open(path, flags, mode);
-                if (fd < 0) {
-                    regs->rax = fd; 
-                } else {
-                    int tracking_idx = (int)fd;
-                    if (tracking_idx >= 0 && tracking_idx < 32) {
-                        fd_is_mnt[tracking_idx] = false; // Registered to standard VFS
-                    }
-                    regs->rax = fd + 2; 
-                }
-            }
-            break;
-        }
-
-        case 3: // vfs_mkdir
-            regs->rax = vfs_mkdir((const char*)args->arg[0], args->arg[1]);
-            break;
-
-        case 4: // vfs_rmdir
-            regs->rax = vfs_rmdir((const char*)args->arg[0]);
-            break;
-
-        case 5: // close (_close)
-            if (args->arg[0] <= 2) {
-                regs->rax = 0; 
-            } else {
-                int tracking_idx = (int)(args->arg[0] - 2);
-                if (tracking_idx >= 0 && tracking_idx < 32) {
-                    // Reset descriptor map tracker state
-                    fd_is_mnt[tracking_idx] = false; 
-                }
-                regs->rax = vfs_free_fd(tracking_idx);
-            }
-            break;
-
-        case 6: // vfs_move_file
-            if (args->arg[0] <= 2) {
-                regs->rax = -1; 
-            } else {
-                regs->rax = vfs_move_file(args->arg[0] - 2, (const char*)args->arg[1]);
-            }
-            break;
-
-        case 7: { // create_file
-            const char* path = (const char*)args->arg[1];
-            
-            // Custom "/dev" prefix check
-            bool is_dev = (path != NULL && 
-                           path[0] == '/' && 
-                           path[1] == 'd' && 
-                           path[2] == 'e' && 
-                           path[3] == 'v');
-            
-            if (is_dev) {
-                long status = create((char*)path);
-                if (status < 0) {
-                    regs->rax = status;
-                } else {
-                    int tracking_idx = (int)status;
-                    if (tracking_idx >= 0 && tracking_idx < 32) {
-                        fd_is_mnt[tracking_idx] = true; // Custom mount routing
-                    }
-                    regs->rax = status + 2;
-                }
-            } else {
-                long fd = vfs_create_file((void*)args->arg[0], path, args->arg[2]);
-                if (fd < 0) {
-                    regs->rax = fd; 
-                } else {
-                    int tracking_idx = (int)fd;
-                    if (tracking_idx >= 0 && tracking_idx < 32) {
-                        fd_is_mnt[tracking_idx] = false; // Native VFS fallback
-                    }
-                    regs->rax = fd + 2; 
-                }
-            }
-            break;
-        }
-
-        case 8: // vfs_delete_file
-            regs->rax = vfs_delete_file((const char*)args->arg[0]);
-            break;
-            
-        case 9: {
-            if (args->arg[0] == 0) {
-                uint8_t signature[32];
-                sign_key_with_pid((uint8_t*)admin_key, sizeof(admin_key), getpid(), signature); 
-                permission perm = { .claimedlevel = 0, .key = signature_to_uint64_direct(signature)};
-                memcpy((void*)args->arg[1], &perm, sizeof(permission));
-            } else if (args->arg[0] == 1) {
-                uint8_t signature[32];
-                sign_key_with_pid((uint8_t*)user_key, sizeof(user_key), getpid(), signature); 
-                permission perm = { .claimedlevel = 0, .key = signature_to_uint64_direct(signature)};
-                memcpy((void*)args->arg[1], &perm, sizeof(permission));
-            }
-            break;
-        }
-        case 10: {
-            graduate();
-            break;
-        }
-        case 11: {
-            draw_rect(args->arg[0], args->arg[1], args->arg[2], args->arg[3], args->arg[4], args->arg[5], args->arg[6]);
-            break;
-        }
-        case 12: {
-            printk(LOG_ERROR, "EXITING (IDT): %d %d\n", getpid(), args->arg[0]);
-            syscall_exit_handler(get_rsp(), args->arg[0]);
-            break;
-        }
-        case 13: {
-            ipc_recv((void*)args->arg[0], args->arg[1], (uint32_t*)args->arg[2]);
-            break;
-        }
-        case 14: {
-            ipc_send(args->arg[1], (void*)args->arg[2], args->arg[3]);
-            break;
-        }
-        case 15: {
-            regs->rax = getpid();
-            break;
-        }
-        case 16: {
-            regs->rsp = terminate(regs->rsp, args->arg[0]);
-            break;
-        }
-        case 17: {
-            if (args->arg[0] <= 2) {
-                regs->rax = -EBADF;
-            } else {
-                regs->rax = vfs_fstat(args->arg[0] - 2, (struct vfs_stat*)args->arg[1]);
-            }
-            break;
-        }
-        case 18: {
-            asm volatile("sti");
-            
-            // stdin (FD 0)
-            uint8_t *user_buf = (uint8_t *)args->arg[0];
-            uint64_t bytes_to_read = args->arg[1];
-            if (bytes_to_read == 0 || user_buf == NULL) {
-                regs->rax = 0;
-                break;
-            }
-
-            uint64_t bytes_read = 0;
-            while (bytes_read < bytes_to_read) {
-                while (last_scancode == -1) {
-                    asm volatile("hlt");
-                }
-                user_buf[bytes_read++] = (uint8_t)last_scancode;
-                last_scancode = -1;
-            }
-
-            regs->rax = bytes_read;
-            break;
-        }
-        case 19: {
-            regs->rax = spawn((char*)args->arg[0], args->arg[1], (char**)args->arg[2]);
-            break;
-        }
-        case 22: {
-            regs->rax = (uint64_t)vmm_mmap((void*)args->arg[0], args->arg[1], (int)args->arg[2], (int)args->arg[3], (int)args->arg[4], (int64_t)args->arg[5]);
-            break;
-        }
-        case 23: {
-            regs->rax = vmm_munmap((void*)args->arg[0], args->arg[1]);
-            break;
-        }
-        case 24: {
-            regs->rax = set_signal_handler((int)args->arg[0], args->arg[1]);
-            break;
-        }
-        case 25: {
-            regs->rax = send_signal((int)args->arg[0], (int)args->arg[1]);
-            break;
-        }
-        case 26: {
-            regs->rax = sys_read_mouse((void*)args->arg[0], args->arg[1]);
-            break;
-        }
-        case 20: {
-            regs->rax = waitpid(args->arg[0]);
-            break;
-        }
-        case 21: {
-            draw_image(args->arg[0], args->arg[1], args->arg[2], args->arg[3], (uint8_t*)args->arg[4]);
-            break;
-        }
-        case 27: {
-            get_pixel(args->arg[0], args->arg[1], (uint8_t*)args->arg[2], (uint8_t*)args->arg[3], (uint8_t*)args->arg[4]);
-            break;
-        }
-        case 28: {
-            ipc_send_nonblock(args->arg[0], (void*)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 29: {
-            ipc_recv_nonblock((void*)args->arg[0], args->arg[1], args->arg[2]);
-            break;
-        }
-        case 30: {
-            regs->rax = sys_socket(args->arg[0], args->arg[1]);
-            break;
-        }
-        case 31: {
-            struct net_socket sock = sockets[args->arg[0]];
-            regs->rax = sock.connect(&sock, args->arg[1]);
-            break;
-        }
-        case 32: {
-            struct net_socket sock = sockets[args->arg[0]];
-            regs->rax = sock.recv(&sock, (void*)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 33: {
-            struct net_socket sock = sockets[args->arg[0]];
-            regs->rax = sock.send(&sock, (void*)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 34: {
-            struct net_socket sock = sockets[args->arg[0]];
-            regs->rax = sock.close(&sock);
-            break;
-        }
-        case 35: {
-            regs->rax = ticks * 10;
-            break;
-        }
-        case 36: {
-            sleep_ms(args->arg[0]);
-            break;
-        }
-        case 37: {
-            regs->rax = get_launchd_pid();
-            break;
-        }
-        case 38: {
-            struct utsname* u = (struct utsname*)args->arg[0];
-            strcpy(u->machine, "x86_64");
-            strcpy(u->nodename, nodename);
-            strcpy(u->release, "4.5.0-rc1");
-            strcpy(u->sysname, "La Carrera");
-            strcpy(u->version, "#1 NOSMP PREEMPT");
-            break;
-        }
-        case 39: {
-            memset(nodename, 0, strlen(nodename));
-            strncpy(nodename, (char*)args->arg[0], args->arg[1]);
-            break;
-        }
-        case 40: {
-            strncpy((char*)args->arg[0], nodename, args->arg[1]);
-            break;
-        }
-        case 41: {
-            rtc_get_time((struct timespec*)args->arg[0]);
-            break;
-        }
-        case 42: {
-            regs->rax = vfs_listdir((const char*)args->arg[0], (char**)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 43: {
-            uacpi_reboot();
-            break; 
-        }
-        case 44: {
-            uacpi_enter_sleep_state(UACPI_SLEEP_STATE_S5);
-            break; 
-        }
-        case 45: {
-            regs->rax = vfs_delete_file((char*)args->arg[0]);
-            break;
-        }
-        case 46: {
-            regs->rax = ioctl(args->arg[0], args->arg[1], (void*)args->arg[2]);
-            break;
-        }
-        case 47: {
-            regs->rax = hvfs_create((char*)args->arg[0]);
-            break;
-        }
-        case 48: {
-            if (args->arg[1] == HVFS_TYPE_FUNCTION) {
-                regs->rax = -ENOENT;
-                break;
-            }
-            regs->rax = hvfs_set_type((const char*)args->arg[0], args->arg[1]);
-            break;
-        }
-        case 49: {
-            regs->rax = hvfs_set((const char*)args->arg[0], (const void*)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 50: {
-            regs->rax = hvfs_get((const char*)args->arg[0], (void*)args->arg[1], args->arg[2]);
-            break;
-        }
-        case 51: {
-            regs->rax = hvfs_get_type((const char*)args->arg[0], (hvfs_type_t*)args->arg[1]);
-            break;
-        }
-        case 52: {
-            regs->rax = hvfs_remove((const char*)args->arg[0]);
-            break;
-        }
-        default: 
-            regs->rax = -1; 
-            break;
-    }
+    regs->rax = systable[regs->rax](args);
 }
-
 // --- COMMON HARDWARE AND LEGACY INTERRUPT DISPATCH ROUTER ---
 
 #define KBD_BUFFER_SIZE 256
@@ -1571,7 +808,7 @@ int sys_read_key(uint8_t *user_buffer) {
     return 0; // No keys available right now
 }
 
-int sys_read_mouse(void *user_buffer, uint64_t count) {
+int read_mouse(void *user_buffer, uint64_t count) {
     if (user_buffer == NULL || count < sizeof(mouse_event_t)) {
         return -1;
     }
@@ -1837,58 +1074,7 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
             asm volatile("hlt");
         }
         } else {
-            char buffer[64];
-            for (int i = 0; i < 64; i++) buffer[i] = 0; // Clear the buffer for safety
-            if (vector > 255) {
-                strcpy(buffer, "(invalid)");
-            }
-            
-            printk(LOG_ERROR, "Vector Index    : %d (0x%x) %s\r\n", vector, vector, buffer);
-            printk(LOG_ERROR, "Description     : %s\r\n", exception_names[vector]);
-            printk(LOG_ERROR, "Error Code Mask : 0x%x\r\n", regs->error_code);
-            printk(LOG_ERROR, "--------------------------------------------------\r\n");
-            
-            // Output code boundaries and stack tracking snapshots
-            printk(LOG_ERROR, "Faulting Instruction Pointer (RIP): %p\r\n", regs->rip);
-            printk(LOG_ERROR, "Faulting Stack Pointer       (RSP): %p\r\n", regs->rsp);
-            printk(LOG_ERROR, "Code Segment Selector        (CS) : %x\r\n", regs->cs);
-            printk(LOG_ERROR, "Processor Flag Mask      (RFLAGS) : %p\r\n", regs->rflags);
-            
-            // Specialize tracking read metrics for standard complex traps
-            switch (vector) {
-                case 13: { // General Protection Fault
-                    printk(LOG_ERROR, " -> Details: Memory segment selection or boundary access rule violation.\r\n");
-                    if (regs->error_code != 0) {
-                        printk(LOG_ERROR, " -> Broken Selector Target Segment Index: GDT/LDT Slot %d\r\n", regs->error_code >> 3);
-                    }
-                    break;
-                }
-                case 14: { // Page Fault
-                    uint64_t faulting_address = 0;
-                    asm volatile("mov %%cr2, %0" : "=r"(faulting_address));
-                    printk(LOG_ERROR, " -> Details: Attempted to touch unmapped or protected virtual address layout space.\r\n");
-                    printk(LOG_ERROR, " -> Missing Destination Target (CR2): 0x%p\r\n", faulting_address);
-                    
-                    // Decode page fault reason flags out of error code bitmask
-                    printk(LOG_ERROR, " -> Fault Parameters: %s, %s, %s\r\n",
-                        (regs->error_code & (1 << 0)) ? "Protection Violation" : "Non-Present Page",
-                        (regs->error_code & (1 << 1)) ? "Write Operation" : "Read Operation",
-                        (regs->error_code & (1 << 2)) ? "User Privilege Level" : "Supervisor Ring 0 Code"
-                    );
-                    break;
-                }
-                default:
-                    printk(LOG_ERROR, " -> Details: Fatal core execution anomaly, stalling CPU state pipeline layout.\r\n");
-                    break;
-            }
-
-            printk(LOG_ERROR, "--------------------------------------------------\r\n");
-            printk(LOG_ERROR, "Register Dump:\r\n");
-            printk(LOG_ERROR, "RAX: %p  RBX: %p  RCX: %p  RDX: %p\r\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
-            printk(LOG_ERROR, "RSI: %p  RDI: %p  RBP: %p  R8 : %p\r\n", regs->rsi, regs->rdi, regs->rbp, regs->r8);
-            printk(LOG_ERROR, "R9 : %p  R10: %p  R11: %p  R12: %p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
-            printk(LOG_ERROR, "R13: %p  R14: %p  R15: %p\r\n", regs->r13, regs->r14, regs->r15);
-            printk(LOG_ERROR, "==================================================\r\n");
+            printk(LOG_NONE, "%s.\n", user_exceptions[vector]);
             return terminate(regs->rsp, getpid());
         }
     } 
