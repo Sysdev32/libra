@@ -39,4 +39,3 @@ userspace.c
 iso/*.iso
 *.iso
 sdk.tar.xz
-user.ld

@@ -4,6 +4,7 @@ systable.h
 This file includes the syscall table for Libra.
 */
 #pragma once
+#include <stdint.h>
 typedef struct {
     uint64_t arg[8];
 } arg;
