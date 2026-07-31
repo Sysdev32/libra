@@ -1058,7 +1058,6 @@ int vfs_fstat(int fd, struct vfs_stat *st) {
     st->st_ctim    = inode->st_ctim;
     st->st_mtim    = inode->st_mtim;
     st->st_atim    = inode->st_atim;
-    printk(LOG_TRACE, "%x mode\n", inode->mode);
     return 0;
 }
 

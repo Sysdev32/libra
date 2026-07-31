@@ -20,7 +20,13 @@
 #include <drivers/net/UDP.h>
 #include <fs/mnt.h>
 #include <hals/net/RTL8139.h>
-
+#include <helpers/cwd.h>
+#include <security/sks.h>
+uint64_t get_rsp(void) {
+    uint64_t rsp;
+    asm volatile("mov %%rsp, %0" : "=r"(rsp));
+    return rsp;
+}
 typedef struct {
     uint64_t key;
     int claimedlevel;
@@ -39,22 +45,22 @@ static int resolve_vfs_path(const char *user_path, char *out_path, size_t max_si
     char* current_cwd = getpcwd();
     
     if (user_path[0] == '/') {
-        if (k_strlen(user_path) >= max_size) return -1;
-        k_strcpy(combined, user_path);
+        if (strlen(user_path) >= max_size) return -1;
+        strcpy(combined, user_path);
     } else {
         if (!current_cwd) return -1;
-        size_t cwd_len = k_strlen(current_cwd);
-        size_t path_len = k_strlen(user_path);
+        size_t cwd_len = strlen(current_cwd);
+        size_t path_len = strlen(user_path);
 
         if (cwd_len + 1 + path_len >= max_size) return -1;
 
-        k_strcpy(combined, current_cwd);
+        strcpy(combined, current_cwd);
         if (cwd_len > 0 && combined[cwd_len - 1] != '/') {
             combined[cwd_len] = '/';
             combined[cwd_len + 1] = '\0';
         }
-        size_t end = k_strlen(combined);
-        k_strcpy(combined + end, user_path);
+        size_t end = strlen(combined);
+        strcpy(combined + end, user_path);
     }
 
     return canonicalize_path(combined, out_path, max_size);
@@ -68,12 +74,12 @@ static char *sys_realpath_impl(const char *path, char *resolved_path) {
     }
 
     if (resolved_path != NULL) {
-        k_strcpy(resolved_path, temp_buf);
+        strcpy(resolved_path, temp_buf);
         return resolved_path;
     } else {
-        char *mem = (char*)kmalloc(k_strlen(temp_buf) + 1);
+        char *mem = (char*)kmalloc(strlen(temp_buf) + 1);
         if (mem) {
-            k_strcpy(mem, temp_buf);
+            strcpy(mem, temp_buf);
         }
         return mem;
     }
