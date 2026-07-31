@@ -106,7 +106,7 @@ all: $(KERNEL)
 # Link Kernel
 # -------------------------
 
-$(KERNEL): $(OBJS) linker.ld | dirs
+$(KERNEL): genconfig $(OBJS) linker.ld | dirs
 	@echo "[LD] Linking kernel"
 	@mkdir -p $(dir $@)
 	@$(LD) $(LDFLAGS) $(OBJS) -o $@

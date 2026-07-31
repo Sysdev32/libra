@@ -358,7 +358,7 @@ unsigned long long sys_read_stdin(arg* a) {
 
 // Syscall 19: spawn
 unsigned long long sys_spawn(arg* a) {
-    return spawn((char*)a->arg[0], a->arg[1], (char**)a->arg[2]);
+    return spawn((char*)a->arg[0], a->arg[1], (char**)a->arg[2], (char*)a->arg[3]);
 }
 
 // Syscall 20: waitpid
@@ -593,4 +593,55 @@ unsigned long long sys_realpath(arg* a) {
         return (unsigned long long)-ENOENT;
     }
     return (unsigned long long)res;
+}
+
+// Syscall 58: ps
+unsigned long long sys_ps(arg *a) {
+    return ps((struct utask*)a->arg[0], a->arg[1]);
+}
+
+// Syscall 59: TTY Clear
+unsigned long long sys_tty_clear(arg *a) {
+    printk(LOG_TRACE, "bing bang t bang bing t bang bing y bang bang c bang bing l bang bong e bang bing a bing bang r\n");
+    tty_clear();
+    return 0;
+}
+
+// Syscall 60: TTY switch
+unsigned long long sys_tty_switch(arg *a) {
+    tty_switch(a->arg[0]);
+    return 0;
+}
+
+// Syscall 61: TTY pixel
+// Syscall: Draw single pixel
+unsigned long long sys_tty_draw_pixel(arg *a) {
+    tty_draw_pixel(a->arg[0], a->arg[1], a->arg[2]);
+    return 0; // Success
+}
+
+// Syscall 62: TTY img
+unsigned long long sys_tty_draw_img(arg *a) {
+    int start_x = (int)a->arg[0];
+    int start_y = (int)a->arg[1];
+    unsigned int *img_buffer = (unsigned int *)a->arg[2]; // Assuming 32-bit color
+    int w = (int)a->arg[3];
+    int h = (int)a->arg[4];
+
+    // Pointer/bounds check
+    if (!img_buffer || w <= 0 || h <= 0) {
+        return 1; // Return error code for invalid argument
+    }
+
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            // Index into flat 1D pixel array: (row * width) + column
+            unsigned int color = img_buffer[row * w + col];
+
+            // Draw at the offset target coordinates
+            tty_draw_pixel(start_x + col, start_y + row, color);
+        }
+    }
+
+    return 0; // Success
 }

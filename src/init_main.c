@@ -292,7 +292,7 @@ void stack_free(uint64_t phys) {
 }
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
-int spawn(const char *path, int argc, char **argv)
+int spawn(const char *path, int argc, char **argv, char* name)
 {
     if (!path) {
         printk(LOG_ERROR, "[SPAWN] NULL path pointer\n");
@@ -525,7 +525,7 @@ int spawn(const char *path, int argc, char **argv)
     *(uint64_t *)cur_hhdm =
         argc;
 
-
+    set_cwd(getpcwd());
     int pid =
         create_user_task(
             (void *)loaded.entry_point,
@@ -535,14 +535,15 @@ int spawn(const char *path, int argc, char **argv)
             user_pml4,
             0,
             0,
-            -1);
+            -1,
+            name);
 
 
     return pid;
 }
 int launchd_pid = -1;
 static void main_kthread(void) {
-    launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL);
+    launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL, "launchd");
     for (;;) {
         asm volatile("sti; hlt");
     }
@@ -611,7 +612,21 @@ void triple_fault_reboot(void) {
     // Hang just in case the CPU takes a moment to reset
     for (;;);
 }
+static void off(char* path) {
+    int fd = open(path, 2, 0);
+    if (fd >= 0) {
+        struct winsize wz;
+        if (ioctl(fd, TIOCGWINSZ, &wz) == 0) {
+            printk(LOG_TRACE, "%dx%d\n", wz.ws_col, wz.ws_row);
+        }
 
+        struct termios t;
+        if (ioctl(fd, TCGETS, &t) == 0) {
+            t.c_lflag &= ~ECHO;
+            ioctl(fd, TCSETS, &t);
+        }
+    }
+}
 /* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
 // Your Kernel Entry Point
 pci_device_t* devices;
@@ -650,6 +665,7 @@ void _start(void) {
     memory_init();
     keyboard_init();
     tty_init(&fbt);
+    tty_switch(1);
     init_vfs();
     if (total_usable_memory / 1024 / 1024 < 128) {
         printk(LOG_ERROR, "Less than 128 MB of usable memory detected. Rebooting now..\n");
@@ -734,23 +750,16 @@ void _start(void) {
     dev.type = DEVFS;
     mount(&dev, "/dev");
     tty_dev_init();
-    int fd = open("/dev/tty0", 2, 0);
-    if (fd >= 0) {
-        struct winsize wz;
-        if (ioctl(fd, TIOCGWINSZ, &wz) == 0) {
-            printk(LOG_TRACE, "%dx%d\n", wz.ws_col, wz.ws_row);
-        }
-
-        struct termios t;
-        if (ioctl(fd, TCGETS, &t) == 0) {
-            t.c_lflag &= ~ECHO;
-            ioctl(fd, TCSETS, &t);
-        }
-    }
-    printk(LOG_TRACE, "fd: %d\n", fd);
+    off("/dev/tty1");
+    off("/dev/tty2");
+    off("/dev/tty3");
+    off("/dev/tty4");
+    off("/dev/tty5");
+    off("/dev/tty6");
     // mount(&part, "/mnt");
     // create("/mnt/a.txt");
-    create_kernel_task(main_kthread);
+    create_kernel_task(main_kthread, "khost");
     start_scheduler();
     for(;;);
+
 }

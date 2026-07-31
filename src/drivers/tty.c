@@ -48,7 +48,7 @@ static const uint32_t ansi_palette[16] = {
 static framebuffer_t global_fb;  
 static int fb_initialized = 0;   
 static tty_t ttys[8]; // Fixed mapping for physical VTs tty0 through tty7
-static uint32_t active_tty_idx = 0;
+static uint32_t active_tty_idx = 1;
 static uint32_t font_height = 16; 
 static const uint32_t font_width = 8; 
 
@@ -934,11 +934,11 @@ void tty_init(framebuffer_t *fb) {
         ttys[t].saved_y = 0;
         ttys[t].scroll_top = 0;
         ttys[t].scroll_bottom = max_rows - 1;
-        ttys[t].default_fg = colors[t];
+        ttys[t].default_fg = 0xffffffff;
         ttys[t].default_bg = 0x00000000;
-        ttys[t].current_fg = colors[t];
+        ttys[t].current_fg = 0xffffffff;
         ttys[t].current_bg = 0x00000000;
-        ttys[t].term.c_lflag = ECHO | ICANON;
+        ttys[t].term.c_lflag = ICANON;
         
         ttys[t].ansi_state = ANSI_STATE_NORMAL;
         ttys[t].ansi_param_count = 0;
@@ -1032,3 +1032,57 @@ void tty_update_cursor(void) {
 void echoff() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag &= ~ECHO; echo = 0; } }
 void echon() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag |= ECHO; echo = 1; } }
 int echoison() { return (active_tty_idx == 7) ? 0 : ((ttys[active_tty_idx].term.c_lflag & ECHO) && echo); }
+void tty_clear_tty(uint32_t tty_idx) {
+    if (tty_idx >= 8 || tty_idx == 7) return;
+    tty_t *tty = &ttys[tty_idx];
+    if (!tty->grid) return;
+
+    // Reset grid cells to spaces using current terminal colors
+    uint32_t total_cells = tty->rows * tty->cols;
+    for (uint32_t i = 0; i < total_cells; i++) {
+        tty->grid[i].ch = ' ';
+        tty->grid[i].fg = tty->current_fg;
+        tty->grid[i].bg = tty->current_bg;
+    }
+
+    // Reset cursor to top-left corner
+    tty->cursor_x = 0;
+    tty->cursor_y = 0;
+
+    // Redraw screen if clearing the active TTY
+    if (tty_idx == active_tty_idx) {
+        tty_redraw_active();
+    }
+}
+
+void tty_clear(void) {
+    tty_clear_tty(active_tty_idx);
+}
+/**
+ * @brief Draws a single pixel directly to the active framebuffer.
+ *        Strictly restricted to run only when VT tty7 is active.
+ *
+ * @param x Pixel X coordinate (0 to width - 1)
+ * @param y Pixel Y coordinate (0 to height - 1)
+ * @param color 32-bit ARGB/XRGB color (e.g., 0xFFRRGGBB)
+ */
+void tty_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    // 1. Enforce VT lock: strictly exit if active TTY is not tty7
+    if (active_tty_idx != 7) {
+        return;
+    }
+
+    // 2. Safeguard against missing/uninitialized framebuffer
+    if (!fb_initialized || !global_fb.address) {
+        return;
+    }
+
+    // 3. Boundary check to prevent kernel memory corruption
+    if (x >= global_fb.width || y >= global_fb.height) {
+        return;
+    }
+
+    // 4. Calculate pixel position using pitch (pitch is in bytes, global_fb.address is uint32_t*)
+    uint32_t stride = global_fb.pitch / sizeof(uint32_t);
+    global_fb.address[y * stride + x] = color;
+}

@@ -2,7 +2,7 @@
     "services": [
         {
             "name": "testd",
-            "path": "/System/usr/bin/commandline/secrvice"
+            "path": "/System/usr/bin/commandline/sh"
         }
     ]
 }

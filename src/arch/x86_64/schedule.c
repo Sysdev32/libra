@@ -4,12 +4,15 @@
 #include <string.h>
 #include <signal.h>
 #include <drivers/fb.h>
+#include <arch/x86_64/schedule.h>
+
 #define MAX_TASKS 512
 #define KERNEL_STACK_SIZE 4096
 #define HHDM_OFFSET 0xffff800000000000ULL
 #define MAX_MSG_PAYLOAD 128  // Maximum bytes per single message
 #define MAX_PROCESS_MSGS 16  // Maximum pending messages a process can hold
-
+char cwd[512];
+bool defined = false;
 typedef uint64_t page_table_t;
 extern page_table_t *vmm_get_current_pml4(void);
 
@@ -19,15 +22,7 @@ typedef struct {
     uint32_t payload_size;
     uint8_t  data[MAX_MSG_PAYLOAD];
 } kernel_msg_t;
-typedef enum {
-    TASK_STATE_DEAD = 0,
-    TASK_STATE_READY,
-    TASK_STATE_RUNNING,
-    TASK_STATE_ZOMBIE,
-    TASK_STATE_BLOCKED_SEND,    // Added: Waiting for space in a target queue
-    TASK_STATE_BLOCKED_RECEIVE,
-    TASK_STATE_WAITING
-} task_state_t;
+
 
 // Task Control Block (TCB)
 struct task {
@@ -50,7 +45,6 @@ struct task {
     char name[32];
     char cwd[512];
 };
-
 // Task State Segment (TSS) layout for x86_64
 struct tss_entry {
     uint32_t reserved0;
@@ -116,7 +110,7 @@ void userspace_exit_handler(void) {
 /**
  * CREATE A KERNEL THREAD (Ring 0)
  */
-int create_kernel_task(void (*entry_point)(void)) {
+int create_kernel_task(void (*entry_point)(void), char* name) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -172,6 +166,9 @@ int create_kernel_task(void (*entry_point)(void)) {
             task_table[i].pml4 = vmm_get_current_pml4();
             task_table[i].state = TASK_STATE_READY;
             task_table[i].uid = 0;
+            strcpy(task_table[i].name, name);
+            memset(task_table[i].cwd, 0, 512);
+            task_table[i].cwd[0] = '/';
             task_table[i].gid = 0;
             task_table[i].parent_pid = -1;
             irq_restore(flags);
@@ -181,11 +178,14 @@ int create_kernel_task(void (*entry_point)(void)) {
     irq_restore(flags);
     return -1;
 }
-
+void set_cwd(char* cwdi) {
+    cwdi = cwd;
+    defined = true;
+}
 /**
  * CREATE A USERSPACE TASK (Ring 3)
  */
-int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid) {
+int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid, char* name) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -229,7 +229,12 @@ int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, 
             ctx[20] = task_table[i].user_rsp; // RSP
             ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
             memset(task_table[i].cwd, 0, 512);
-            task_table[i].cwd[0] = '/';
+            if (!defined) {
+                task_table[i].cwd[0] = '/';
+            } else {
+                strcpy(task_table[i].cwd, cwd);
+                defined = false;
+            }
             if (pid == -1) {
                 task_table[i].uid = uid;
                 task_table[i].gid = gid;
@@ -278,6 +283,7 @@ int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, 
                     }
                 }
             }
+            strcpy(task_table[i].name, name);
             irq_restore(flags);
             return i;
         }
@@ -724,4 +730,28 @@ int waitpid(uint64_t pid) {
 }
 char* getpcwd() {
     return task_table[current_task_id].cwd;
+}
+int ps(struct utask* u, int max_len) {
+    int len_found = 0;
+
+    for (int i = 0; i < MAX_TASKS; i++) {
+        if (task_table[i].state == TASK_STATE_DEAD)
+            continue;
+
+        if (len_found >= max_len)
+            return -1; // buffer too small
+
+        strcpy(u[len_found].cwd, task_table[i].cwd);
+        strcpy(u[len_found].name, task_table[i].name);
+
+        u[len_found].gid = task_table[i].gid;
+        u[len_found].uid = task_table[i].uid;
+        u[len_found].pid = i;
+        u[len_found].parent_pid = task_table[i].parent_pid;
+        u[len_found].state = task_table[i].state;
+
+        len_found++;
+    }
+
+    return len_found;
 }

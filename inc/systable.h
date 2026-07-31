@@ -184,7 +184,23 @@ unsigned long long sys_getcwd(arg* a);
 
 // Syscall 57
 unsigned long long sys_realpath(arg* a);
-static const syscall systable[] = {
+
+// Syscall 58
+unsigned long long sys_ps(arg *a);
+
+// Syscall 59
+unsigned long long sys_tty_clear(arg *a);
+
+// Syscall 60
+unsigned long long sys_tty_switch(arg *a);
+
+// Syscall 61
+unsigned long long sys_tty_draw_pixel(arg *a);
+
+// Syscall 62
+unsigned long long sys_tty_draw_img(arg *a);
+
+static const syscall systable[63] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
@@ -244,5 +260,10 @@ static const syscall systable[] = {
     // Paths management
     sys_chdir,
     sys_getcwd,
-    sys_realpath
+    sys_realpath,
+    sys_ps,
+    sys_tty_clear,
+    sys_tty_switch,
+    sys_tty_draw_pixel,
+    sys_tty_draw_img
 };

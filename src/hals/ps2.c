@@ -186,19 +186,20 @@ void keyboard_dispatch() {
     
     // Virtual Console Switching via Function Keys (F1 - F6)
     if (scancode == 0x3B) {
-        tty_switch(0);
-    } else if (scancode == 0x3C) {
         tty_switch(1);
-    } else if (scancode == 0x3D) {
+    } else if (scancode == 0x3C) {
         tty_switch(2);
-    } else if (scancode == 0x3E) {
+    } else if (scancode == 0x3D) {
         tty_switch(3);
-    } else if (scancode == 0x3F) {
+    } else if (scancode == 0x3E) {
         tty_switch(4);
-    } else if (scancode == 0x40) {
+    } else if (scancode == 0x3F) {
         tty_switch(5);
+    } else if (scancode == 0x40) {
+        tty_switch(6);
+    } else if (scancode == 0x41) {
+        tty_switch(7);
     }
-    
     // Ensure it's a make code (press event)
     if (!(scancode & 0x80)) {
         char c = kbd_us_keymap[last_scancode];
