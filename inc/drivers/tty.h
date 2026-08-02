@@ -115,3 +115,4 @@ void echo_off();
 void echo_on();
 void tty_clear();
 void tty_draw_pixel(uint32_t x, uint32_t y, uint32_t color);
+void tty_putchar(char c);

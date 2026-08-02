@@ -39,3 +39,7 @@ int ipc_send_nonblock(uint32_t target_pid, const void *buf, uint32_t size);
 int ps(struct utask* u, const int max_len);
 char* getpcwd();
 void set_cwd(char* cwdi);
+unsigned long long get_launchd_pid(void);
+uint64_t set_signal_handler(int sig, uint64_t handler);
+int send_signal(int pid, int sig);
+int getpid();

@@ -7,24 +7,19 @@
 #include <string.h>
 #include <drivers/fb.h>
 #include <drivers/alloc.h>
-#include <limine.h>
 #include <arch/x86_64/schedule.h>
 #include <drivers/hvfs.h>
 #include <fs/vfs.h>
-#include <uacpi/uacpi.h>
 #include <uacpi/sleep.h>
-#include <drivers/net/HTTP.h>
-#include <drivers/net/IPV4.h>
-#include <drivers/net/TCP.h>
 #include <drivers/net/nsock.h>
-#include <drivers/net/UDP.h>
 #include <fs/mnt.h>
-#include <hals/net/RTL8139.h>
 #include <helpers/cwd.h>
 #include <security/sks.h>
-
+#include <hals/rtc.h>
+#include "ioctl.h"
 #include "drivers/tty.h"
-
+#include "hals/ps2.h"
+#include <hals/serial.h>
 static uint64_t get_rsp(void) {
     uint64_t rsp;
     asm volatile("mov %%rsp, %0" : "=r"(rsp));
@@ -314,7 +309,7 @@ unsigned long long sys_ipc_recv(arg* a) {
 
 // Syscall 14: ipc_send
 unsigned long long sys_ipc_send(arg* a) {
-    ipc_send(a->arg[1], (void*)a->arg[2], a->arg[3]);
+    ipc_send(a->arg[0], (void*)a->arg[1], a->arg[2]);
     return 0;
 }
 
@@ -325,7 +320,7 @@ unsigned long long sys_getpid(arg* a) {
 
 // Syscall 16: terminate
 unsigned long long sys_terminate(arg* a) {
-    return (unsigned long long)terminate((void*)a->arg[0], a->arg[0]);
+    return (unsigned long long)terminate(a->arg[0], a->arg[0]);
 }
 
 // Syscall 17: vfs_fstat
@@ -368,7 +363,6 @@ unsigned long long sys_spawn(arg* a) {
 unsigned long long sys_waitpid(arg* a) {
     return waitpid(a->arg[0]);
 }
-
 // Syscall 21: draw_image
 unsigned long long sys_draw_image(arg* a) {
     draw_image(a->arg[0], a->arg[1], a->arg[2], a->arg[3], (uint8_t*)a->arg[4]);
@@ -389,7 +383,6 @@ unsigned long long sys_munmap(arg* a) {
 unsigned long long sys_set_signal_handler(arg* a) {
     return set_signal_handler((int)a->arg[0], a->arg[1]);
 }
-
 // Syscall 25: send_signal
 unsigned long long sys_send_signal(arg* a) {
     return send_signal((int)a->arg[0], (int)a->arg[1]);
@@ -414,7 +407,7 @@ unsigned long long sys_ipc_send_nonblock(arg* a) {
 
 // Syscall 29: ipc_recv_nonblock
 unsigned long long sys_ipc_recv_nonblock(arg* a) {
-    ipc_recv_nonblock((void*)a->arg[0], a->arg[1], a->arg[2]);
+    ipc_recv_nonblock((void*)a->arg[0], a->arg[1], (uint32_t*)a->arg[2]);
     return 0;
 }
 
@@ -426,7 +419,7 @@ unsigned long long sys_socket(arg* a) {
 // Syscall 31: socket_connect
 unsigned long long sys_socket_connect(arg* a) {
     struct net_socket sock = sockets[a->arg[0]];
-    return sock.connect(&sock, a->arg[1]);
+    return sock.connect(&sock, (const char*)a->arg[1]);
 }
 
 // Syscall 32: socket_recv

@@ -23,16 +23,7 @@ extern struct flanterm_context *ft_ctx;
 extern uint64_t set_signal_handler(int sig, uint64_t handler);
 extern int send_signal(int pid, int sig);
 uint64_t admin_seed = 0xCAFEF00DD1CE1ULL; 
-uint64_t user_seed = 0xCAFEF11DEADBEULL; 
-void outb(uint16_t port, uint8_t val) {
-    asm volatile("outb %0, %1" :: "a"(val), "Nd"(port));
-}
-
-uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    asm volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
+uint64_t user_seed = 0xCAFEF11DEADBEULL;
 typedef void (*interrupt)(struct InterruptRegisters *regs);
 uint64_t admin_key;
 uint64_t user_key;

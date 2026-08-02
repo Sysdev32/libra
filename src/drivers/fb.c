@@ -4,7 +4,7 @@
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdbool.h>
-
+#include <hals/serial.h>
 struct flanterm_context *ctx;
 struct limine_framebuffer* fb;
 bool grad = false;
@@ -21,13 +21,7 @@ static void printk_irq_restore(uint64_t flags) {
     }
 }
 
-void serial_write_char(char ch) {
-    uint8_t status;
-    do {
-        asm volatile("inb %1, %0" : "=a"(status) : "Nd"((uint16_t)0x3FD));
-    } while ((status & 0x20) == 0);
-    asm volatile("outb %0, %1" :: "a"((uint8_t)ch), "Nd"((uint16_t)0x3F8));
-}
+
 
 void initConsole(struct flanterm_context *ft_ctx, struct limine_framebuffer* frb) {
     ctx = ft_ctx;

@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <security/sha256.h>
 // Signs a data key combined with a specific process identifier (PID)
 void sign_key_with_pid(const uint8_t* key, uint32_t key_len, uint32_t pid, uint8_t out_signature[32]) {
     uint8_t k_ipad[64] = {0};

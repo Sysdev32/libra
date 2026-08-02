@@ -144,3 +144,4 @@ int vfs_mount_fs(const char *source, const char *target, const char *fstype, uin
 int vfs_umount_fs(const char *target);
 struct vfs_mount *resolve_mount(const char *path);
 int vfs_getdents(int fd, void *buf, size_t count, uint64_t offset);
+int vfs_listdir(const char *path, char **buf, size_t max_len);

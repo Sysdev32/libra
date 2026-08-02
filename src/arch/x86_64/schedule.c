@@ -9,29 +9,28 @@
 #define MAX_TASKS 512
 #define KERNEL_STACK_SIZE 4096
 #define HHDM_OFFSET 0xffff800000000000ULL
-#define MAX_MSG_PAYLOAD 128  // Maximum bytes per single message
-#define MAX_PROCESS_MSGS 16  // Maximum pending messages a process can hold
+#define MAX_MSG_PAYLOAD 256
+#define MAX_PROCESS_MSGS 16
+#define ERR_IPC_WOULD_BLOCK -2
+
 char cwd[512];
 bool defined = false;
 typedef uint64_t page_table_t;
 extern page_table_t *vmm_get_current_pml4(void);
 
-// The message structure stored in the kernel
 typedef struct {
     uint32_t sender_pid;
     uint32_t payload_size;
     uint8_t  data[MAX_MSG_PAYLOAD];
 } kernel_msg_t;
 
-
-// Task Control Block (TCB)
 struct task {
-    uint64_t rsp;               // Saved kernel stack pointer 
-    uint64_t user_rsp;          // Saved userspace stack pointer (0 for kthreads)
-    page_table_t *pml4;         // Per-task page table root for CR3 switching
-    task_state_t state;         
+    uint64_t rsp;
+    uint64_t user_rsp;
+    page_table_t *pml4;
+    task_state_t state;
     uint8_t fpu_state[512] __attribute__((aligned(16)));
-    uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16))); 
+    uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
     kernel_msg_t msg_queue[MAX_PROCESS_MSGS];
     int msg_head;
     int msg_tail;
@@ -45,7 +44,7 @@ struct task {
     char name[32];
     char cwd[512];
 };
-// Task State Segment (TSS) layout for x86_64
+
 struct tss_entry {
     uint32_t reserved0;
     uint64_t rsp0;
@@ -59,16 +58,31 @@ struct tss_entry {
 } __attribute__((packed));
 
 extern struct tss_entry global_tss;
-extern void pit_init(void); 
+extern void pit_init(void);
 
-// Global volatile scheduler tracking structures
-volatile struct task task_table[MAX_TASKS];
+struct task task_table[MAX_TASKS];
 volatile int current_task_id = 0;
 static const uint32_t default_mxcsr = 0x1f80;
 bool running = false;
+
+static void safe_memcpy(void *dest, const void *src, size_t n) {
+    uint8_t *d = (uint8_t *)dest;
+    const uint8_t *s = (const uint8_t *)src;
+    for (size_t i = 0; i < n; i++) {
+        d[i] = s[i];
+    }
+}
+
+static inline bool is_valid_user_pointer(const void *addr, size_t size) {
+    uintptr_t uaddr = (uintptr_t)addr;
+    if (uaddr == 0) return false;
+    if (uaddr >= 0x0000800000000000ULL) return false;
+    if (uaddr + size < uaddr || uaddr + size >= 0x0000800000000000ULL) return false;
+    return true;
+}
+
 static void init_fpu_context(struct task *task) {
     uint32_t mxcsr = default_mxcsr;
-
     memset((void *)task->fpu_state, 0, sizeof(task->fpu_state));
     asm volatile("fninit" ::: "memory");
     asm volatile("ldmxcsr %0" :: "m"(mxcsr) : "memory");
@@ -76,12 +90,12 @@ static void init_fpu_context(struct task *task) {
 }
 
 void fpu_context_save(void) {
-    struct task *task = (struct task *)&task_table[current_task_id];
+    struct task *task = &task_table[current_task_id];
     asm volatile("fxsave64 %0" : "=m"(task->fpu_state) :: "memory");
 }
 
 void fpu_context_restore(void) {
-    struct task *task = (struct task *)&task_table[current_task_id];
+    struct task *task = &task_table[current_task_id];
     asm volatile("fxrstor64 %0" :: "m"(task->fpu_state) : "memory");
 }
 
@@ -98,18 +112,17 @@ static void irq_restore(uint64_t flags) {
 }
 
 void kernel_thread_exit_handler(void) {
-    asm volatile("int $0x30"); 
+    printk(LOG_TRACE, "[SCHED] Kernel thread PID %d exiting\n", current_task_id);
+    asm volatile("int $0x30");
     for(;;);
 }
 
 void userspace_exit_handler(void) {
-    asm volatile("int $0x30"); 
+    printk(LOG_TRACE, "[SCHED] Userspace task PID %d exiting\n", current_task_id);
+    asm volatile("int $0x30");
     for(;;);
 }
 
-/**
- * CREATE A KERNEL THREAD (Ring 0)
- */
 int create_kernel_task(void (*entry_point)(void), char* name) {
     uint64_t flags = irq_save();
 
@@ -124,17 +137,14 @@ int create_kernel_task(void (*entry_point)(void), char* name) {
             for (int j = 0; j < 32; j++) {
                 task_table[i].signal_handlers[j] = 0;
             }
-            init_fpu_context((struct task *)&task_table[i]);
+            init_fpu_context(&task_table[i]);
 
             uint64_t *kernel_stack_top = (uint64_t *)((uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE] & ~0xFULL);
 
-            // Write the cleanup handler address if the thread routine returns
             kernel_stack_top[-1] = (uint64_t)kernel_thread_exit_handler;
 
-            // Direct mapping layout to match the assembly context frames precisely
             uint64_t *ctx = kernel_stack_top - 24;
 
-            // General Purpose Registers (0-14)
             ctx[0]  = 0; // RAX
             ctx[1]  = 0; // RBX
             ctx[2]  = 0; // RCX
@@ -151,16 +161,14 @@ int create_kernel_task(void (*entry_point)(void), char* name) {
             ctx[13] = 0; // R14
             ctx[14] = 0; // R15
 
-            // Stack Frame Stubs (15-16)
-            ctx[15] = 32; // Vector Index (defaulting to timer slot)
+            ctx[15] = 32; // Vector Index
             ctx[16] = 0;  // Error Code
 
-            // CPU Architectural IRETQ Frame (17-21)
             ctx[17] = (uint64_t)entry_point;             // RIP
-            ctx[18] = 0x08;                              // CS: Kernel Code Selector (Ring 0)
-            ctx[19] = 0x202;                             // RFLAGS: Interrupts Enabled
+            ctx[18] = 0x08;                              // CS
+            ctx[19] = 0x202;                             // RFLAGS
             ctx[20] = (uint64_t)&kernel_stack_top[-1];   // RSP
-            ctx[21] = 0x10;                              // SS: Kernel Data Selector (Ring 0)
+            ctx[21] = 0x10;                              // SS
 
             task_table[i].rsp = (uint64_t)ctx;
             task_table[i].pml4 = vmm_get_current_pml4();
@@ -171,63 +179,65 @@ int create_kernel_task(void (*entry_point)(void), char* name) {
             task_table[i].cwd[0] = '/';
             task_table[i].gid = 0;
             task_table[i].parent_pid = -1;
+
+            printk(LOG_TRACE, "[SCHED] Created kernel task '%s' (PID %d)\n", name, i);
+
             irq_restore(flags);
             return i;
         }
     }
+    printk(LOG_ERROR, "[SCHED_ERR] Failed to create kernel task '%s': task table full\n", name);
     irq_restore(flags);
     return -1;
 }
+
 void set_cwd(char* cwdi) {
-    strcpy(cwd, cwdi);
-    defined = true;
+    if (cwdi != NULL) {
+        strcpy(cwd, cwdi);
+        defined = true;
+    }
 }
-/**
- * CREATE A USERSPACE TASK (Ring 3)
- */
+
 int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid, char* name) {
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_STATE_DEAD) {
+            init_fpu_context(&task_table[i]);
 
-            init_fpu_context((struct task *)&task_table[i]);
-            
             task_table[i].user_rsp = ((uint64_t)user_stack) & ~0xFULL;
             task_table[i].pml4 = (page_table_t *)pml4;
 
             uintptr_t k_stack_raw = (uintptr_t)&task_table[i].kernel_stack[KERNEL_STACK_SIZE];
-            uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL); 
+            uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL);
 
             uint64_t *ctx = kernel_stack_top - 24;
 
-            // General Purpose Registers (0-14)
-            ctx[0]  = 0; // RAX
-            ctx[1]  = 0; // RBX
-            ctx[2]  = 0; // RCX
-            ctx[3]  = 0; // RDX
+            ctx[0]  = 0;   // RAX
+            ctx[1]  = 0;   // RBX
+            ctx[2]  = 0;   // RCX
+            ctx[3]  = 0;   // RDX
             ctx[4]  = rsi; // RSI
             ctx[5]  = rdi; // RDI
-            ctx[6]  = 0; // RBP
-            ctx[7]  = 0; // R8
-            ctx[8]  = 0; // R9
-            ctx[9]  = 0; // R10
-            ctx[10] = 0; // R11
-            ctx[11] = 0; // R12
-            ctx[12] = 0; // R13
-            ctx[13] = 0; // R14
-            ctx[14] = 0; // R15
+            ctx[6]  = 0;   // RBP
+            ctx[7]  = 0;   // R8
+            ctx[8]  = 0;   // R9
+            ctx[9]  = 0;   // R10
+            ctx[10] = 0;   // R11
+            ctx[11] = 0;   // R12
+            ctx[12] = 0;   // R13
+            ctx[13] = 0;   // R14
+            ctx[14] = 0;   // R15
 
-            // Stack Frame Stubs (15-16)
-            ctx[15] = 32; // Vector Index
-            ctx[16] = 0;  // Error Code
+            ctx[15] = 32;  // Vector Index
+            ctx[16] = 0;   // Error Code
 
-            // CPU Architectural IRETQ Frame (17-21)
             ctx[17] = (uint64_t)entry_point;  // RIP
-            ctx[18] = 0x1B;                   // CS: User Code Selector (RPL 3)
-            ctx[19] = 0x202;                  // RFLAGS: Interrupts Enabled
+            ctx[18] = 0x1B;                   // CS (User RPL 3)
+            ctx[19] = 0x202;                  // RFLAGS
             ctx[20] = task_table[i].user_rsp; // RSP
-            ctx[21] = 0x23;                   // SS: User Data Selector (RPL 3)
+            ctx[21] = 0x23;                   // SS (User RPL 3)
+
             memset(task_table[i].cwd, 0, 512);
             if (!defined) {
                 task_table[i].cwd[0] = '/';
@@ -235,60 +245,35 @@ int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, 
                 strcpy(task_table[i].cwd, cwd);
                 defined = false;
             }
-            if (pid == -1) {
-                task_table[i].uid = uid;
-                task_table[i].gid = gid;
-                task_table[i].pending_signals = 0;
-                task_table[i].sig_mask = 0;
-                for (int j = 0; j < 32; j++) {
-                    task_table[i].signal_handlers[j] = 0;
-                }
-                task_table[i].rsp = (uint64_t)ctx;
-                task_table[i].state = TASK_STATE_READY;
-                if (running) {
-                    task_table[i].parent_pid = current_task_id;
-                } else {
-                    task_table[i].parent_pid = -1;
-                }
-            } else {
-                if (task_table[pid].state == TASK_STATE_DEAD) {
-                    task_table[pid].uid = uid;
-                    task_table[pid].gid = gid;
-                    task_table[pid].pending_signals = 0;
-                    task_table[pid].sig_mask = 0;
-                    for (int j = 0; j < 32; j++) {
-                        task_table[pid].signal_handlers[j] = 0;
-                    }
-                    task_table[pid].rsp = (uint64_t)ctx;
-                    task_table[pid].state = TASK_STATE_READY;
-                    if (running) {
-                        task_table[pid].parent_pid = current_task_id;
-                    } else {
-                        task_table[pid].parent_pid = -1;
-                    }
-                } else {
-                    task_table[i].uid = uid;
-                    task_table[i].gid = gid;
-                    task_table[i].pending_signals = 0;
-                    task_table[i].sig_mask = 0;
-                    for (int j = 0; j < 32; j++) {
-                        task_table[i].signal_handlers[j] = 0;
-                    }
-                    task_table[i].rsp = (uint64_t)ctx;
-                    task_table[i].state = TASK_STATE_READY;
-                    if (running) {
-                        task_table[i].parent_pid = current_task_id;
-                    } else {
-                        task_table[i].parent_pid = -1;
-                    }
-                }
+
+            int target_idx = i;
+            if (pid != -1 && pid >= 0 && pid < MAX_TASKS && task_table[pid].state == TASK_STATE_DEAD) {
+                target_idx = pid;
             }
-            strcpy(task_table[i].name, name);
+
+            task_table[target_idx].uid = uid;
+            task_table[target_idx].gid = gid;
+            task_table[target_idx].pending_signals = 0;
+            task_table[target_idx].sig_mask = 0;
+            task_table[target_idx].msg_head = 0;
+            task_table[target_idx].msg_tail = 0;
+            task_table[target_idx].msg_count = 0;
+            for (int j = 0; j < 32; j++) {
+                task_table[target_idx].signal_handlers[j] = 0;
+            }
+            task_table[target_idx].rsp = (uint64_t)ctx;
+            task_table[target_idx].state = TASK_STATE_READY;
+            task_table[target_idx].parent_pid = running ? current_task_id : -1;
+            strcpy(task_table[target_idx].name, name);
+
+            printk(LOG_TRACE, "[SCHED] Created user task '%s' (PID %d, Parent %d)\n", name, target_idx, task_table[target_idx].parent_pid);
+
             irq_restore(flags);
-            return i;
+            return target_idx;
         }
     }
-    
+
+    printk(LOG_ERROR, "[SCHED_ERR] Failed to create user task '%s': task table full\n", name);
     irq_restore(flags);
     return -1;
 }
@@ -310,12 +295,15 @@ static bool task_deliver_signal(struct task *task, int sig) {
     task->pending_signals &= ~(1u << sig);
     uint64_t handler = task->signal_handlers[sig];
 
+    printk(LOG_TRACE, "[SIG] Delivering signal %d to PID %d (handler=0x%lx)\n", sig, current_task_id, handler);
+
     if (handler == (uint64_t)SIG_IGN) {
         return false;
     }
 
     if (handler == 0 || handler == (uint64_t)SIG_DFL) {
         if (sig == SIGKILL || sig == SIGTERM) {
+            printk(LOG_WARNING, "[SIG] Terminating PID %d via signal %d\n", current_task_id, sig);
             task->state = TASK_STATE_ZOMBIE;
             return true;
         }
@@ -338,9 +326,10 @@ uint64_t set_signal_handler(int sig, uint64_t handler) {
         return (uint64_t)SIG_ERR;
     }
 
-    struct task *current = (struct task *)&task_table[current_task_id];
+    struct task *current = &task_table[current_task_id];
     uint64_t old = current->signal_handlers[sig];
     current->signal_handlers[sig] = handler;
+    printk(LOG_TRACE, "[SIG] PID %d set handler for sig %d to 0x%lx\n", current_task_id, sig, handler);
     if (old == 0) {
         return (uint64_t)SIG_DFL;
     }
@@ -348,17 +337,16 @@ uint64_t set_signal_handler(int sig, uint64_t handler) {
 }
 
 int send_signal(int pid, int sig) {
-    if (pid < 0 || pid >= MAX_TASKS) {
-        return -1;
-    }
-    if (sig <= 0 || sig >= 32) {
+    if (pid < 0 || pid >= MAX_TASKS || sig <= 0 || sig >= 32) {
         return -1;
     }
 
-    struct task *target = (struct task *)&task_table[pid];
+    struct task *target = &task_table[pid];
     if (target->state == TASK_STATE_DEAD || target->user_rsp == 0) {
         return -1;
     }
+
+    printk(LOG_TRACE, "[SIG] PID %d sending signal %d to PID %d\n", current_task_id, sig, pid);
 
     if (sig == SIGKILL || sig == SIGTERM) {
         target->state = TASK_STATE_ZOMBIE;
@@ -378,17 +366,13 @@ int send_signal(int pid, int sig) {
 }
 
 uint64_t schedule_preemptive(uint64_t old_rsp) {
-    // Save the old stack pointer to its slot
     task_table[current_task_id].rsp = old_rsp;
-    
-    // Remember the task that just ran
     int old_task_id = current_task_id;
 
     if (task_table[old_task_id].state == TASK_STATE_RUNNING) {
         task_table[old_task_id].state = TASK_STATE_READY;
     }
 
-    // Find the next available ready task and deliver any pending signal first
     int next_task_id = -1;
     for (int i = 1; i <= MAX_TASKS; i++) {
         int candidate = (current_task_id + i) % MAX_TASKS;
@@ -396,9 +380,9 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
             continue;
         }
 
-        int sig = task_next_pending_signal((struct task *)&task_table[candidate]);
+        int sig = task_next_pending_signal(&task_table[candidate]);
         if (sig) {
-            if (task_deliver_signal((struct task *)&task_table[candidate], sig)) {
+            if (task_deliver_signal(&task_table[candidate], sig)) {
                 continue;
             }
         }
@@ -407,42 +391,33 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
         break;
     }
 
-    // If no other runnable threads exist
     if (next_task_id == -1) {
-        // If the current task died (is a zombie) and nothing else can run, the system must halt
         if (task_table[old_task_id].state == TASK_STATE_ZOMBIE) {
-            // Free the last task's table tracking slot safely
+            printk(LOG_TRACE, "[SCHED] Reaping last dead task PID %d\n", old_task_id);
             task_table[old_task_id].state = TASK_STATE_DEAD;
-            return 0; // Returning 0 will fall back to your assembly idle/halt loop
+            return 0;
         }
-        
+
         if (task_table[current_task_id].state == TASK_STATE_READY) {
             task_table[current_task_id].state = TASK_STATE_RUNNING;
         }
-        return 0; 
+        return 0;
     }
-
-    // Switch contexts to the new task
     current_task_id = next_task_id;
     task_table[current_task_id].state = TASK_STATE_RUNNING;
 
-    // Activate the new task's address space for the upcoming return path
     if (task_table[current_task_id].pml4) {
         uint64_t new_cr3_phys = (uint64_t)task_table[current_task_id].pml4 - HHDM_OFFSET;
         asm volatile("mov %0, %%cr3" :: "r"(new_cr3_phys) : "memory");
     }
 
-    // --- ADDED CLEANUP MECHANISM ---
-    // If the previous task exited and became a zombie, safely free its slot now
     if (task_table[old_task_id].state == TASK_STATE_ZOMBIE) {
+        printk(LOG_TRACE, "[SCHED] Reaping zombie PID %d\n", old_task_id);
         task_table[old_task_id].state = TASK_STATE_DEAD;
         task_table[old_task_id].rsp = 0;
         task_table[old_task_id].user_rsp = 0;
-        // NOTE: If you implemented virtual memory page directories (cr3) later,
-        // you would also call your memory manager to free the process memory pages here.
     }
 
-    // Update TSS so the CPU switches to the right kernel stack during future user interrupts
     uint64_t kstack_canonical = (uint64_t)&task_table[current_task_id].kernel_stack[KERNEL_STACK_SIZE];
     global_tss.rsp0 = (uint64_t)(kstack_canonical & ~0xFULL);
 
@@ -452,6 +427,7 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
 void remove_user_task(int task_id) {
     if (task_id < 0 || task_id >= MAX_TASKS) return;
     uint64_t flags = irq_save();
+    printk(LOG_TRACE, "[SCHED] Removing task PID %d\n", task_id);
     task_table[task_id].state = TASK_STATE_DEAD;
     task_table[task_id].rsp = 0;
     task_table[task_id].user_rsp = 0;
@@ -459,11 +435,12 @@ void remove_user_task(int task_id) {
 }
 
 void init_scheduler(void) {
+    printk(LOG_TRACE, "[SCHED] Initializing scheduler table (%d max tasks)\n", MAX_TASKS);
     for (int i = 0; i < MAX_TASKS; i++) {
         task_table[i].state = TASK_STATE_DEAD;
         task_table[i].rsp = 0;
         task_table[i].user_rsp = 0;
-        init_fpu_context((struct task *)&task_table[i]);
+        init_fpu_context(&task_table[i]);
     }
 
     task_table[0].state = TASK_STATE_RUNNING;
@@ -475,6 +452,7 @@ void init_scheduler(void) {
 }
 
 void start_scheduler(void) {
+    printk(LOG_TRACE, "[SCHED] Starting scheduler loop...\n");
     uint64_t safe_kernel_stack = ((uint64_t)&task_table[0].kernel_stack[KERNEL_STACK_SIZE] & ~0xFULL) - 16;
 
     asm volatile (
@@ -494,21 +472,26 @@ void start_scheduler(void) {
 }
 
 uint64_t syscall_exit_handler(uint64_t current_rsp, uint64_t status) {
+    (void)status;
+    printk(LOG_TRACE, "[SYSCALL] Exit handler called by PID %d (status %lu)\n", current_task_id, status);
     task_table[current_task_id].state = TASK_STATE_ZOMBIE;
 
-    // ✅ FIX: Validate parent_pid bounds and ensure the parent is active
     int parent_pid = task_table[current_task_id].parent_pid;
     if (parent_pid >= 0 && parent_pid < MAX_TASKS) {
         if (task_table[parent_pid].state == TASK_STATE_WAITING) {
+            printk(LOG_TRACE, "[SYSCALL] Waking parent PID %d from WAITING state\n", parent_pid);
             task_table[parent_pid].state = TASK_STATE_READY;
         }
     }
 
     return schedule_preemptive(current_rsp);
 }
+
 uint64_t terminate(uint64_t current_rsp, int pid) {
+    if (pid < 0 || pid >= MAX_TASKS) return current_rsp;
+    printk(LOG_TRACE, "[SYSCALL] Terminate called on PID %d\n", pid);
     task_table[pid].state = TASK_STATE_ZOMBIE;
-    // ✅ FIX: Validate parent_pid bounds and ensure the parent is active
+
     int parent_pid = task_table[pid].parent_pid;
     if (parent_pid >= 0 && parent_pid < MAX_TASKS) {
         if (task_table[parent_pid].state == TASK_STATE_WAITING) {
@@ -517,94 +500,102 @@ uint64_t terminate(uint64_t current_rsp, int pid) {
     }
     return schedule_preemptive(current_rsp);
 }
+
 int getpid() {
     return current_task_id;
-}/**
- * BLOCKING SEND
- * If the target queue is full, this task sleeps until space is available.
- */
+}
+
+static void ipc_pause(void) {
+    asm volatile("int $0x20" ::: "memory");
+}
+
 int ipc_send(uint32_t target_pid, const void *buf, uint32_t size) {
-    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == current_task_id) {
+    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == (uint32_t)current_task_id || buf == NULL) {
+        printk(LOG_ERROR, "[IPC_ERR] Invalid send args: src=%d, target=%d, size=%u, buf=%p\n", current_task_id, target_pid, size, buf);
+        return -1;
+    }
+    if (!is_valid_user_pointer(buf, size)) {
+        printk(LOG_ERROR, "[IPC_ERR] Invalid user buffer pointer: %p (size %u)\n", buf, size);
         return -1;
     }
 
+    printk(LOG_TRACE, "[IPC] PID %d attempting to send %u bytes to PID %d\n", current_task_id, size, target_pid);
+
     while (1) {
         uint64_t flags = irq_save();
-        volatile struct task *target = &task_table[target_pid];
+        struct task *target = &task_table[target_pid];
 
-        // If target died while we were waiting, abort
         if (target->state == TASK_STATE_DEAD || target->state == TASK_STATE_ZOMBIE) {
+            printk(LOG_ERROR, "[IPC_ERR] Target PID %d dead or zombie\n", target_pid);
             irq_restore(flags);
             return -1;
         }
 
-        // If there is room in the target's queue, perform the write
         if (target->msg_count < MAX_PROCESS_MSGS) {
             int tail = target->msg_tail;
-            kernel_msg_t *msg = (kernel_msg_t *)&target->msg_queue[tail];
-            
+            kernel_msg_t *msg = &target->msg_queue[tail];
+
             msg->sender_pid = current_task_id;
             msg->payload_size = size;
-            memcpy(msg->data, buf, size);
+
+            safe_memcpy(msg->data, buf, size);
 
             target->msg_tail = (tail + 1) % MAX_PROCESS_MSGS;
             target->msg_count++;
 
-            // WAKE UP TARGET: If the target was blocked waiting for a message, make it ready
+            printk(LOG_TRACE, "[IPC] Delivered msg from PID %d to PID %d (queue count %d/%d)\n", current_task_id, target_pid, target->msg_count, MAX_PROCESS_MSGS);
+
             if (target->state == TASK_STATE_BLOCKED_RECEIVE) {
+                printk(LOG_TRACE, "[IPC] Waking target PID %d from BLOCKED_RECEIVE state\n", target_pid);
                 target->state = TASK_STATE_READY;
             }
 
             irq_restore(flags);
-            return 0; // Success
+            return 0;
         }
 
-        // QUEUE FULL: Block current task and yield CPU
+        printk(LOG_WARNING, "[IPC] Target PID %d queue full. PID %d blocking on BLOCKED_SEND...\n", target_pid, current_task_id);
         task_table[current_task_id].state = TASK_STATE_BLOCKED_SEND;
-        
-        // Pass the current stack pointer to the scheduler so it can save our place.
-        // We will wake up exactly right here when someone reads from the target queue.
-        uint64_t current_rsp;
-        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
-        
         irq_restore(flags);
-        schedule_preemptive(current_rsp); 
+
+        ipc_pause();
     }
 }
 
-/**
- * BLOCKING RECEIVE
- * If the queue is empty, this task sleeps until a message arrives.
- */
 int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
+    if (buf == NULL || !is_valid_user_pointer(buf, max_size)) {
+        printk(LOG_ERROR, "[IPC_ERR] Invalid recv buffer pointer: %p (max_size %u)\n", buf, max_size);
+        return -1;
+    }
+
+    printk(LOG_TRACE, "[IPC] PID %d attempting to receive msg (max size %u)\n", current_task_id, max_size);
+
     while (1) {
         uint64_t flags = irq_save();
-        volatile struct task *current = &task_table[current_task_id];
+        struct task *current = &task_table[current_task_id];
 
-        // If there is a message, consume it
         if (current->msg_count > 0) {
             int head = current->msg_head;
-            kernel_msg_t *msg = (kernel_msg_t *)&current->msg_queue[head];
+            kernel_msg_t *msg = &current->msg_queue[head];
 
             uint32_t bytes_to_copy = msg->payload_size;
             if (bytes_to_copy > max_size) {
                 bytes_to_copy = max_size;
             }
 
-            memcpy(buf, msg->data, bytes_to_copy);
-            if (out_sender_pid) {
+            safe_memcpy(buf, msg->data, bytes_to_copy);
+            if (out_sender_pid && is_valid_user_pointer(out_sender_pid, sizeof(uint32_t))) {
                 *out_sender_pid = msg->sender_pid;
             }
 
             current->msg_head = (head + 1) % MAX_PROCESS_MSGS;
             current->msg_count--;
 
-            // WAKE UP SENDERS: Check if any task was blocked trying to send to us
+            printk(LOG_TRACE, "[IPC] PID %d consumed msg from sender PID %d (%u bytes)\n", current_task_id, msg->sender_pid, bytes_to_copy);
+
             for (int i = 0; i < MAX_TASKS; i++) {
-                // If a task is blocked trying to send to this exact process, wake it up
                 if (task_table[i].state == TASK_STATE_BLOCKED_SEND) {
-                    // Note: In a complete implementation, you'd check if 'i' was targeting 'current_task_id'
-                    // For a simple loop, waking up any blocked sender to re-check their target is safe.
+                    printk(LOG_TRACE, "[IPC] Waking PID %d from BLOCKED_SEND state\n", i);
                     task_table[i].state = TASK_STATE_READY;
                 }
             }
@@ -613,94 +604,87 @@ int ipc_recv(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
             return bytes_to_copy;
         }
 
-        // QUEUE EMPTY: Block current task and yield CPU
+        printk(LOG_WARNING, "[IPC] Queue empty for PID %d. Blocking on BLOCKED_RECEIVE...\n", current_task_id);
         current->state = TASK_STATE_BLOCKED_RECEIVE;
-
-        uint64_t current_rsp;
-        asm volatile("mov %%rsp, %0" : "=r"(current_rsp));
-
         irq_restore(flags);
-        schedule_preemptive(current_rsp);
+
+        ipc_pause();
     }
 }
-#define ERR_IPC_WOULD_BLOCK -2
 
-/**
- * NON-BLOCKING SEND
- * Returns 0 on success, -1 on invalid arguments/dead target, and -2 if the queue is full.
- */
 int ipc_send_nonblock(uint32_t target_pid, const void *buf, uint32_t size) {
-    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == current_task_id) {
+    if (target_pid >= MAX_TASKS || size > MAX_MSG_PAYLOAD || target_pid == (uint32_t)current_task_id || buf == NULL) {
+        return -1;
+    }
+    if (!is_valid_user_pointer(buf, size)) {
         return -1;
     }
 
     uint64_t flags = irq_save();
-    volatile struct task *target = &task_table[target_pid];
+    struct task *target = &task_table[target_pid];
 
-    // If target died, abort
     if (target->state == TASK_STATE_DEAD || target->state == TASK_STATE_ZOMBIE) {
         irq_restore(flags);
         return -1;
     }
 
-    // QUEUE FULL: Instead of blocking, return immediately
     if (target->msg_count >= MAX_PROCESS_MSGS) {
+        printk(LOG_WARNING, "[IPC] Non-blocking send from PID %d to PID %d would block\n", current_task_id, target_pid);
         irq_restore(flags);
-        return ERR_IPC_WOULD_BLOCK; 
+        return ERR_IPC_WOULD_BLOCK;
     }
 
-    // Perform the write
     int tail = target->msg_tail;
-    kernel_msg_t *msg = (kernel_msg_t *)&target->msg_queue[tail];
-    
+    kernel_msg_t *msg = &target->msg_queue[tail];
+
     msg->sender_pid = current_task_id;
     msg->payload_size = size;
-    memcpy(msg->data, buf, size);
+    safe_memcpy(msg->data, buf, size);
 
     target->msg_tail = (tail + 1) % MAX_PROCESS_MSGS;
     target->msg_count++;
 
-    // WAKE UP TARGET: If the target was blocked waiting for a message, make it ready
+    printk(LOG_TRACE, "[IPC] Non-block delivered msg from PID %d to PID %d\n", current_task_id, target_pid);
+
     if (target->state == TASK_STATE_BLOCKED_RECEIVE) {
         target->state = TASK_STATE_READY;
     }
 
     irq_restore(flags);
-    return 0; // Success
+    return 0;
 }
 
-/**
- * NON-BLOCKING RECEIVE
- * Returns number of bytes copied on success, or -2 if the queue is empty.
- */
 int ipc_recv_nonblock(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
-    uint64_t flags = irq_save();
-    volatile struct task *current = &task_table[current_task_id];
+    if (buf == NULL || !is_valid_user_pointer(buf, max_size)) {
+        return -1;
+    }
 
-    // QUEUE EMPTY: Instead of blocking, return immediately
+    uint64_t flags = irq_save();
+    struct task *current = &task_table[current_task_id];
+
     if (current->msg_count == 0) {
         irq_restore(flags);
         return ERR_IPC_WOULD_BLOCK;
     }
 
-    // Consume the message
     int head = current->msg_head;
-    kernel_msg_t *msg = (kernel_msg_t *)&current->msg_queue[head];
+    kernel_msg_t *msg = &current->msg_queue[head];
 
     uint32_t bytes_to_copy = msg->payload_size;
     if (bytes_to_copy > max_size) {
         bytes_to_copy = max_size;
     }
 
-    memcpy(buf, msg->data, bytes_to_copy);
-    if (out_sender_pid) {
+    safe_memcpy(buf, msg->data, bytes_to_copy);
+    if (out_sender_pid && is_valid_user_pointer(out_sender_pid, sizeof(uint32_t))) {
         *out_sender_pid = msg->sender_pid;
     }
 
     current->msg_head = (head + 1) % MAX_PROCESS_MSGS;
     current->msg_count--;
 
-    // WAKE UP SENDERS: Wake up any task that was blocked trying to send to us
+    printk(LOG_TRACE, "[IPC] Non-block consumed msg for PID %d\n", current_task_id);
+
     for (int i = 0; i < MAX_TASKS; i++) {
         if (task_table[i].state == TASK_STATE_BLOCKED_SEND) {
             task_table[i].state = TASK_STATE_READY;
@@ -710,28 +694,39 @@ int ipc_recv_nonblock(void *buf, uint32_t max_size, uint32_t *out_sender_pid) {
     irq_restore(flags);
     return bytes_to_copy;
 }
+
 int getuid() {
     return task_table[current_task_id].uid;
 }
+
 int getgid() {
     return task_table[current_task_id].gid;
 }
+
 int waitpid(uint64_t pid) {
-    if (!task_table[pid].user_rsp)
+    if (pid >= MAX_TASKS || !task_table[pid].user_rsp)
         return -1;
 
-    task_table[current_task_id].state = TASK_STATE_WAITING;
+    printk(LOG_TRACE, "[SCHED] PID %d waitpid waiting on PID %lu\n", current_task_id, pid);
 
-    while (task_table[pid].state != TASK_STATE_ZOMBIE)
-        __asm__ volatile("pause");
+    while (task_table[pid].state != TASK_STATE_ZOMBIE && task_table[pid].state != TASK_STATE_DEAD) {
+        uint64_t flags = irq_save();
+        task_table[current_task_id].state = TASK_STATE_WAITING;
+        irq_restore(flags);
+
+        ipc_pause();
+    }
 
     task_table[current_task_id].state = TASK_STATE_READY;
+    printk(LOG_TRACE, "[SCHED] PID %d finished waitpid on PID %lu\n", current_task_id, pid);
     return 0;
 }
+
 char* getpcwd() {
-    return (char*)task_table[current_task_id].cwd;
+    return task_table[current_task_id].cwd;
 }
-int ps(struct utask* u, const int max_len) {
+
+int ps(struct utask* u, int max_len) {
     int len_found = 0;
 
     for (int i = 0; i < MAX_TASKS; i++) {
@@ -739,7 +734,7 @@ int ps(struct utask* u, const int max_len) {
             continue;
 
         if (len_found >= max_len)
-            return -1; // buffer too small
+            return -1;
 
         strcpy(u[len_found].cwd, task_table[i].cwd);
         strcpy(u[len_found].name, task_table[i].name);

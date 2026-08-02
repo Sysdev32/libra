@@ -25,6 +25,7 @@
 #include <drivers/elf.h>
 #include <fs/mnt.h>
 
+#include "ioctl.h"
 #include "hals/nvme.h"
 #include "hals/ps2.h"
 struct flanterm_context *ft_ctx;
@@ -522,7 +523,7 @@ static void main_kthread(void) {
         asm volatile("sti; hlt");
     }
 }
-int get_launchd_pid() {
+unsigned long long get_launchd_pid() {
     return launchd_pid;
 }
 int dump_namespace(uacpi_namespace_node *root)

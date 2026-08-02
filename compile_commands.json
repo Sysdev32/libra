@@ -2014,5 +2014,37 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/syscall.c",
     "output": "/home/adam/libra-main/objects/syscall.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/hals/serial.o",
+      "src/hals/serial.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/serial.c",
+    "output": "/home/adam/libra-main/objects/serial.o"
   }
 ]

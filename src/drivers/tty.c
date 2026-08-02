@@ -572,11 +572,9 @@ draw_cursor_after_write:
         tty_draw_cursor(tty_idx, true);
     }
 }
-
 void tty_putchar_active(char c) {
     tty_putchar_to(active_tty_idx, c);
 }
-
 void tty_putchar(char c) {
     tty_putchar_to(active_tty_idx, c);
 }

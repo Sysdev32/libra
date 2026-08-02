@@ -20,3 +20,5 @@ void printk(LogType type, const char* fmt, ...);
 void draw_rect(int rect_x, int rect_y, int rect_width, int rect_height, 
                    uint8_t r, uint8_t g, uint8_t b);
 void graduate();
+void draw_image(int start_x, int start_y, int img_w, int img_h, const uint8_t *rgb_data);
+void get_pixel(int x, int y, uint8_t *r, uint8_t *g, uint8_t *b);
