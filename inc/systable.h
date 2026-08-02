@@ -200,7 +200,10 @@ unsigned long long sys_tty_draw_pixel(arg *a);
 // Syscall 62
 unsigned long long sys_tty_draw_img(arg *a);
 
-static const syscall systable[63] = {
+// Syscall 63
+unsigned long long sys_tty_draw_rect(arg *a);
+
+static const syscall systable[64] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
@@ -265,5 +268,6 @@ static const syscall systable[63] = {
     sys_tty_clear,
     sys_tty_switch,
     sys_tty_draw_pixel,
-    sys_tty_draw_img
+    sys_tty_draw_img,
+    sys_tty_draw_rect
 };

@@ -23,6 +23,8 @@
 #include <helpers/cwd.h>
 #include <security/sks.h>
 
+#include "drivers/tty.h"
+
 static uint64_t get_rsp(void) {
     uint64_t rsp;
     asm volatile("mov %%rsp, %0" : "=r"(rsp));
@@ -645,4 +647,21 @@ unsigned long long sys_tty_draw_img(arg *a) {
     }
 
     return 0; // Success
+}
+
+// Syscall 63: Draw rect (TTY)
+unsigned long long sys_tty_draw_rect(arg *a) {
+    uint64_t x = a->arg[0];
+    uint64_t y = a->arg[1];
+    uint64_t w = a->arg[2];
+    uint64_t h = a->arg[3];
+    uint32_t color = a->arg[4];
+
+    for (uint64_t iy = 0; iy < h; iy++) {
+        for (uint64_t ix = 0; ix < w; ix++) {
+            tty_draw_pixel(x + ix, y + iy, color);
+        }
+    }
+
+    return 0;
 }
