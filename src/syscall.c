@@ -22,7 +22,8 @@
 #include <hals/net/RTL8139.h>
 #include <helpers/cwd.h>
 #include <security/sks.h>
-uint64_t get_rsp(void) {
+
+static uint64_t get_rsp(void) {
     uint64_t rsp;
     asm volatile("mov %%rsp, %0" : "=r"(rsp));
     return rsp;

@@ -106,3 +106,12 @@ typedef struct {
 
 // Periodic system timer hook
 void tty_update_cursor(void);
+void tty_set_colors(uint32_t fg, uint32_t bg);
+void tty_switch(uint32_t tty_idx);
+void tty_init(framebuffer_t *fb);
+void tty_dev_init(void);
+int echo_is_on();
+void echo_off();
+void echo_on();
+void tty_clear();
+void tty_draw_pixel(uint32_t x, uint32_t y, uint32_t color);

@@ -6,6 +6,8 @@
 #include <drivers/fb.h>
 #include <drivers/fb.h>
 
+#include "drivers/tty.h"
+
 static hid_keyboard_device_t g_keyboard = {0};
 
 /* ============================================================================
@@ -41,7 +43,7 @@ static void hid_keyboard_on_key_event(uint8_t scancode, uint8_t modifiers, bool 
     char ascii = shift ? hid_ascii_shift_map[scancode] : hid_ascii_map[scancode];
 
     if (ascii) {
-        if (echoison()) {
+        if (echo_is_on()) {
             printk(LOG_NONE, "%c", ascii);
         }
     } else {

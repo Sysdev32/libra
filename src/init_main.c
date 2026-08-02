@@ -10,31 +10,55 @@
 #include <drivers/alloc.h>
 #include <arch/x86_64/idt.h>
 #include <arch/x86_64/schedule.h>
-#include <ioctl.h>
 #include <fs/vfs.h>
 #include <drivers/tty.h>
 #include <hals/pci.h>
-#include <hals/ehci.h>
-#include <fs/gpt.h>
 #include <uacpi/uacpi.h>
 #include <uacpi/utilities.h>
 #include <uacpi/event.h>
 #include <string.h>
 #include <uacpi/tables.h>
 #include <config.h>
-#include <fs/fat32.h>
-#include <state.h>
-#include <uacpi/resources.h>
 #include <uacpi/internal/namespace.h>
-#include <uacpi/internal/stdlib.h>
 #include <uacpi/types.h>
 #include <errno.h>
 #include <drivers/elf.h>
-#include <fs/chfs.h>
-#include <hals/net/RTL8139.h>
 #include <fs/mnt.h>
-#include <drivers/usb/hid/keyboard.h>
+
+#include "hals/nvme.h"
+#include "hals/ps2.h"
 struct flanterm_context *ft_ctx;
+extern char __user_src_start[];
+extern char __user_src_end[];
+#define PTE_PRESENT  (1ULL << 0)
+#define PTE_WRITABLE (1ULL << 1)
+#define PTE_USER     (1ULL << 2)
+#define PTE_FRAME    0x000FFFFFFFFFF000ULL
+#define HHDM_OFFSET  0xffff800000000000ULL
+#define PAGE_SIZE 4096
+#define ARENA_START 0x6000000ULL
+#define ARENA_END   0x8000000ULL
+#define PAGE_SIZE   0x1000ULL
+#define NUM_PAGES ((ARENA_END - ARENA_START) / PAGE_SIZE)
+#define MAX_ALLOCS 128
+#define STACK_PHYS_START 0x0A200000ULL
+#define STACK_PHYS_END   0x0C200000ULL   // 32 MiB for stacks
+
+#define PAGE_SIZE   0x1000ULL
+#define NUM_PAGES   ((STACK_PHYS_END - STACK_PHYS_START) / PAGE_SIZE)
+#define MAX_STACKS  128
+
+static uint8_t stack_bitmap[NUM_PAGES / 8];
+typedef uint64_t page_table_t;
+static uint8_t bitmap[NUM_PAGES / 8];
+
+struct arena_alloc {
+    void *addr;
+    size_t pages;
+    int used;
+};
+
+static struct arena_alloc allocs[MAX_ALLOCS];
 // Forward declarations for VMM helpers (defined in drivers/helpalloc.c)
 typedef uint64_t page_table_t;
 page_table_t *vmm_create_address_space(void);
@@ -101,6 +125,7 @@ void pit_init(void) {
     
     printk(LOG_TRACE, "PIT Timer initialized at 100Hz.\n");
 }
+
 __attribute__((section(".user_text"))) void uthread(void) {
     asm volatile(
         "1:\n\t"       // Define local label 1
@@ -110,46 +135,6 @@ __attribute__((section(".user_text"))) void uthread(void) {
         : "memory"
     );
 }
-
-
-extern char __user_src_start[];
-extern char __user_src_end[];
-#define PTE_PRESENT  (1ULL << 0)
-#define PTE_WRITABLE (1ULL << 1)
-#define PTE_USER     (1ULL << 2)
-#define PTE_FRAME    0x000FFFFFFFFFF000ULL 
-#define HHDM_OFFSET  0xffff800000000000ULL
-#define PAGE_SIZE 4096
-typedef uint64_t page_table_t;
-typedef struct {
-    uint8_t r;
-    uint8_t g;
-    uint8_t b;
-    int rect_x;
-    int rect_y;
-    int rect_width;
-    int rect_height;
-} packet;
-#include <stdint.h>
-#include <stddef.h>
-
-#define ARENA_START 0x6000000ULL
-#define ARENA_END   0x8000000ULL
-#define PAGE_SIZE   0x1000ULL
-
-#define NUM_PAGES ((ARENA_END - ARENA_START) / PAGE_SIZE)
-#define MAX_ALLOCS 128
-
-static uint8_t bitmap[NUM_PAGES / 8];
-
-struct arena_alloc {
-    void *addr;
-    size_t pages;
-    int used;
-};
-
-static struct arena_alloc allocs[MAX_ALLOCS];
-
 static inline int test_page(size_t i) {
     return (bitmap[i / 8] >> (i % 8)) & 1;
 }
@@ -210,17 +195,6 @@ void arena_free(void *addr) {
         }
     }
 }
-#include <stdint.h>
-#include <stddef.h>
-
-#define STACK_PHYS_START 0x0A200000ULL
-#define STACK_PHYS_END   0x0C200000ULL   // 32 MiB for stacks
-
-#define PAGE_SIZE   0x1000ULL
-#define NUM_PAGES   ((STACK_PHYS_END - STACK_PHYS_START) / PAGE_SIZE)
-#define MAX_STACKS  128
-
-static uint8_t stack_bitmap[NUM_PAGES / 8];
 
 struct stack_alloc {
     uint64_t phys;
@@ -339,7 +313,7 @@ int spawn(const char *path, int argc, char **argv, char* name)
     vfs_fstat(user_fd, &stat);
     uint64_t user_flags = PTE_USER | PTE_WRITABLE;
     uint64_t safe_code_phys_base =
-        arena_alloc(stat.st_size);
+        (uint64_t)arena_alloc(stat.st_size);
     uint64_t safe_stack_phys_base =
         stack_alloc(256 * 1024);
     uint64_t raw_elf_phys_base =
@@ -612,7 +586,7 @@ void triple_fault_reboot(void) {
     // Hang just in case the CPU takes a moment to reset
     for (;;);
 }
-static void off(char* path) {
+static void tty_echo_off(char* path) {
     int fd = open(path, 2, 0);
     if (fd >= 0) {
         struct winsize wz;
@@ -627,11 +601,13 @@ static void off(char* path) {
         }
     }
 }
-/* SSE initialization removed: we do not enable OSFXSR/OSXMMEXCPT or touch MXCSR here. */
-// Your Kernel Entry Point
 pci_device_t* devices;
 uint32_t devicecount = 0;
-void _start(void) {
+
+void tests(void);
+
+// ReSharper disable once CppUseInternalLinkage
+void _start(void) { // NOLINT(*-reserved-identifier)
     // Ensure the bootloader answered our framebuffer request safely
     if (framebuffer_request.response == NULL || framebuffer_request.response->framebuffer_count < 1) {
         hlt();
@@ -650,12 +626,10 @@ void _start(void) {
             total_usable_memory += entry->length;
         }
     }
-    
-    // FIX 1: Access the array base element pointer directly
+
     struct limine_framebuffer **framebuffers = framebuffer_request.response->framebuffers;
     struct limine_framebuffer *framebuffer = framebuffers[0];
 
-    // FIX 2: Explicitly cast void* address to a 32-bit unsigned integer pointer
     uint32_t *fb_ptr = (uint32_t *)framebuffer->address;
     framebuffer_t fbt;
     fbt.address = fb_ptr;
@@ -677,7 +651,8 @@ void _start(void) {
         printk(LOG_ERROR, "uacpi_initialize: %s", uacpi_status_to_string(ret));
     }
     struct acpi_table_madt *madt = NULL;
-    ret = uacpi_table_find_by_signature("APIC", (struct acpi_table**)&madt);
+    // ReSharper disable once CppIncompatiblePointerConversion
+    ret = uacpi_table_find_by_signature("APIC", (struct uacpi_table*)&madt);
     if (ret == UACPI_STATUS_OK) {
         printk(LOG_TRACE, "Found MADT at %p\n", madt);
     } else {
@@ -731,33 +706,17 @@ void _start(void) {
     }
     nvme_init();
     tests();
-    
-    // init_ahci();
-    // gpt_parse_partitions(get_primary_sata_drive());
-    // if (get_primary_sata_drive()->size_gb < 3) {
-    //     printk(LOG_ERROR, "Unable to install.\nReason: Drive size too small: %dGB, needed at least 3GB\nNo Changes Done.\n", get_primary_sata_drive()->size_gb);
-    //     for(;;);
-    // }
-    // gpt_format_disk(get_primary_sata_drive());
-    // gpt_create_partition(get_primary_sata_drive(), "Carrintosh", 4194304); // 2gb
-    // gpt_create_partition(get_primary_sata_drive(), "EFI", 1048576);
-    // format_chfs(get_volume(0));
-    // partition_t part;
-    // part.chfs = add_partition(get_volume(0));
-    // part.type = CHFS;
-    
     partition_t dev;
     dev.type = DEVFS;
     mount(&dev, "/dev");
     tty_dev_init();
-    off("/dev/tty1");
-    off("/dev/tty2");
-    off("/dev/tty3");
-    off("/dev/tty4");
-    off("/dev/tty5");
-    off("/dev/tty6");
-    // mount(&part, "/mnt");
-    // create("/mnt/a.txt");
+    // Echo bugs out on userspace turnoff
+    tty_echo_off("/dev/tty1");
+    tty_echo_off("/dev/tty2");
+    tty_echo_off("/dev/tty3");
+    tty_echo_off("/dev/tty4");
+    tty_echo_off("/dev/tty5");
+    tty_echo_off("/dev/tty6");
     create_kernel_task(main_kthread, "khost");
     start_scheduler();
     for(;;);

@@ -179,7 +179,7 @@ int create_kernel_task(void (*entry_point)(void), char* name) {
     return -1;
 }
 void set_cwd(char* cwdi) {
-    cwdi = cwd;
+    strcpy(cwd, cwdi);
     defined = true;
 }
 /**
@@ -729,9 +729,9 @@ int waitpid(uint64_t pid) {
     return 0;
 }
 char* getpcwd() {
-    return task_table[current_task_id].cwd;
+    return (char*)task_table[current_task_id].cwd;
 }
-int ps(struct utask* u, int max_len) {
+int ps(struct utask* u, const int max_len) {
     int len_found = 0;
 
     for (int i = 0; i < MAX_TASKS; i++) {

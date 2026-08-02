@@ -600,7 +600,7 @@ void tty_handle_input(char c) {
             input_head[tty_idx] = next;
         }
 
-        if (echoison()) {
+        if (echo_is_on()) {
             tty_putchar_active(c);
         }
     }
@@ -1029,10 +1029,10 @@ void tty_update_cursor(void) {
     }
 }
 
-void echoff() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag &= ~ECHO; echo = 0; } }
-void echon() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag |= ECHO; echo = 1; } }
-int echoison() { return (active_tty_idx == 7) ? 0 : ((ttys[active_tty_idx].term.c_lflag & ECHO) && echo); }
-void tty_clear_tty(uint32_t tty_idx) {
+void echo_off() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag &= ~ECHO; echo = 0; } }
+void echo_on() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag |= ECHO; echo = 1; } }
+int echo_is_on() { return (active_tty_idx == 7) ? 0 : ((ttys[active_tty_idx].term.c_lflag & ECHO) && echo); }
+static void tty_clear_tty(uint32_t tty_idx) {
     if (tty_idx >= 8 || tty_idx == 7) return;
     tty_t *tty = &ttys[tty_idx];
     if (!tty->grid) return;
