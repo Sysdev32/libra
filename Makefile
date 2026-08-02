@@ -194,7 +194,7 @@ run: iso
 		-audiodev alsa,id=snd0 -device AC97,audiodev=snd0 \
 		-drive file=nvme.img,if=none,id=nvme0,format=raw \
 		-device nvme,drive=nvme0,serial=deadbeef \
-		-device qemu-xhci,id=xhci \
+		-device qemu-xhci,id=xhci
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

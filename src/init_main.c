@@ -292,16 +292,41 @@ void stack_free(uint64_t phys) {
 }
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
+#define PTE_FRAME 0x000FFFFFFFFFF000ULL
+/**
+ * @brief Switches the current CR3 page table to a new PML4 address space.
+ * @param pml4_virt Virtual address (HHDM pointer) of the target PML4 page table.
+ */
+void vmm_switch_pml4(page_table_t *pml4_virt) {
+    if (!pml4_virt) return;
+
+    // Convert virtual HHDM pointer to Physical Address
+    uint64_t pml4_phys = (uint64_t)pml4_virt - HHDM_OFFSET;
+
+    // Write physical address directly to CR3
+    asm volatile("mov %0, %%cr3" :: "r"(pml4_phys) : "memory");
+}
 int spawn(const char *path, int argc, char **argv, char* name)
 {
+    printk(LOG_TRACE, "after first printk");
+    printk(LOG_TRACE, "argc=%d", argc);
+    printk(LOG_TRACE, "argv=%p", argv);
+    // --- 1. Parameter Validation ---
     if (!path) {
         printk(LOG_ERROR, "[SPAWN] NULL path pointer\n");
         return -1;
     }
+
     if (argc < 0 || argc > 64 || (argc > 0 && argv == NULL)) {
-        printk(LOG_ERROR, "[SPAWN] Invalid argv vector\n");
+        printk(LOG_ERROR, "[SPAWN] Invalid argv vector (argc=%d, argv=%p)\n", argc, (void *)argv);
         return -1;
     }
+
+    for (int i = 0; i < argc; i++) {
+        printk(LOG_TRACE, "[SPAWN] argv[%d] = '%s'\n", i, argv[i] ? argv[i] : "(null)");
+    }
+
+    // --- 2. Path Sanitization ---
     char kpath[256];
     memset(kpath, 0, sizeof(kpath));
 
@@ -316,154 +341,149 @@ int spawn(const char *path, int argc, char **argv, char* name)
             kpath[255] = '\0';
         }
     }
+    printk(LOG_TRACE, "[SPAWN] Sanitized path: '%s'\n", kpath);
+
+    // --- 3. Address Space Creation ---
+    printk(LOG_TRACE, "[SPAWN] Creating target user PML4 address space...\n");
     page_table_t *user_pml4 = vmm_create_address_space();
 
     if (!user_pml4) {
-        printk(LOG_ERROR,
-               "[SPAWN] Failed creating address space\n");
-        for(;;);
+        printk(LOG_ERROR, "[SPAWN] Failed creating address space\n");
+        for (;;);
     }
+    printk(LOG_TRACE, "[SPAWN] User PML4 created at virt=%p\n", (void *)user_pml4);
 
-
+    // --- 4. Open Executable File ---
+    printk(LOG_TRACE, "[SPAWN] Opening file '%s' via VFS...\n", kpath);
     int user_fd = vfs_open(kpath, O_RDONLY, 0);
     if (user_fd < 0) {
-        printk(LOG_ERROR,
-               "[SPAWN] Cannot open '%s'\n",
-               kpath);
-        for(;;);
+        printk(LOG_ERROR, "[SPAWN] Cannot open '%s' (user_fd=%d)\n", kpath, user_fd);
+        for (;;);
     }
+    printk(LOG_TRACE, "[SPAWN] Opened '%s', user_fd=%d\n", kpath, user_fd);
 
-
+    // --- 5. Query File Properties & Allocate Physical Arenas ---
     struct vfs_stat stat = {0};
-
     vfs_fstat(user_fd, &stat);
+    printk(LOG_TRACE, "[SPAWN] Executable file size: %zu bytes\n", (size_t)stat.st_size);
+
     uint64_t user_flags = PTE_USER | PTE_WRITABLE;
-    uint64_t safe_code_phys_base =
-        arena_alloc(stat.st_size);
-    uint64_t safe_stack_phys_base =
-        stack_alloc(256 * 1024);
-    uint64_t raw_elf_phys_base =
-        safe_code_phys_base + (9216 * PAGE_SIZE);
 
+    printk(LOG_TRACE, "[SPAWN] Allocating physical memory arenas...\n");
+    uint64_t safe_code_phys_base  = arena_alloc(stat.st_size);
+    uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);
+    uint64_t raw_elf_phys_base    = safe_code_phys_base + (9216 * PAGE_SIZE);
 
-    void *raw_elf_hhdm_ptr =
-        (void *)(raw_elf_phys_base + HHDM_OFFSET);
+    printk(LOG_TRACE, "[SPAWN] safe_code_phys_base  = 0x%016lx\n", safe_code_phys_base);
+    printk(LOG_TRACE, "[SPAWN] safe_stack_phys_base = 0x%016lx\n", safe_stack_phys_base);
+    printk(LOG_TRACE, "[SPAWN] raw_elf_phys_base    = 0x%016lx\n", raw_elf_phys_base);
+
+    // --- 6. Read Raw ELF File into Kernel Memory ---
+    void *raw_elf_hhdm_ptr = (void *)(raw_elf_phys_base + HHDM_OFFSET);
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
 
+    printk(LOG_TRACE, "[SPAWN] Reading raw ELF into kernel buffer %p...\n", raw_elf_hhdm_ptr);
     while (1)
     {
-        void *dst =
-            (void *)((uint8_t *)raw_elf_hhdm_ptr +
-                     total_bytes_read);
+        void *dst = (void *)((uint8_t *)raw_elf_hhdm_ptr + total_bytes_read);
+        int read = vfs_read(user_fd, dst, PAGE_SIZE, file_cursor);
 
-
-        int read =
-            vfs_read(user_fd,
-                     dst,
-                     PAGE_SIZE,
-                     file_cursor);
-
-
-        if (read <= 0)
+        if (read <= 0) {
+            printk(LOG_TRACE, "[SPAWN] EOF reached (read=%d)\n", read);
             break;
-
+        }
 
         total_bytes_read += read;
         file_cursor += read;
     }
+    printk(LOG_TRACE, "[SPAWN] Total raw ELF bytes read: %lu bytes\n", total_bytes_read);
 
-    uint64_t user_code_vma =
-        elf_vaddr(raw_elf_hhdm_ptr);
+    // --- 7. Resolve Target Virtual Base & Map Staging Memory ---
+    uint64_t user_code_vma = elf_vaddr(raw_elf_hhdm_ptr);
+    printk(LOG_TRACE, "[SPAWN] Extracted user code base VMA: 0x%016lx\n", user_code_vma);
+
     vfs_free_fd(user_fd);
-
+    printk(LOG_TRACE, "[SPAWN] Closed user_fd %d\n", user_fd);
 
     int staging_pages = 8300;
-
+    printk(LOG_TRACE, "[SPAWN] Mapping %d staging code pages into user_pml4...\n", staging_pages);
 
     for (int i = 0; i < staging_pages; i++)
     {
-        uint64_t phys =
-            safe_code_phys_base +
-            i * PAGE_SIZE;
+        uint64_t phys = safe_code_phys_base + i * PAGE_SIZE;
+        uint64_t virt = user_code_vma + i * PAGE_SIZE;
 
+        memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
+        vmm_map_page(user_pml4, virt, phys, user_flags);
+    }
+    printk(LOG_TRACE, "[SPAWN] Staging code pages mapped into target user_pml4.\n");
 
-        uint64_t virt =
-            user_code_vma +
-            i * PAGE_SIZE;
+    // --- 8. Temporarily Mount User Lower-Half Mappings & Exec load_elf ---
+    printk(LOG_TRACE, "[SPAWN] Mounting user lower half (indices 0..255) into active kernel PML4...\n");
 
-        memset((void *)(phys + HHDM_OFFSET),
-               0,
-               PAGE_SIZE);
+    asm volatile ("cli");
+    page_table_t *kpml4 = vmm_get_current_pml4();
+    page_table_t saved_lower_half[256];
 
-
-        vmm_map_page(user_pml4,
-                     virt,
-                     phys,
-                     user_flags);
+    // Save active lower half entries
+    for (int i = 0; i < 256; i++) {
+        saved_lower_half[i] = kpml4[i];
     }
 
+    // Mount user lower half entries into current active PML4
+    for (int i = 0; i < 256; i++) {
+        kpml4[i] = user_pml4[i];
+    }
 
+    // Flush TLB (writing CR3 to itself reloads user mappings instantly)
+    uint64_t cr3_raw;
+    asm volatile("mov %%cr3, %0" : "=r"(cr3_raw));
+    asm volatile("mov %0, %%cr3" :: "r"(cr3_raw) : "memory");
 
-    ElfLoadResult loaded =
-        load_elf(raw_elf_hhdm_ptr,
-                 safe_code_phys_base,
-                 user_code_vma);
+    printk(LOG_TRACE, "[SPAWN] User lower half mounted. Executing load_elf()...\n");
+    ElfLoadResult loaded = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
 
-    if (!loaded.entry_point)
-    {
-        printk(LOG_ERROR,
-               "[SPAWN] ELF loader failed\n");
+    // Unmount and restore original lower half entries
+    printk(LOG_TRACE, "[SPAWN] Restoring original kernel lower half entries...\n");
+    for (int i = 0; i < 256; i++) {
+        kpml4[i] = saved_lower_half[i];
+    }
+
+    // Flush TLB again to unmount user space
+    asm volatile("mov %0, %%cr3" :: "r"(cr3_raw) : "memory");
+    asm volatile ("sti");
+
+    if (!loaded.entry_point) {
+        printk(LOG_ERROR, "[SPAWN] ELF loader failed\n");
         for(;;);
     }
+    printk(LOG_TRACE, "[SPAWN] ELF loader succeeded. Entry point: 0x%016lx\n", loaded.entry_point);
 
-
-
-
+    // --- 9. Map User Stack Pages ---
     uint64_t user_stack_vma = 0x600000;
-
-
     int stack_pages = 64;
 
+    printk(LOG_TRACE, "[SPAWN] Mapping %d stack pages (0x%016lx)...\n", stack_pages, user_stack_vma);
 
     for (int i = 0; i < stack_pages; i++)
     {
-        uint64_t virt =
-            user_stack_vma +
-            i * PAGE_SIZE;
+        uint64_t virt = user_stack_vma + i * PAGE_SIZE;
+        uint64_t phys = safe_stack_phys_base + i * PAGE_SIZE;
 
-
-        uint64_t phys =
-            safe_stack_phys_base +
-            i * PAGE_SIZE;
-
-        memset((void *)(phys + HHDM_OFFSET),
-               0,
-               PAGE_SIZE);
-
-
-        vmm_map_page(user_pml4,
-                     virt,
-                     phys,
-                     user_flags);
+        memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
+        vmm_map_page(user_pml4, virt, phys, user_flags);
     }
-    uint64_t stack_top_vma =
-        user_stack_vma +
-        stack_pages * PAGE_SIZE;
 
+    uint64_t stack_top_vma  = user_stack_vma + stack_pages * PAGE_SIZE;
+    uint64_t stack_top_hhdm = safe_stack_phys_base + stack_pages * PAGE_SIZE + HHDM_OFFSET;
 
-    uint64_t stack_top_hhdm =
-        safe_stack_phys_base +
-        stack_pages * PAGE_SIZE +
-        HHDM_OFFSET;
-
-    uint64_t cur_vma = stack_top_vma;
+    // --- 10. Construct System V ABI Initial User Stack Frame ---
+    uint64_t cur_vma  = stack_top_vma;
     uint64_t cur_hhdm = stack_top_hhdm;
-
-
     uint64_t argv_ptrs[64];
 
-
+    printk(LOG_TRACE, "[SPAWN] Pushing argument strings onto stack...\n");
     for (int i = argc - 1; i >= 0; i--)
     {
         if (argv[i] == NULL) {
@@ -471,25 +491,16 @@ int spawn(const char *path, int argc, char **argv, char* name)
             return -1;
         }
 
-        size_t len =
-            strlen(argv[i]) + 1;
-
-
+        size_t len = strlen(argv[i]) + 1;
         cur_vma -= len;
         cur_hhdm -= len;
 
-
-        memcpy((void *)cur_hhdm,
-               argv[i],
-               len);
-
-
+        memcpy((void *)cur_hhdm, argv[i], len);
         argv_ptrs[i] = cur_vma;
     }
 
-
-
-    cur_vma &= -8ULL;
+    // Align stack pointer to 8 bytes
+    cur_vma  &= -8ULL;
     cur_hhdm &= -8ULL;
 
     uint64_t stack_words = (uint64_t)argc + 2;
@@ -498,46 +509,43 @@ int spawn(const char *path, int argc, char **argv, char* name)
         cur_hhdm -= 8;
     }
 
+    // Push NULL argv terminator
     cur_vma -= 8;
     cur_hhdm -= 8;
-
     *(uint64_t *)cur_hhdm = 0;
 
-
-    for(int i = argc - 1; i >= 0; i--)
+    // Push argument string pointers
+    for (int i = argc - 1; i >= 0; i--)
     {
         cur_vma -= 8;
         cur_hhdm -= 8;
-
-        *(uint64_t *)cur_hhdm =
-            argv_ptrs[i];
+        *(uint64_t *)cur_hhdm = argv_ptrs[i];
     }
 
+    uint64_t argv_start = cur_vma;
 
-    uint64_t argv_start =
-        cur_vma;
-
-
+    // Push argc
     cur_vma -= 8;
     cur_hhdm -= 8;
+    *(uint64_t *)cur_hhdm = argc;
 
-
-    *(uint64_t *)cur_hhdm =
-        argc;
-
+    // --- 11. Handoff to Task Scheduler ---
     set_cwd(getpcwd());
-    int pid =
-        create_user_task(
-            (void *)loaded.entry_point,
-            (void *)cur_vma,
-            argc,
-            argv_start,
-            user_pml4,
-            0,
-            0,
-            -1,
-            name);
+    printk(LOG_TRACE, "[SPAWN] Spawning user task '%s'...\n", name);
 
+    int pid = create_user_task(
+        (void *)loaded.entry_point,
+        (void *)cur_vma,
+        argc,
+        argv_start,
+        user_pml4,
+        0,
+        0,
+        -1,
+        name
+    );
+
+    printk(LOG_TRACE, "[SPAWN] Task created with PID=%d!\n", pid);
 
     return pid;
 }

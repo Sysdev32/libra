@@ -39,3 +39,4 @@ userspace.c
 iso/*.iso
 *.iso
 sdk.tar.xz
+compile_commands.json

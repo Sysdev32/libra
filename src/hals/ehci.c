@@ -823,3 +823,4 @@ void ehci_init(void) {
 
     printk(LOG_WARNING, "EHCI: No EHCI-compliant controller discovered on PCI bus.\n");
 }
+// Technoblade never dies

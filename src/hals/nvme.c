@@ -463,3 +463,4 @@ void nvme_close(void) {
 
     num_nvme_devices = 0;
 }
+// Technoblade never dies

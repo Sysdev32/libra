@@ -106,3 +106,4 @@ typedef struct {
 
 // Periodic system timer hook
 void tty_update_cursor(void);
+void tty_switch(uint32_t tty_idx);

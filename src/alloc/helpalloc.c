@@ -87,6 +87,64 @@ static void pmm_free_list_remove(int order, struct Page *page) {
 
 // --- PHYSICAL MEMORY MANAGER FUNCTIONS ---
 
+static void pmm_init_region(uint64_t base, uint64_t length) {
+    uint64_t start_phys = (base + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+    uint64_t end_phys = (base + length) & ~(PAGE_SIZE - 1);
+
+    if (start_phys >= end_phys) return;
+
+    for (uint64_t addr = start_phys; addr < end_phys; ) {
+        size_t page_idx = addr / PAGE_SIZE;
+
+        // Skip page zero permanently (IVT/BIOS)
+        if (addr == 0) {
+            addr += PAGE_SIZE;
+            continue;
+        }
+
+        // Calculate maximum power-of-two order aligned to 'addr' and boundary limits
+        int order = MAX_ORDER - 1;
+        while (order > 0) {
+            uint64_t block_size = (1ULL << order) * PAGE_SIZE;
+            if ((addr % block_size == 0) && (addr + block_size <= end_phys)) {
+                break;
+            }
+            order--;
+        }
+
+        // Ensure no page inside this block spans reserved ranges
+        uint64_t block_size = (1ULL << order) * PAGE_SIZE;
+        bool has_reserved = false;
+
+        for (uint64_t check = addr; check < addr + block_size; check += PAGE_SIZE) {
+            if ((check >= 0x8000000 && check < 0xA000000) ||
+                (check >= 0xA000000 && check < 0xA001000)) {
+                has_reserved = true;
+                break;
+            }
+        }
+
+        if (has_reserved) {
+            // Downscale to Order 0 and mark non-reserved pages safely
+            if ((addr < 0x8000000 || addr >= 0xA001000) &&
+                !(addr >= 0xA000000 && addr < 0xA001000)) {
+                all_pages[page_idx].is_free = 1;
+                all_pages[page_idx].order = 0;
+                pmm_free_list_add(0, &all_pages[page_idx]);
+            }
+            addr += PAGE_SIZE;
+        } else {
+            // Register naturally aligned high-order buddy block
+            for (size_t i = 0; i < (1ULL << order); i++) {
+                all_pages[page_idx + i].is_free = 1;
+                all_pages[page_idx + i].order = order;
+            }
+            pmm_free_list_add(order, &all_pages[page_idx]);
+            addr += block_size;
+        }
+    }
+}
+
 void pmm_init(void) {
     struct limine_memmap_response *map = memmap_request.response;
     if (map == NULL) {
@@ -108,7 +166,7 @@ void pmm_init(void) {
     uint64_t array_size_bytes = total_page_count * sizeof(struct Page);
     uint64_t tracker_array_phys_addr = 0;
 
-    // Step 2: Allocate internal metadata structure array safely via early boot carving
+    // Step 2: Allocate internal metadata structure array via early boot carving
     for (uint64_t i = 0; i < map->entry_count; i++) {
         struct limine_memmap_entry *entry = map->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE && entry->length >= array_size_bytes) {
@@ -123,39 +181,17 @@ void pmm_init(void) {
 
     // Default entire tracking index to unmapped space
     for (size_t i = 0; i < total_page_count; i++) {
-        all_pages[i].is_free = 0; 
+        all_pages[i].is_free = 0;
         all_pages[i].order = 0;
         all_pages[i].next = NULL;
         all_pages[i].prev = NULL;
     }
 
-    // Step 3: Populate order 0 free list with remaining raw usable blocks
+    // Step 3: Populate free lists with naturally-aligned, maximum-size buddy regions
     for (uint64_t i = 0; i < map->entry_count; i++) {
         struct limine_memmap_entry *entry = map->entries[i];
         if (entry->type == LIMINE_MEMMAP_USABLE) {
-            uint64_t start_phys = entry->base;
-            uint64_t end_phys = entry->base + entry->length;
-
-            for (uint64_t addr = start_phys; addr < end_phys; addr += PAGE_SIZE) {
-                uint64_t page_index = addr / PAGE_SIZE;
-
-                // Skip the physical memory occupied by the tracker array itself
-                if (addr >= tracker_array_phys_addr && addr < (tracker_array_phys_addr + array_size_bytes)) {
-                    continue; 
-                }
-
-                // Explicitly prevent PMM from reclaiming hardcoded memory areas
-                if (addr >= 0x8000000 && addr < 0xA000000) {
-                    continue;
-                }
-                if (addr >= 0xA000000 && addr < 0xA001000) {
-                    continue;
-                }
-
-                all_pages[page_index].is_free = 1;
-                all_pages[page_index].order = 0;
-                pmm_free_list_add(0, &all_pages[page_index]);
-            }
+            pmm_init_region(entry->base, entry->length);
         }
     }
 }
@@ -173,20 +209,15 @@ void *pmm_alloc_pages(int order) {
                 size_t block_index = block - all_pages;
                 size_t buddy_index = block_index + (1 << i);
                 struct Page *buddy = &all_pages[buddy_index];
+
+                buddy->order = i;
+                buddy->is_free = 1;
                 pmm_free_list_add(i, buddy);
             }
 
             block->is_free = 0;
             block->order = order;
             uint64_t phys_addr = (uint64_t)(block - all_pages) * PAGE_SIZE;
-
-            // Never hand out page zero — it's the real-mode IVT/BIOS data area
-            if (phys_addr == 0) {
-                block->is_free = 1;
-                block->order   = order;
-                pmm_free_list_add(order, block);
-                continue;
-            }
 
             return (void *)(phys_addr + HHDM_OFFSET);
         }
@@ -218,6 +249,32 @@ void pmm_free_pages(void *ptr, int order) {
         order++;
     }
     pmm_free_list_add(order, block);
+}
+
+/**
+ * @brief Universal Helper Allocator
+ * Converts required byte size to the minimum power-of-two buddy order
+ * and allocates a contiguous physical region.
+ */
+void *helpalloc(size_t size_bytes, int *out_order) {
+    if (size_bytes == 0) return NULL;
+
+    size_t pages_needed = (size_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+    int order = 0;
+
+    while ((1UL << order) < pages_needed) {
+        order++;
+    }
+
+    if (order >= MAX_ORDER) {
+        return NULL;
+    }
+
+    if (out_order) {
+        *out_order = order;
+    }
+
+    return pmm_alloc_pages(order);
 }
 
 // --- VIRTUAL MEMORY MANAGER FUNCTIONS ---
