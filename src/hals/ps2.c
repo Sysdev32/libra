@@ -1,6 +1,8 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <hals/ps2.h>
+
+#include "drivers/tty.h"
 static const char kbd_us_keymap[128] = {
     0,  27, '1', '2', '3', '4', '5', '6', '7', '8', '9', '0', '-', '=', '\b', /* Backspace */
   '\t', /* Tab */

@@ -658,3 +658,29 @@ unsigned long long sys_tty_draw_rect(arg *a) {
 
     return 0;
 }
+extern struct process process_table[MAX_PROCESSES];
+extern struct thread thread_table[MAX_THREADS];
+
+extern volatile int current_thread_id;
+void set_tls(size_t key, uint64_t val) {
+    thread_table[current_thread_id].tls_slots[key] = val;
+}
+
+uint64_t get_tls(size_t key) {
+    return thread_table[current_thread_id].tls_slots[key];
+}
+
+// Syscall 64: TLS get
+unsigned long long sys_get_tls(arg* a) {
+    return get_tls(a->arg[0]);
+}
+
+// Syscall 65: TLS set
+unsigned long long sys_set_tls(arg* a) {
+    set_tls(a->arg[0], a->arg[1]);
+}
+
+// Syscall 66: clone
+unsigned long long sys_clone(arg* a) {
+    return clone((void*)a->arg[0], (void*)a->arg[1], a->arg[2], true);
+}

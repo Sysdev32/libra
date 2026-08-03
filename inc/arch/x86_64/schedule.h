@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <stdint.h>
+
+#include "drivers/alloc.h"
+#define MAX_PROCESSES          128
+#define MAX_THREADS            512
+#define KERNEL_STACK_SIZE      4096
+#define HHDM_OFFSET            0xffff800000000000ULL
+#define MAX_MSG_PAYLOAD        256
+#define MAX_PROCESS_MSGS       16
+#define ERR_IPC_WOULD_BLOCK   -2
+
+/* Model Specific Registers (MSR) for TLS */
+#define IA32_FS_BASE           0xC0000100ULL
+#define IA32_GS_BASE           0xC0000101ULL
+#define IA32_KERNEL_GS_BASE    0xC0000102ULL
+#define MAX_TLS_KEYS 16
 typedef enum {
     TASK_STATE_DEAD = 0,
     TASK_STATE_READY,
@@ -18,6 +33,46 @@ struct utask {
     int pid;
     char name[32];
     char cwd[32];
+};
+
+typedef struct {
+    uint32_t sender_pid;
+    uint32_t payload_size;
+    uint8_t  data[MAX_MSG_PAYLOAD];
+} kernel_msg_t;
+
+struct process {
+    int pid;
+    page_table_t *pml4;
+    int uid;
+    int gid;
+    int parent_pid;
+    char name[32];
+    char cwd[512];
+    kernel_msg_t msg_queue[MAX_PROCESS_MSGS];
+    int msg_head;
+    int msg_tail;
+    int msg_count;
+    uint64_t signal_handlers[32];
+    uint32_t pending_signals;
+    uint32_t sig_mask;
+    bool active;
+};
+typedef struct {
+    void *self; // x86_64 ABI requirement: offset 0x0 points to itself
+} kernel_tcb_t;
+struct thread {
+    int tid;
+    struct process *process;
+    uint64_t rsp;
+    uint64_t user_rsp;
+    uint64_t fs_base;
+    uint64_t gs_base;
+    task_state_t state;
+    uint8_t fpu_state[512] __attribute__((aligned(16)));
+    uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
+    kernel_tcb_t tcb;
+    uint64_t tls_slots[MAX_TLS_KEYS];
 };
 int create_kernel_task(void (*entry_point)(void), char* name);
 int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid, char* name);
@@ -43,3 +98,7 @@ unsigned long long get_launchd_pid(void);
 uint64_t set_signal_handler(int sig, uint64_t handler);
 int send_signal(int pid, int sig);
 int getpid();
+struct process *get_current_proc(void);
+struct process *create_process(const char *name, page_table_t *pml4, int uid, int gid);
+int create_thread(struct process *proc, void (*entry_point)(void), void *user_stack, uint64_t rdi, uint64_t rsi, uint64_t fs_base, bool is_user);
+int clone(void (*fn)(void *), void *arg, int argc, bool is_user);

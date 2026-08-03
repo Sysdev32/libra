@@ -1,6 +1,9 @@
+#include <signal.h>
 #include <stdint.h>
 #include <drivers/fb.h>
 #include <arch/x86_64/idt.h>
+
+#include "arch/x86_64/schedule.h"
 static const char *exception_names[] = {
     "Divide-by-Zero (#DE)",                  // 0
     "Debug (#DB)",                           // 1
@@ -149,6 +152,7 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
         }
         } else {
             printk(LOG_NONE, "%s.\n", user_exceptions[vector]);
+            send_signal(getpid(), SIGSEGV);
             return terminate(regs->rsp, getpid());
         }
     } 

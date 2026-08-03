@@ -18,6 +18,8 @@
 #include <fs/mnt.h>
 #include <hals/net/RTL8139.h>
 #include <systable.h>
+
+#include "hals/ps2.h"
 volatile uint64_t ticks = 0;
 extern struct flanterm_context *ft_ctx;
 extern uint64_t set_signal_handler(int sig, uint64_t handler);

@@ -516,8 +516,102 @@ int spawn(const char *path, int argc, char **argv, char* name)
 
     return pid;
 }
+extern struct process process_table[MAX_PROCESSES];
+extern struct thread thread_table[MAX_THREADS];
+
+extern volatile int current_thread_id;
+int clone(void (*fn)(void *), void *arg, int argc, bool is_user)
+{
+    if (!fn) {
+        printk(LOG_ERROR, "[CLONE] NULL entry point function\n");
+        return -1;
+    }
+
+    struct process *current_proc = get_current_proc();
+    if (!current_proc) {
+        printk(LOG_ERROR, "[CLONE] Failed to retrieve current process\n");
+        return -1;
+    }
+
+    uint64_t child_stack = 0;
+
+    if (is_user) {
+        // Allocate a dedicated 256KB user stack for the child thread
+        uint64_t phys_stack = stack_alloc(256 * 1024);
+        if (!phys_stack) {
+            printk(LOG_ERROR, "[CLONE] Failed to allocate user stack\n");
+            return -1;
+        }
+
+        uint64_t user_stack_vma = 0x700000000000ULL + (current_thread_id * 0x40000); // Unique VMA space
+        uint64_t user_flags = PTE_USER | PTE_WRITABLE;
+
+        for (int i = 0; i < 64; i++) {
+            uint64_t virt = user_stack_vma + i * PAGE_SIZE;
+            uint64_t phys = phys_stack + i * PAGE_SIZE;
+
+            memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
+            vmm_map_page(current_proc->pml4, virt, phys, user_flags);
+        }
+
+        // Set child stack top aligned to 16 bytes
+        child_stack = (user_stack_vma + 64 * PAGE_SIZE) & ~0xFULL;
+    }
+
+    // Pass the caller's current fs_base so the child inherits TLS context
+    uint64_t parent_fs_base = thread_table[current_thread_id].fs_base;
+
+    int tid = create_thread(
+        current_proc,             // Process context
+        (void (*)(void))fn,       // Entry function
+        (void *)child_stack,      // Isolated stack pointer (0 for kernel threads)
+        (uint64_t)arg,            // Passed in RDI
+        (uint64_t)argc,           // Passed in RSI
+        parent_fs_base,           // Inherited TLS base (IA32_FS_BASE)
+        is_user                   // Privilege level flag
+    );
+
+    if (tid < 0) {
+        printk(LOG_ERROR, "[CLONE] Failed to clone thread under PID %d\n", current_proc->pid);
+        return -1;
+    }
+
+    printk(LOG_TRACE, "[CLONE] Successfully spawned %s thread TID %d under PID %d\n",
+           is_user ? "user" : "kernel", tid, current_proc->pid);
+
+    return tid;
+}
 int launchd_pid = -1;
+
+#define TLS_KEY_MY_VAR 0
+
+static void test(void* arg) {
+    int thread_id = (int)(uintptr_t)arg;
+    printk(LOG_ERROR, "thread id: %d\n", thread_id);
+
+    // Set a unique value for this specific thread using the TLS slot
+    uint64_t expected_val = (uint64_t)thread_id * 100;
+    set_tls(TLS_KEY_MY_VAR, expected_val);
+
+    for (int i = 0; i < 3; i++) {
+        uint64_t current_val = get_tls(TLS_KEY_MY_VAR);
+
+        printk(LOG_TRACE, "[THREAD %d] TLS Var Value: %lu\n",
+               thread_id, current_val);
+
+        if (current_val != expected_val) {
+            printk(LOG_ERROR, "[THREAD %d] FAIL! TLS variable corrupted! (Expected %lu, Got %lu)\n",
+                   thread_id, expected_val, current_val);
+           for (;;);
+        }
+    }
+
+    printk(LOG_TRACE, "[THREAD %d] SUCCESS! TLS variable stayed intact.\n", thread_id);
+    for (;;);
+}
 static void main_kthread(void) {
+    clone(test, 1, NULL, false);
+    clone(test, 2, NULL, false);
     launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL, "launchd");
     for (;;) {
         asm volatile("sti; hlt");

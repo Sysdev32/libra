@@ -1,7 +1,7 @@
 {
     "services": [
         {
-            "name": "testd",
+            "name": "sh",
             "path": "/System/usr/bin/commandline/sh"
         }
     ]
