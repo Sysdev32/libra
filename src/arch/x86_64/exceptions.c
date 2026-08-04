@@ -3,6 +3,7 @@
 #include <drivers/fb.h>
 #include <arch/x86_64/idt.h>
 
+#include "string.h"
 #include "arch/x86_64/schedule.h"
 static const char *exception_names[] = {
     "Divide-by-Zero (#DE)",                  // 0
@@ -151,7 +152,60 @@ uint64_t exception_handler_c(struct InterruptRegisters *regs) {
             asm volatile("hlt");
         }
         } else {
-            printk(LOG_NONE, "%s.\n", user_exceptions[vector]);
+            char buffer[64];
+        for (int i = 0; i < 64; i++) buffer[i] = 0; // Clear the buffer for safety
+        if (vector > 255) {
+            strcpy(buffer, "(invalid)");
+        }
+
+        printk(LOG_ERROR, "Vector Index    : %d (0x%x) %s\r\n", vector, vector, buffer);
+        printk(LOG_ERROR, "Description     : %s\r\n", exception_names[vector]);
+        printk(LOG_ERROR, "Error Code Mask : 0x%x\r\n", regs->error_code);
+        printk(LOG_ERROR, "--------------------------------------------------\r\n");
+
+        // Output code boundaries and stack tracking snapshots
+        printk(LOG_ERROR, "Faulting Instruction Pointer (RIP): %p\r\n", regs->rip);
+        printk(LOG_ERROR, "Faulting Stack Pointer       (RSP): %p\r\n", regs->rsp);
+        printk(LOG_ERROR, "Code Segment Selector        (CS) : %x\r\n", regs->cs);
+        printk(LOG_ERROR, "Processor Flag Mask      (RFLAGS) : %p\r\n", regs->rflags);
+
+        // Specialize tracking read metrics for standard complex traps
+        switch (vector) {
+            case 13: { // General Protection Fault
+                printk(LOG_ERROR, " -> Details: Memory segment selection or boundary access rule violation.\r\n");
+                if (regs->error_code != 0) {
+                    printk(LOG_ERROR, " -> Broken Selector Target Segment Index: GDT/LDT Slot %d\r\n", regs->error_code >> 3);
+                }
+                break;
+            }
+            case 14: { // Page Fault
+                uint64_t faulting_address = 0;
+                asm volatile("mov %%cr2, %0" : "=r"(faulting_address));
+                printk(LOG_ERROR, " -> Details: Attempted to touch unmapped or protected virtual address layout space.\r\n");
+                printk(LOG_ERROR, " -> Missing Destination Target (CR2): 0x%p\r\n", faulting_address);
+
+                // Decode page fault reason flags out of error code bitmask
+                printk(LOG_ERROR, " -> Fault Parameters: %s, %s, %s\r\n",
+                    (regs->error_code & (1 << 0)) ? "Protection Violation" : "Non-Present Page",
+                    (regs->error_code & (1 << 1)) ? "Write Operation" : "Read Operation",
+                    (regs->error_code & (1 << 2)) ? "User Privilege Level" : "Supervisor Ring 0 Code"
+                );
+                break;
+            }
+            default:
+                printk(LOG_ERROR, " -> Details: Fatal core execution anomaly, stalling CPU state pipeline layout.\r\n");
+                break;
+        }
+
+        printk(LOG_ERROR, "--------------------------------------------------\r\n");
+        printk(LOG_ERROR, "Register Dump:\r\n");
+        printk(LOG_ERROR, "RAX: %p  RBX: %p  RCX: %p  RDX: %p\r\n", regs->rax, regs->rbx, regs->rcx, regs->rdx);
+        printk(LOG_ERROR, "RSI: %p  RDI: %p  RBP: %p  R8 : %p\r\n", regs->rsi, regs->rdi, regs->rbp, regs->r8);
+        printk(LOG_ERROR, "R9 : %p  R10: %p  R11: %p  R12: %p\r\n", regs->r9, regs->r10, regs->r11, regs->r12);
+        printk(LOG_ERROR, "R13: %p  R14: %p  R15: %p\r\n", regs->r13, regs->r14, regs->r15);
+        printk(LOG_ERROR, "==================================================\r\n");
+            asm volatile ("cli");
+            for (;;);
             send_signal(getpid(), SIGSEGV);
             return terminate(regs->rsp, getpid());
         }

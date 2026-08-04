@@ -5,11 +5,11 @@
 #include <signal.h>
 #include <drivers/fb.h>
 #include <arch/x86_64/schedule.h>
+
 char cwd[512];
 bool defined = false;
 typedef uint64_t page_table_t;
 extern page_table_t *vmm_get_current_pml4(void);
-
 
 struct tss_entry {
     uint32_t reserved0;
@@ -113,16 +113,82 @@ static void irq_restore(uint64_t flags) {
     }
 }
 
+static void ipc_pause(void) {
+    asm volatile("int $0x20" ::: "memory");
+}
+
+/* Thread Exit and Join Functions */
+void sys_thread_exit(int retval) {
+    uint64_t flags = irq_save();
+    int tid = current_thread_id;
+    struct thread *curr = &thread_table[tid];
+
+    curr->exit_code = retval;
+    curr->state = TASK_STATE_ZOMBIE;
+
+    // Wake up any threads waiting to join this specific thread
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (thread_table[i].state == TASK_STATE_WAITING && thread_table[i].joining_tid == tid) {
+            thread_table[i].joining_tid = -1;
+            thread_table[i].state = TASK_STATE_READY;
+        }
+    }
+
+    irq_restore(flags);
+
+    // Yield control to force context switch
+    ipc_pause();
+    for (;;);
+}
+
+int sys_thread_join(int tid, int *retval) {
+    if (tid < 0 || tid >= MAX_THREADS || tid == current_thread_id) {
+        return -1;
+    }
+
+    while (1) {
+        uint64_t flags = irq_save();
+        struct thread *target = &thread_table[tid];
+
+        // Check if the target thread belongs to the current process or is invalid
+        if (target->state == TASK_STATE_DEAD) {
+            irq_restore(flags);
+            return -1;
+        }
+
+        if (target->state == TASK_STATE_ZOMBIE) {
+            if (retval && is_valid_user_pointer(retval, sizeof(int))) {
+                *retval = target->exit_code;
+            } else if (retval && target->user_rsp == 0) {
+                // Direct kernel pointer assignment if calling from kernel context
+                *retval = target->exit_code;
+            }
+
+            // Reap zombie thread
+            target->state = TASK_STATE_DEAD;
+            target->rsp = 0;
+            target->user_rsp = 0;
+            target->joining_tid = -1;
+
+            irq_restore(flags);
+            return 0;
+        }
+
+        // Target thread is still running/ready; block current thread
+        thread_table[current_thread_id].joining_tid = tid;
+        thread_table[current_thread_id].state = TASK_STATE_WAITING;
+        irq_restore(flags);
+
+        ipc_pause();
+    }
+}
+
 void kernel_thread_exit_handler(void) {
-    printk(LOG_TRACE, "[SCHED] Kernel thread TID %d exiting\n", current_thread_id);
-    asm volatile("int $0x30");
-    for(;;);
+    sys_thread_exit(0);
 }
 
 void userspace_exit_handler(void) {
-    printk(LOG_TRACE, "[SCHED] Userspace thread TID %d exiting\n", current_thread_id);
-    asm volatile("int $0x30");
-    for(;;);
+    sys_thread_exit(0);
 }
 
 struct process *create_process(const char *name, page_table_t *pml4, int uid, int gid) {
@@ -170,6 +236,11 @@ struct process *create_process(const char *name, page_table_t *pml4, int uid, in
 }
 
 int create_thread(struct process *proc, void (*entry_point)(void), void *user_stack, uint64_t rdi, uint64_t rsi, uint64_t fs_base, bool is_user) {
+    if (!proc || !entry_point) {
+        printk(LOG_ERROR, "[SCHED_ERR] Invalid arguments passed to create_thread\n");
+        return -1;
+    }
+
     uint64_t flags = irq_save();
 
     for (int i = 0; i < MAX_THREADS; i++) {
@@ -179,21 +250,41 @@ int create_thread(struct process *proc, void (*entry_point)(void), void *user_st
             thread_table[i].tid = i;
             thread_table[i].process = proc;
             thread_table[i].gs_base = 0;
+            thread_table[i].exit_code = 0;
+            thread_table[i].joining_tid = -1;
+            memset(thread_table[i].tls_slots, 0, sizeof(thread_table[i].tls_slots));
 
-            // Initialize embedded static TCB if no TLS base pointer is provided
-            if (fs_base == 0) {
-                thread_table[i].tcb.self = &thread_table[i].tcb;
-                thread_table[i].fs_base = (uint64_t)&thread_table[i].tcb;
-            } else {
-                thread_table[i].fs_base = fs_base;
-            }
+            uint64_t aligned_stack = 0;
+            size_t tcb_size_aligned = (sizeof(struct tcb) + 15) & ~0xFULL;
 
             if (is_user) {
-                thread_table[i].user_rsp = ((uint64_t)user_stack) & ~0xFULL;
+                aligned_stack = ((uint64_t)user_stack) & ~0xFULL;
+
+                if (fs_base != 0) {
+                    // Explicit FS_BASE provided (e.g. from custom pthread_create)
+                    thread_table[i].fs_base = fs_base & ~0xFULL;
+                    thread_table[i].user_rsp = aligned_stack;
+                } else if (aligned_stack != 0) {
+                    // Place TCB at the top of the allocated stack block
+                    thread_table[i].fs_base = (aligned_stack - tcb_size_aligned) & ~0xFULL;
+                    // User RSP starts BELOW the TCB so stack pushes don't corrupt TCB data
+                    thread_table[i].user_rsp = thread_table[i].fs_base;
+                } else {
+                    thread_table[i].fs_base = 0;
+                    thread_table[i].user_rsp = 0;
+                }
             } else {
                 thread_table[i].user_rsp = 0;
+
+                if (fs_base == 0) {
+                    thread_table[i].tcb.self = &thread_table[i].tcb;
+                    thread_table[i].fs_base = (uint64_t)&thread_table[i].tcb;
+                } else {
+                    thread_table[i].fs_base = fs_base;
+                }
             }
 
+            // Setup Kernel Stack (Must match kernel assembly ISR frame sizing)
             uintptr_t k_stack_raw = (uintptr_t)&thread_table[i].kernel_stack[KERNEL_STACK_SIZE];
             uint64_t *kernel_stack_top = (uint64_t *)(k_stack_raw & ~0xFULL);
 
@@ -201,6 +292,7 @@ int create_thread(struct process *proc, void (*entry_point)(void), void *user_st
                 kernel_stack_top[-1] = (uint64_t)kernel_thread_exit_handler;
             }
 
+            // Exactly 24 qwords allocated for trap frame matching kernel ISR assembly layout
             uint64_t *ctx = kernel_stack_top - 24;
 
             ctx[0]  = 0;   // RAX
@@ -230,10 +322,6 @@ int create_thread(struct process *proc, void (*entry_point)(void), void *user_st
 
             thread_table[i].rsp = (uint64_t)ctx;
             thread_table[i].state = TASK_STATE_READY;
-            memset(thread_table[i].tls_slots, 0, sizeof(thread_table[i].tls_slots));
-
-            printk(LOG_TRACE, "[SCHED] Created %s thread TID %d (PID %d, FS_BASE=0x%lx)\n",
-                   is_user ? "user" : "kernel", i, proc->pid, thread_table[i].fs_base);
 
             irq_restore(flags);
             return i;
@@ -244,6 +332,7 @@ int create_thread(struct process *proc, void (*entry_point)(void), void *user_st
     irq_restore(flags);
     return -1;
 }
+
 int create_kernel_task(void (*entry_point)(void), char* name) {
     struct process *proc = create_process(name, vmm_get_current_pml4(), 0, 0);
     if (proc == NULL) {
@@ -350,7 +439,9 @@ static bool thread_deliver_signal(struct thread *thread, int sig) {
     uint64_t *ctx = (uint64_t *)thread->rsp;
     uint64_t old_rip = ctx[17];
     uint64_t old_rsp = ctx[20];
-    uint64_t new_user_rsp = old_rsp - sizeof(uint64_t);
+
+    // Align signal frame stack insertion to 16 bytes before forcing user stack pushing
+    uint64_t new_user_rsp = (old_rsp - sizeof(uint64_t)) & ~0xFULL;
     *(uint64_t *)new_user_rsp = old_rip;
     ctx[20] = new_user_rsp;
     ctx[5] = sig;
@@ -416,7 +507,7 @@ int send_signal(int pid, int sig) {
 uint64_t schedule_preemptive(uint64_t old_rsp) {
     thread_table[current_thread_id].rsp = old_rsp;
     int old_thread_id = current_thread_id;
-
+    fpu_context_save();
     if (thread_table[old_thread_id].state == TASK_STATE_RUNNING) {
         thread_table[old_thread_id].state = TASK_STATE_READY;
     }
@@ -442,7 +533,7 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
 
     if (next_thread_id == -1) {
         if (thread_table[old_thread_id].state == TASK_STATE_ZOMBIE) {
-            printk(LOG_TRACE, "[SCHED] Reaping last dead thread TID %d\n", old_thread_id);
+            printk(LOG_TRACE, "[SCHED] Reaping unjoined dead thread TID %d\n", old_thread_id);
             thread_table[old_thread_id].state = TASK_STATE_DEAD;
             return 0;
         }
@@ -465,16 +556,9 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
     /* Restore Thread-Local Storage base register */
     write_fs_base(curr_thread->fs_base);
 
-    if (thread_table[old_thread_id].state == TASK_STATE_ZOMBIE) {
-        printk(LOG_TRACE, "[SCHED] Reaping zombie thread TID %d\n", old_thread_id);
-        thread_table[old_thread_id].state = TASK_STATE_DEAD;
-        thread_table[old_thread_id].rsp = 0;
-        thread_table[old_thread_id].user_rsp = 0;
-    }
-
     uint64_t kstack_canonical = (uint64_t)&curr_thread->kernel_stack[KERNEL_STACK_SIZE];
     global_tss.rsp0 = (uint64_t)(kstack_canonical & ~0xFULL);
-
+    fpu_context_restore();
     return curr_thread->rsp;
 }
 
@@ -487,6 +571,7 @@ void remove_user_task(int thread_id) {
     thread_table[thread_id].state = TASK_STATE_DEAD;
     thread_table[thread_id].rsp = 0;
     thread_table[thread_id].user_rsp = 0;
+    thread_table[thread_id].joining_tid = -1;
     irq_restore(flags);
 }
 
@@ -500,6 +585,8 @@ void init_scheduler(void) {
         thread_table[i].rsp = 0;
         thread_table[i].user_rsp = 0;
         thread_table[i].fs_base = 0;
+        thread_table[i].exit_code = 0;
+        thread_table[i].joining_tid = -1;
         init_fpu_context(&thread_table[i]);
     }
 
@@ -586,10 +673,6 @@ int getpid() {
 
 int gettid() {
     return thread_table[current_thread_id].tid;
-}
-
-static void ipc_pause(void) {
-    asm volatile("int $0x20" ::: "memory");
 }
 
 int ipc_send(uint32_t target_pid, const void *buf, uint32_t size) {
@@ -826,6 +909,7 @@ int ps(struct utask* u, int max_len) {
 
     return len_found;
 }
+
 struct process *get_current_proc(void) {
     uint64_t flags = irq_save();
     struct process *proc = thread_table[current_thread_id].process;

@@ -17,10 +17,22 @@
 #include <fs/mnt.h>
 #include <hals/net/RTL8139.h>
 #include <systable.h>
+
+#define MAX_CPUS 256
+#define MAX_OVERRIDES 32
+#define PIC1_DATA 0x21
+#define PIC2_DATA 0xA1
+
+// Register Offsets for Local APIC
+#define LAPIC_ID_REG        0x0020
+#define LAPIC_EOI_REG       0x00B0
+#define LAPIC_SVR_REG       0x00F0
+#define LAPIC_ICR_LOW       0x0300
+#define LAPIC_ICR_HIGH      0x0310
+
 uintptr_t ioapic_virtual_base = 0;
 uintptr_t lapic_virtual_base = 0;
 extern volatile struct limine_hhdm_request hhdm_request;
-#define MAX_OVERRIDES 32
 
 struct interrupt_override {
     uint8_t irq_source;
@@ -30,11 +42,12 @@ struct interrupt_override {
 
 struct interrupt_override isa_overrides[MAX_OVERRIDES];
 int override_count = 0;
-struct madt_local_apic apic[32];
-int lapicint;
-#define PIC1_DATA 0x21
-#define PIC2_DATA 0xA1
-// 1. Core hardware write function using the index/data window
+
+struct madt_local_apic cpus[MAX_CPUS];
+uint32_t cpu_count = 0;
+uint32_t bsp_apic_id = 0;
+
+// IOAPIC Direct Memory I/O
 void ioapic_write(uintptr_t base, uint8_t reg_index, uint32_t value) {
     volatile uint32_t *regsel = (volatile uint32_t*)(base + 0x00);
     volatile uint32_t *iowin  = (volatile uint32_t*)(base + 0x10);
@@ -43,7 +56,6 @@ void ioapic_write(uintptr_t base, uint8_t reg_index, uint32_t value) {
     *iowin = value;
 }
 
-// 2. Core hardware read function using the index/data window
 uint32_t ioapic_read(uintptr_t base, uint8_t reg_index) {
     volatile uint32_t *regsel = (volatile uint32_t*)(base + 0x00);
     volatile uint32_t *iowin  = (volatile uint32_t*)(base + 0x10);
@@ -52,139 +64,167 @@ uint32_t ioapic_read(uintptr_t base, uint8_t reg_index) {
     return *iowin;
 }
 
-// 3. Redirection Table Entry setter function to map pins to IDT vectors
 void ioapic_set_entry(uintptr_t base, uint8_t pin, uint8_t idt_vector, uint8_t target_apic_id) {
     uint8_t reg_low = 0x10 + (pin * 2);
     uint8_t reg_high = reg_low + 1;
 
-    // High 32 bits: Put target local APIC ID in bits 24-31
-    // Fixed to target direct physical ID to prevent multi-core execution stalls
     uint32_t value_high = (uint32_t)target_apic_id << 24;
-
-    // Low 32 bits: Start with IDT Vector number (bits 0-7)
-    // Bit 16 is 0 (unmasked/enabled)
-    // Delivery mode is 000 (fixed)
-    // Trigger mode is 0 (edge-triggered for ISA)
-    uint32_t value_low = idt_vector;
+    uint32_t value_low = idt_vector; // Delivery mode 0 (Fixed), Mask bit = 0 (Enabled)
 
     ioapic_write(base, reg_high, value_high);
     ioapic_write(base, reg_low, value_low);
 }
 
-// 4. Call this function when you parse Entry Type 1 in your MADT loop
 void ioapic_init(uint32_t physical_address) {
-    // Calculate virtual address using Limine's Higher-Half Direct Map offset
     ioapic_virtual_base = (uintptr_t)physical_address + hhdm_request.response->offset;
-    
-    // Read the version register to verify communication
+
     uint32_t version_reg = ioapic_read(ioapic_virtual_base, 0x01);
     int max_entries = ((version_reg >> 16) & 0xFF) + 1;
 
-    // Mask (disable) all redirection entries by default for safety
+    // Mask all entries across the board initially
     for (int i = 0; i < max_entries; i++) {
         uint8_t reg_low = 0x10 + (i * 2);
         uint8_t reg_high = reg_low + 1;
 
-        // Bit 16 = 1 masks the interrupt line
-        ioapic_write(ioapic_virtual_base, reg_low, 0x00010000);
+        ioapic_write(ioapic_virtual_base, reg_low, 0x00010000); // Set Bit 16 (Masked)
         ioapic_write(ioapic_virtual_base, reg_high, 0x00000000);
     }
-    
 }
 
-void lapic_init(uint32_t physical_address) {
+// Global base assignment for Local APIC
+void lapic_set_base(uint64_t physical_address) {
     lapic_virtual_base = (uintptr_t)physical_address + hhdm_request.response->offset;
+}
+
+// Enable local LAPIC (Called per core: BSP during boot, APs inside init_ap_scheduler)
+void lapic_enable(void) {
+    if (lapic_virtual_base == 0) return;
+
+    // Software enable LAPIC (Bit 8) and map spurious vector to IDT 0xFF
+    volatile uint32_t *spurious_reg = (volatile uint32_t*)(lapic_virtual_base + LAPIC_SVR_REG);
+    *spurious_reg = 0xFF | (1 << 8);
+}
+
+// Legacy alias wrapper for lapic_enable
+void lapic_init_core(void) {
+    lapic_enable();
+}
+
+uint32_t lapic_get_id(void) {
+    if (lapic_virtual_base == 0) return 0;
+    volatile uint32_t *id_reg = (volatile uint32_t*)(lapic_virtual_base + LAPIC_ID_REG);
+    return (*id_reg) >> 24;
 }
 
 void lapic_eoi(void) {
     if (lapic_virtual_base == 0) return;
-    
-    volatile uint32_t *eoi_reg = (volatile uint32_t*)(lapic_virtual_base + 0xB0);
+    volatile uint32_t *eoi_reg = (volatile uint32_t*)(lapic_virtual_base + LAPIC_EOI_REG);
     *eoi_reg = 0;
+}
+
+// Send Inter-Processor Interrupts (IPI) supporting vector and mode flags
+void lapic_send_ipi(uint8_t target_apic_id, uint32_t flags) {
+    if (lapic_virtual_base == 0) return;
+
+    volatile uint32_t *icr_high = (volatile uint32_t*)(lapic_virtual_base + LAPIC_ICR_HIGH);
+    volatile uint32_t *icr_low  = (volatile uint32_t*)(lapic_virtual_base + LAPIC_ICR_LOW);
+
+    // Wait for previous transmission delivery to finish (Bit 12 clear)
+    while (*icr_low & (1 << 12)) {
+        asm volatile("pause");
+    }
+
+    *icr_high = (uint32_t)target_apic_id << 24;
+    *icr_low  = flags;
 }
 
 void parse_madt(struct acpi_table_madt *madt) {
     if (madt == NULL) return;
 
-    printk(LOG_TRACE, "Parsing MADT. Local APIC Address: 0x%x\n", madt->local_apic_address);
-    lapic_init(madt->local_apic_address);
-    
-    // 1. Find where the variable-length records begin
-    // Skip the main header to land exactly at offset 0x2C
-    uintptr_t current_addr = (uintptr_t)madt + sizeof(struct acpi_table_madt);
-    
-    // 2. Calculate exactly where the records end using the table's total length
-    uintptr_t end_addr = (uintptr_t)madt + madt->header.length;
-    for (int i = 0; i < 32; i++) {
+    uint64_t lapic_phys_addr = madt->local_apic_address;
+
+    // Initialize standard Identity Overrides
+    for (int i = 0; i < MAX_OVERRIDES; i++) {
         isa_overrides[i].irq_source = i;
         isa_overrides[i].gsi = i;
     }
 
-    // 3. Loop through the records safely
+    uintptr_t current_addr = (uintptr_t)madt + sizeof(struct acpi_table_madt);
+    uintptr_t end_addr = (uintptr_t)madt + madt->header.length;
+
     while (current_addr < end_addr) {
         struct madt_record_header *record = (struct madt_record_header *)current_addr;
 
-        // Malformed table safety check: length cannot be 0 or push us past the end
         if (record->length == 0 || (current_addr + record->length) > end_addr) {
             printk(LOG_ERROR, "MADT parsing error: invalid record length %d\n", record->length);
             break;
         }
 
-        // 4. Check the entry type and cast it to your specific structure
         switch (record->type) {
-            case 0: {
+            case 0: { // Local APIC
                 struct madt_local_apic *lapic = (struct madt_local_apic *)record;
-                if (lapic->flags & 1) { // Bit 0 = Processor Enabled
-                    apic[lapicint++] = *lapic;
-                }   
+                // Bit 0 = Processor Enabled, Bit 1 = Online Capable
+                if ((lapic->flags & 1) || (lapic->flags & 2)) {
+                    if (cpu_count < MAX_CPUS) {
+                        cpus[cpu_count++] = *lapic;
+                    }
+                }
                 break;
             }
-            case 1: {
+            case 1: { // I/O APIC
                 struct madt_io_apic *ioapic = (struct madt_io_apic *)record;
-                
                 ioapic_init(ioapic->io_apic_address);
                 break;
             }
-            case 2: {
+            case 2: { // Interrupt Source Override
                 struct madt_interrupt_override *override = (struct madt_interrupt_override *)record;
-                isa_overrides[override->irq_source].gsi = override->gsi;
+                if (override->irq_source < MAX_OVERRIDES) {
+                    isa_overrides[override->irq_source].gsi = override->gsi;
+                    isa_overrides[override->irq_source].flags = override->flags;
+                }
                 break;
             }
-            case 5: {
+            case 5: { // 64-Bit LAPIC Address Override
                 struct madt_local_apic_override *lapic_64 = (struct madt_local_apic_override *)record;
-                printk(LOG_TRACE, "64-bit Local APIC Address Override: 0x%llx\n", lapic_64->local_apic_address_64);
+                lapic_phys_addr = lapic_64->local_apic_address_64;
                 break;
             }
             default:
-                // Types we don't care about right now (like NMIs) are skipped safely
                 break;
         }
 
-        // 5. Jump directly to the next record header using its precise length
         current_addr += record->length;
     }
+
+    // Set base for virtual accessing
+    lapic_set_base(lapic_phys_addr);
+    printk(LOG_TRACE, "Parsed MADT: Found %d active CPUs. LAPIC Base: 0x%llx\n", cpu_count, lapic_phys_addr);
 }
+
 void pic_disable(void) {
     outb(PIC1_DATA, 0xFF);
-    outb(PIC2_DATA, 0xFF);  
+    outb(PIC2_DATA, 0xFF);
 }
-void ioapic(struct acpi_table_madt* madt) {
-    // 1. Disable the old 8259 PIC completely
-    pic_disable();
-    
-    // 2. Parse MADT to find lapic_virtual_base and ioapic_virtual_base
-    parse_madt(madt);
-    
-    // 3. Turn on the local APIC software enable flag
-    if (lapic_virtual_base != 0) {
-        volatile uint32_t *spurious_reg = (volatile uint32_t*)(lapic_virtual_base + 0xF0);
-        // (1 << 8) sets the Software Enable bit to 1
-        // 0xFF maps the spurious vector to index 255 in the IDT
-        *spurious_reg = 0xFF | (1 << 8); 
-    }
 
-    // 4. Route ISA IRQs safely to IDT vectors via the IOAPIC targeting Core 0
-    ioapic_set_entry(ioapic_virtual_base, 2, 0x20, 0x00);                       // PIT route mapping
-    ioapic_set_entry(ioapic_virtual_base, isa_overrides[1].gsi, 0x21, 0);        // Keyboard IRQ1
-    ioapic_set_entry(ioapic_virtual_base, isa_overrides[12].gsi, 0x2C, 0);       // Mouse IRQ12
+// Dynamic Hardware IRQ routing helper to direct peripheral interrupts to any target CPU core
+void ioapic_route_irq(uint8_t irq, uint8_t vector, uint8_t target_apic_id) {
+    uint32_t gsi = (irq < MAX_OVERRIDES) ? isa_overrides[irq].gsi : irq;
+    ioapic_set_entry(ioapic_virtual_base, gsi, vector, target_apic_id);
+}
+
+void ioapic(struct acpi_table_madt* madt) {
+    // 1. Fully disable legacy 8259 PIC
+    pic_disable();
+
+    // 2. Discover CPUs, LAPICs, and IOAPICs
+    parse_madt(madt);
+
+    // 3. Initialize the BSP (Bootstrap Processor) Local APIC
+    lapic_enable();
+    bsp_apic_id = lapic_get_id();
+
+    // 4. Default IOAPIC Interrupt Routes targeting BSP core
+    ioapic_route_irq(0,  0x20, bsp_apic_id); // System Timer (PIT/HPET) -> Vector 32
+    ioapic_route_irq(1,  0x21, bsp_apic_id); // PS/2 Keyboard          -> Vector 33
+    ioapic_route_irq(12, 0x2C, bsp_apic_id); // PS/2 Mouse             -> Vector 44
 }

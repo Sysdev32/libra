@@ -127,7 +127,7 @@ static inline uintptr_t read_cr3(void) {
     return cr3;
 }
 
-static uintptr_t hal_virt_to_phys(void* virt) {
+uintptr_t hal_virt_to_phys(void* virt) {
     uintptr_t vaddr = (uintptr_t)virt;
     if (!vaddr) return 0;
 

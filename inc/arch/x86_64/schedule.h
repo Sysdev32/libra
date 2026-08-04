@@ -7,7 +7,7 @@
 #define MAX_THREADS            512
 #define KERNEL_STACK_SIZE      4096
 #define HHDM_OFFSET            0xffff800000000000ULL
-#define MAX_MSG_PAYLOAD        256
+#define MAX_MSG_PAYLOAD        1024
 #define MAX_PROCESS_MSGS       16
 #define ERR_IPC_WOULD_BLOCK   -2
 
@@ -73,7 +73,24 @@ struct thread {
     uint8_t kernel_stack[KERNEL_STACK_SIZE] __attribute__((aligned(16)));
     kernel_tcb_t tcb;
     uint64_t tls_slots[MAX_TLS_KEYS];
+    int exit_code;         // Exit return value for thread_join
+    int joining_tid;
 };
+struct tcb {
+    struct tcb *self;        /* FS:0x00 - Pointer to self (required by x86_64 TLS ABI) */
+    uint64_t dtv;            /* FS:0x08 - Dynamic Thread Vector pointer (for dynamic loading/modules) */
+    uint64_t thread_id;      /* FS:0x10 - Thread ID (TID) */
+    int32_t  multiple_threads;/* FS:0x18 - Multi-threading flag */
+    int32_t  gscope_flag;    /* FS:0x1C - Global scope flag */
+    uint64_t sysinfo;        /* FS:0x20 - System call entry / kernel info pointer */
+    uint64_t stack_guard;    /* FS:0x28 - Stack canary for GCC -fstack-protector */
+    uint64_t pointer_guard;  /* FS:0x30 - Pointer mangling salt */
+
+    /* Custom OS / Userland thread-local data slots */
+    void    *tls_data;       /* FS:0x38 - Custom TLS user payload pointer */
+    int      errno_val;      /* FS:0x40 - Per-thread errno */
+    uint32_t reserved;       /* Padding / Alignment to 64 bytes */
+} __attribute__((aligned(16)));
 int create_kernel_task(void (*entry_point)(void), char* name);
 int create_user_task(void (*entry_point)(void), void* user_stack, uint64_t rdi, uint64_t rsi, void *pml4, int uid, int gid, int pid, char* name);
 uint64_t schedule_preemptive(uint64_t old_rsp);
@@ -101,4 +118,4 @@ int getpid();
 struct process *get_current_proc(void);
 struct process *create_process(const char *name, page_table_t *pml4, int uid, int gid);
 int create_thread(struct process *proc, void (*entry_point)(void), void *user_stack, uint64_t rdi, uint64_t rsi, uint64_t fs_base, bool is_user);
-int clone(void (*fn)(void *), void *arg, int argc, bool is_user);
+int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user);

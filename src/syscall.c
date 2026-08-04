@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <errno.h>
+#include <stdio.h>
 #include <arch/x86_64/idt.h>
 #include <string.h>
 #include <drivers/fb.h>
@@ -20,6 +21,9 @@
 #include "drivers/tty.h"
 #include "hals/ps2.h"
 #include <hals/serial.h>
+
+#include "hals/pci.h"
+
 static uint64_t get_rsp(void) {
     uint64_t rsp;
     asm volatile("mov %%rsp, %0" : "=r"(rsp));
@@ -296,9 +300,14 @@ unsigned long long sys_draw_rect(arg* a) {
 }
 
 // Syscall 12: syscall_exit_handler
-unsigned long long sys_exit_handler(arg* a) {
-    syscall_exit_handler(get_rsp(), a->arg[0]);
+unsigned long long sys_exit_raw(arg* a, struct InterruptRegisters* intr) {
+    printk(LOG_ERROR, "exit handler\n");
     return 0;
+}
+unsigned long long sys_exit_handler(arg* a)
+{
+    extern struct InterruptRegisters *current_intr;
+    return sys_exit_raw(a, current_intr);
 }
 
 // Syscall 13: ipc_recv
@@ -682,5 +691,35 @@ unsigned long long sys_set_tls(arg* a) {
 
 // Syscall 66: clone
 unsigned long long sys_clone(arg* a) {
-    return clone((void*)a->arg[0], (void*)a->arg[1], a->arg[2], true);
+    void *entry_point = (void*)a->arg[0];
+    void *child_stack = (void*)a->arg[1];
+    void *child_arg   = (void*)a->arg[2];
+
+    // Pass chilxd_stack as RSP, entry_point as RIP, child_arg into RDI frame
+    return clone(entry_point, child_stack, child_arg, true);
+}
+// Syscall 67: join
+unsigned long long sys_join(arg* a) {
+    return sys_thread_join(a->arg[0], (int*)a->arg[1]);
+}
+
+// Syscall 68: pci lookup
+extern pci_device_t* devices;
+extern uint32_t devicecount;
+unsigned long long sys_pci_lookup(arg* a) {
+    pci_device_t* buf = (pci_device_t*)a->arg[0];
+    int used = 0;
+    for (int i = 0; i < devicecount; i++) {
+        if (used == a->arg[1]) {
+            break;
+        }
+        buf[i] = devices[i];
+        used++;
+    }
+    return used;
+}
+// Syscall 69: sys thread exit (sysc cause the scheduler has it named sys)
+unsigned long long sysc_thread_exit(arg *a) {
+    sys_thread_exit(a->arg[0]);
+    return 0;
 }

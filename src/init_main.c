@@ -520,7 +520,111 @@ extern struct process process_table[MAX_PROCESSES];
 extern struct thread thread_table[MAX_THREADS];
 
 extern volatile int current_thread_id;
-int clone(void (*fn)(void *), void *arg, int argc, bool is_user)
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+#define PTE_PRESENT   (1ULL << 0)
+#define PTE_HUGE      (1ULL << 7)   /* PS bit in PDPT (1GB) or PD (2MB) */
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
+
+/**
+ * Translates a virtual address to a physical address by parsing the PML4 tree.
+ *
+ * @param pml4_phys Physical address of the PML4 root table for the target address space.
+ * @param virt      Virtual address to translate.
+ * @return Physical address, or 0 if unmapped/not present.
+ */
+#include <stdint.h>
+#include <stdbool.h>
+#include <stddef.h>
+
+/* Page Table Entry Flags */
+#define PTE_PRESENT   (1ULL << 0)
+#define PTE_WRITABLE  (1ULL << 1)
+#define PTE_USER      (1ULL << 2)
+#define PTE_HUGE      (1ULL << 7)   /* 1GB in PDPT, 2MB in PD */
+#define PTE_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
+/*
+ * Choose the recursive slot used when setting up PML4.
+ * Slot 510 (0x1FE) is standard in x86_64 kernels.
+ */
+#define RECURSIVE_SLOT 510ULL
+
+/**
+ * Helper to construct canonical virtual addresses for recursive table access.
+ */
+static inline uint64_t get_recursive_virt(uint64_t l4, uint64_t l3, uint64_t l2, uint64_t l1) {
+    uint64_t raw = (l4 << 39) | (l3 << 30) | (l2 << 21) | (l1 << 12);
+    // Sign-extend bit 47 for canonical x86_64 address compliance
+    if (raw & (1ULL << 47)) {
+        raw |= 0xFFFF000000000000ULL;
+    }
+    return raw;
+}
+
+/**
+ * Translates a virtual address to its underlying physical address.
+ * Works for current process address space using Recursive Mapping.
+ *
+ * @param virt The virtual address to resolve.
+ * @return Physical address, or 0 if unmapped / not present.
+ */
+uint64_t vmm_virt_to_phys(uint64_t virt) {
+    /* 1. Extract 9-bit page table indices */
+    uint64_t pml4_idx = (virt >> 39) & 0x1FF;
+    uint64_t pdpt_idx = (virt >> 30) & 0x1FF;
+    uint64_t pd_idx   = (virt >> 21) & 0x1FF;
+    uint64_t pt_idx   = (virt >> 12) & 0x1FF;
+    uint64_t offset   = virt & 0xFFF;
+
+    /* 2. Check PML4 (Level 4) */
+    uint64_t *pml4 = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT);
+    uint64_t pml4e = pml4[pml4_idx];
+    if (!(pml4e & PTE_PRESENT)) {
+        return 0;
+    }
+
+    /* 3. Check PDPT (Level 3) */
+    uint64_t *pdpt = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT, pml4_idx);
+    uint64_t pdpte = pdpt[pdpt_idx];
+    if (!(pdpte & PTE_PRESENT)) {
+        return 0;
+    }
+
+    /* Check for 1 GB Huge Page */
+    if (pdpte & PTE_HUGE) {
+        uint64_t phys_base = pdpte & PTE_ADDR_MASK;
+        uint64_t gb_offset = virt & 0x3FFFFFFF; /* 1GB offset mask */
+        return phys_base + gb_offset;
+    }
+
+    /* 4. Check Page Directory (Level 2) */
+    uint64_t *pd = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, pml4_idx, pdpt_idx);
+    uint64_t pde = pd[pd_idx];
+    if (!(pde & PTE_PRESENT)) {
+        return 0;
+    }
+
+    /* Check for 2 MB Huge Page */
+    if (pde & PTE_HUGE) {
+        uint64_t phys_base = pde & PTE_ADDR_MASK;
+        uint64_t mb_offset = virt & 0x1FFFFF; /* 2MB offset mask */
+        return phys_base + mb_offset;
+    }
+
+    /* 5. Check Page Table (Level 1) */
+    uint64_t *pt = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, pml4_idx, pdpt_idx, pd_idx);
+    uint64_t pte = pt[pt_idx];
+    if (!(pte & PTE_PRESENT)) {
+        return 0;
+    }
+
+    /* 6. Standard 4 KB Page */
+    return (pte & PTE_ADDR_MASK) + offset;
+}
+int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user)
 {
     if (!fn) {
         printk(LOG_ERROR, "[CLONE] NULL entry point function\n");
@@ -534,41 +638,42 @@ int clone(void (*fn)(void *), void *arg, int argc, bool is_user)
     }
 
     uint64_t child_stack = 0;
+    uint64_t child_fs_base = 0;
 
-    if (is_user) {
-        // Allocate a dedicated 256KB user stack for the child thread
-        uint64_t phys_stack = stack_alloc(256 * 1024);
-        if (!phys_stack) {
-            printk(LOG_ERROR, "[CLONE] Failed to allocate user stack\n");
+    if (is_user && user_stack != NULL) {
+        // 1. Align top of user stack to 16-byte boundary
+        uint64_t stack_top = (uint64_t)user_stack & ~0xFULL;
+
+        // 2. Reserve space for the TCB frame at top of stack, maintaining 16-byte alignment
+        child_fs_base = (stack_top - sizeof(struct tcb)) & ~0xFULL;
+
+        // Translate user virtual address to physical address via direct page walk
+        uintptr_t phys_tcb = hal_virt_to_phys((void *)child_fs_base);
+        if (!phys_tcb) {
+            printk(LOG_ERROR, "[CLONE] Stack address unmapped or invalid: 0x%lx\n", child_fs_base);
             return -1;
         }
 
-        uint64_t user_stack_vma = 0x700000000000ULL + (current_thread_id * 0x40000); // Unique VMA space
-        uint64_t user_flags = PTE_USER | PTE_WRITABLE;
+        struct tcb *child_tcb = (struct tcb *)(phys_tcb + HHDM_OFFSET);
 
-        for (int i = 0; i < 64; i++) {
-            uint64_t virt = user_stack_vma + i * PAGE_SIZE;
-            uint64_t phys = phys_stack + i * PAGE_SIZE;
+        // Zero TCB block and set self-pointer (%fs:0x0)
+        memset(child_tcb, 0, sizeof(struct tcb));
+        child_tcb->self = (struct tcb *)child_fs_base;
 
-            memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
-            vmm_map_page(current_proc->pml4, virt, phys, user_flags);
-        }
-
-        // Set child stack top aligned to 16 bytes
-        child_stack = (user_stack_vma + 64 * PAGE_SIZE) & ~0xFULL;
+        // 3. System V AMD64 ABI: (RSP + 8) must be 16-byte aligned before call/entry point
+        // Position RSP below the TCB frame with proper alignment
+        child_stack = (child_fs_base & ~0xFULL) - 8;
     }
 
-    // Pass the caller's current fs_base so the child inherits TLS context
-    uint64_t parent_fs_base = thread_table[current_thread_id].fs_base;
-
+    // 4. Dispatch to thread setup routine
     int tid = create_thread(
         current_proc,             // Process context
-        (void (*)(void))fn,       // Entry function
-        (void *)child_stack,      // Isolated stack pointer (0 for kernel threads)
-        (uint64_t)arg,            // Passed in RDI
-        (uint64_t)argc,           // Passed in RSI
-        parent_fs_base,           // Inherited TLS base (IA32_FS_BASE)
-        is_user                   // Privilege level flag
+        (void (*)(void))fn,       // RIP (entry point)
+        (void *)child_stack,      // RSP (top of user stack)
+        (uint64_t)arg,            // RDI (ctx passed to trampoline)
+        0,                        // RSI (unused/zeroed)
+        child_fs_base,            // FS_BASE
+        is_user                   // User mode flag
     );
 
     if (tid < 0) {
@@ -576,16 +681,25 @@ int clone(void (*fn)(void *), void *arg, int argc, bool is_user)
         return -1;
     }
 
-    printk(LOG_TRACE, "[CLONE] Successfully spawned %s thread TID %d under PID %d\n",
-           is_user ? "user" : "kernel", tid, current_proc->pid);
+    // Set assigned thread ID inside user TCB
+    if (is_user && child_fs_base) {
+        uintptr_t phys_tcb = hal_virt_to_phys((void *)child_fs_base);
+        if (phys_tcb) {
+            struct tcb *child_tcb = (struct tcb *)(phys_tcb + HHDM_OFFSET);
+            child_tcb->thread_id = tid;
+        } else {
+            printk(LOG_WARNING, "[CLONE] Unable to write thread_id to user TCB (0x%lx translation failed)\n", child_fs_base);
+        }
+    }
 
     return tid;
 }
+
 int launchd_pid = -1;
 
 #define TLS_KEY_MY_VAR 0
 
-static void test(void* arg) {
+static int test(void* arg) {
     int thread_id = (int)(uintptr_t)arg;
     printk(LOG_ERROR, "thread id: %d\n", thread_id);
 
@@ -607,11 +721,9 @@ static void test(void* arg) {
     }
 
     printk(LOG_TRACE, "[THREAD %d] SUCCESS! TLS variable stayed intact.\n", thread_id);
-    for (;;);
+    return 0;
 }
 static void main_kthread(void) {
-    clone(test, 1, NULL, false);
-    clone(test, 2, NULL, false);
     launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL, "launchd");
     for (;;) {
         asm volatile("sti; hlt");

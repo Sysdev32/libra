@@ -19,6 +19,8 @@
 #include <hals/net/RTL8139.h>
 #include <systable.h>
 
+#include "drivers/tty.h"
+#include "drivers/usb/hid/keyboard.h"
 #include "hals/ps2.h"
 volatile uint64_t ticks = 0;
 extern struct flanterm_context *ft_ctx;
@@ -101,9 +103,10 @@ void idt_init(void) {
     ps2_init();
     strcpy(nodename, "machine");
 }
-
+struct InterruptRegisters *current_intr;
 static void handle_syscall(struct InterruptRegisters *regs) {
     arg *args = (arg*)regs->rbx;
+    current_intr = regs;
     regs->rax = systable[regs->rax](args);
 }
 uint64_t intrhandler(struct InterruptRegisters* regs) {

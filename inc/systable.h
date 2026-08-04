@@ -212,7 +212,16 @@ unsigned long long sys_set_tls(arg* a);
 // Syscall 66
 unsigned long long sys_clone(arg* a);
 
-static const syscall systable[67] = {
+// Syscall 67
+unsigned long long sys_join(arg* a);
+
+// Syscall 68
+unsigned long long sys_pci_lookup(arg* a);
+
+// Syscall 69
+unsigned long long sysc_thread_exit(arg *a);
+
+static const syscall systable[70] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
@@ -281,5 +290,8 @@ static const syscall systable[67] = {
     sys_tty_draw_rect,
     sys_get_tls,
     sys_set_tls,
-    sys_clone
+    sys_clone,
+    sys_join,
+    sys_pci_lookup,
+    sysc_thread_exit
 };
