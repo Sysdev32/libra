@@ -6,6 +6,10 @@
 #include <drivers/fb.h>
 #include <arch/x86_64/schedule.h>
 
+#include <arch/x86_64/idt.h>
+
+#include "hals/ahci.h"
+
 char cwd[512];
 bool defined = false;
 typedef uint64_t page_table_t;
@@ -61,7 +65,7 @@ static inline uint64_t read_fs_base(void) {
     return rdmsr(IA32_FS_BASE);
 }
 
-static void safe_memcpy(void *dest, const void *src, size_t n) {
+void safe_memcpy(void *dest, const void *src, size_t n) {
     uint8_t *d = (uint8_t *)dest;
     const uint8_t *s = (const uint8_t *)src;
     for (size_t i = 0; i < n; i++) {
@@ -83,7 +87,7 @@ static inline bool is_valid_user_pointer(const void *addr, size_t size) {
     return true;
 }
 
-static void init_fpu_context(struct thread *thread) {
+void init_fpu_context(struct thread *thread) {
     uint32_t mxcsr = default_mxcsr;
     memset((void *)thread->fpu_state, 0, sizeof(thread->fpu_state));
     asm volatile("fninit" ::: "memory");
@@ -100,14 +104,13 @@ void fpu_context_restore(void) {
     struct thread *thread = &thread_table[current_thread_id];
     asm volatile("fxrstor64 %0" :: "m"(thread->fpu_state) : "memory");
 }
-
-static uint64_t irq_save(void) {
+uint64_t irq_save(void) {
     uint64_t flags;
     asm volatile("pushfq; pop %0; cli" : "=r"(flags) :: "memory");
     return flags;
 }
 
-static void irq_restore(uint64_t flags) {
+void irq_restore(uint64_t flags) {
     if (flags & (1ULL << 9)) {
         asm volatile("sti" ::: "memory");
     }
@@ -909,10 +912,252 @@ int ps(struct utask* u, int max_len) {
 
     return len_found;
 }
+#include <stdint.h>
+#include <stddef.h>
 
+#define PAGE_SIZE          0x1000ULL
+#define PAGE_PRESENT       (1ULL << 0)
+#define PAGE_HUGE          (1ULL << 7)
+#define PAGE_FRAME_MASK    0x000FFFFFFFFFF000ULL
+#define PAGE_FLAGS_MASK    0xFFF0000000000FFFULL
+
+#ifndef HHDM_OFFSET
+extern uint64_t g_hhdm_offset;
+#define HHDM_OFFSET g_hhdm_offset
+#endif
+
+#define PHYS_TO_VIRT(phys) ((void *)((uint64_t)(phys) + HHDM_OFFSET))
+#define VIRT_TO_PHYS(virt) ((uint64_t)(virt) - HHDM_OFFSET)
+// Static physical frame pool inside the file
+#define MAX_POOL_PAGES 4096
+static _Alignas(PAGE_SIZE) uint8_t g_static_frame_pool[MAX_POOL_PAGES][PAGE_SIZE];
+static size_t g_pool_index = 0;
+
+static inline uint64_t alloc_static_frame(void) {
+    if (g_pool_index >= MAX_POOL_PAGES) {
+        // Pool exhausted
+        return 0;
+    }
+    uint8_t *page_virt = g_static_frame_pool[g_pool_index++];
+
+    // Zero out the frame
+    uint64_t *ptr = (uint64_t *)page_virt;
+    for (size_t i = 0; i < 512; i++) {
+        ptr[i] = 0;
+    }
+
+    return VIRT_TO_PHYS(page_virt);
+}
+
+static inline void copy_phys_frame(uint64_t dst_phys, uint64_t src_phys) {
+    uint64_t *dst = (uint64_t *)PHYS_TO_VIRT(dst_phys);
+    uint64_t *src = (uint64_t *)PHYS_TO_VIRT(src_phys);
+    for (size_t i = 0; i < 512; i++) {
+        dst[i] = src[i];
+    }
+}
+
+static void clone_table_level(uint64_t src_table_phys, uint64_t dst_table_phys, int level) {
+    uint64_t *src_table = (uint64_t *)PHYS_TO_VIRT(src_table_phys);
+    uint64_t *dst_table = (uint64_t *)PHYS_TO_VIRT(dst_table_phys);
+
+    int max_entries = (level == 4) ? 256 : 512;
+
+    for (int i = 0; i < max_entries; i++) {
+        uint64_t entry = src_table[i];
+        if (!(entry & PAGE_PRESENT)) {
+            continue;
+        }
+
+        uint64_t src_frame_phys = entry & PAGE_FRAME_MASK;
+        uint64_t flags          = entry & PAGE_FLAGS_MASK;
+
+        // Leaf entry: 4KiB page at Level 1, or Huge Page at Level 2/3
+        if (level == 1 || (entry & PAGE_HUGE)) {
+            uint64_t child_frame_phys = alloc_static_frame();
+            copy_phys_frame(child_frame_phys, src_frame_phys);
+            dst_table[i] = child_frame_phys | flags;
+        }
+        // Intermediate level table
+        else {
+            uint64_t child_table_phys = alloc_static_frame();
+            clone_table_level(src_frame_phys, child_table_phys, level - 1);
+            dst_table[i] = child_table_phys | flags;
+        }
+    }
+}
+
+void vmm_clone_pml4(uint64_t old_pml4_phys, uint64_t new_pml4_phys) {
+    // 1. Deep copy user space (PML4 entries 0 - 255)
+    clone_table_level(old_pml4_phys, new_pml4_phys, 4);
+
+    // 2. Share kernel space (PML4 entries 256 - 511)
+    uint64_t *src_pml4 = (uint64_t *)PHYS_TO_VIRT(old_pml4_phys);
+    uint64_t *dst_pml4 = (uint64_t *)PHYS_TO_VIRT(new_pml4_phys);
+
+    for (int i = 256; i < 512; i++) {
+        dst_pml4[i] = src_pml4[i];
+    }
+}
 struct process *get_current_proc(void) {
     uint64_t flags = irq_save();
     struct process *proc = thread_table[current_thread_id].process;
     irq_restore(flags);
     return proc;
+}
+static inline uint64_t read_cr3(void)
+{
+    uint64_t cr3;
+    asm volatile ("mov %%cr3, %0" : "=r"(cr3));
+    return cr3;
+}
+void vmm_map_range(page_table_t *pml4, uint64_t virt, uint64_t phys, uint64_t size, uint64_t flags) {
+    if (size == 0) return;
+
+    // Align base addresses down to page boundaries
+    uint64_t virt_start = virt & ~(PAGE_SIZE - 1);
+    uint64_t phys_start = phys & ~(PAGE_SIZE - 1);
+
+    // Calculate total size accounting for unaligned starting offset
+    uint64_t offset = virt & (PAGE_SIZE - 1);
+    uint64_t aligned_size = (size + offset + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1);
+
+    for (uint64_t i = 0; i < aligned_size; i += PAGE_SIZE) {
+        vmm_map_page(pml4, virt_start + i, phys_start + i, flags);
+    }
+}
+#define PTE_PRESENT (1ULL << 0)
+#define PTE_USER     (1ULL << 2)
+int fork(uint64_t current_rsp) {
+    uint64_t flags = irq_save();
+
+    struct thread *parent_thread = &thread_table[current_thread_id];
+    struct process *parent_proc = parent_thread->process;
+
+    if (!parent_proc || !parent_thread) {
+        irq_restore(flags);
+        return -1;
+    }
+
+    // 1. Allocate process slot for child
+    struct process *child_proc = NULL;
+    int child_pid = -1;
+
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (!process_table[i].active) {
+            child_pid = i;
+            child_proc = &process_table[i];
+            break;
+        }
+    }
+
+    if (!child_proc) {
+        printk(LOG_ERROR, "[FORK_ERR] No free process slots\n");
+        irq_restore(flags);
+        return -1;
+    }
+
+    // 2. Allocate thread slot for child
+    int child_tid = -1;
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (thread_table[i].state == TASK_STATE_DEAD) {
+            child_tid = i;
+            break;
+        }
+    }
+
+    if (child_tid == -1) {
+        printk(LOG_ERROR, "[FORK_ERR] No free thread slots for single child thread\n");
+        irq_restore(flags);
+        return -1;
+    }
+
+    // 3. Create new address space and clone current mappings
+    page_table_t *new_pml4 = vmm_create_address_space();
+    if (!new_pml4) {
+        printk(LOG_ERROR, "[FORK_ERR] Failed to allocate child PML4\n");
+        irq_restore(flags);
+        return -1;
+    }
+
+    vmm_clone_pml4(read_cr3(), (uint64_t)VIRT_TO_PHYS(new_pml4));
+
+    // 4. Handle isolated physical stack allocation & copy
+    uint64_t stack_size = 64 * PAGE_SIZE;
+    uint64_t stack_virt_base = 0x600000;
+    uint64_t new_stack_phys = stack_alloc(stack_size);
+
+    if (!new_stack_phys) {
+        printk(LOG_ERROR, "[FORK_ERR] Failed to allocate child stack memory\n");
+        irq_restore(flags);
+        return -1;
+    }
+
+    // Copy live parent user stack content into the child's new physical backing
+    uint8_t *src_stack = (uint8_t *)stack_virt_base;
+    uint8_t *dst_stack = (uint8_t *)PHYS_TO_VIRT(new_stack_phys);
+    safe_memcpy(dst_stack, src_stack, stack_size);
+
+    // Override the stack region in child PML4 with the new physical frames
+    vmm_map_range(
+        new_pml4,
+        stack_virt_base,
+        new_stack_phys,
+        stack_size,
+        PTE_WRITABLE | PTE_USER | PTE_PRESENT
+    );
+
+    // 5. Populate child process metadata
+    child_proc->pid = child_pid;
+    child_proc->pml4 = new_pml4;
+    child_proc->uid = parent_proc->uid;
+    child_proc->gid = parent_proc->gid;
+    child_proc->parent_pid = parent_proc->pid;
+    child_proc->msg_head = 0;
+    child_proc->msg_tail = 0;
+    child_proc->msg_count = 0;
+    child_proc->pending_signals = 0;
+    child_proc->sig_mask = parent_proc->sig_mask;
+
+    safe_memcpy(child_proc->signal_handlers, parent_proc->signal_handlers, sizeof(child_proc->signal_handlers));
+    safe_memcpy(child_proc->cwd, parent_proc->cwd, sizeof(child_proc->cwd));
+    strcpy(child_proc->name, parent_proc->name);
+    child_proc->active = true;
+
+    // 6. Populate child thread context
+    struct thread *child_thread = &thread_table[child_tid];
+    child_thread->tid = child_tid;
+    child_thread->process = child_proc;
+    child_thread->user_rsp = parent_thread->user_rsp;
+    child_thread->fs_base = parent_thread->fs_base;
+    child_thread->gs_base = parent_thread->gs_base;
+    child_thread->exit_code = 0;
+    child_thread->joining_tid = -1;
+
+    safe_memcpy(child_thread->tls_slots, parent_thread->tls_slots, sizeof(parent_thread->tls_slots));
+    safe_memcpy(child_thread->fpu_state, parent_thread->fpu_state, sizeof(child_thread->fpu_state));
+
+    // 7. Construct kernel trap frame for child thread execution
+    uintptr_t child_kstack_top = (uintptr_t)&child_thread->kernel_stack[KERNEL_STACK_SIZE];
+    uint64_t *child_kstack_aligned = (uint64_t *)(child_kstack_top & ~0xFULL);
+
+    uint64_t *child_ctx = child_kstack_aligned - 24;
+    uint64_t *parent_ctx = (uint64_t *)current_rsp;
+
+    // Copy parent's saved register context to child kernel stack
+    safe_memcpy(child_ctx, parent_ctx, 24 * sizeof(uint64_t));
+
+    // Set child return value (RAX slot) to 0
+    child_ctx[0] = 0;
+
+    child_thread->rsp = (uint64_t)child_ctx;
+    child_thread->state = TASK_STATE_READY;
+
+    printk(LOG_TRACE, "[FORK] PID %d (TID %d) forked single-threaded child PID %d (TID %d)\n",
+           parent_proc->pid, parent_thread->tid, child_pid, child_tid);
+
+    irq_restore(flags);
+
+    // Parent return: returns child's PID
+    return child_pid;
 }

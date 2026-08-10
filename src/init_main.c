@@ -28,6 +28,7 @@
 #include "ioctl.h"
 #include "hals/nvme.h"
 #include "hals/ps2.h"
+#include <hals/virtio/virtio_gpu.h>
 struct flanterm_context *ft_ctx;
 extern char __user_src_start[];
 extern char __user_src_end[];
@@ -520,6 +521,211 @@ extern struct process process_table[MAX_PROCESSES];
 extern struct thread thread_table[MAX_THREADS];
 
 extern volatile int current_thread_id;
+int execve(const char *path, char *const argv[], char *const envp[], uint64_t current_rsp) {
+    (void)envp; // Unused for now
+
+    // 1. Validate inputs and current execution context
+    if (!path) {
+        printk(LOG_ERROR, "[EXECVE] NULL path pointer\n");
+        return -1;
+    }
+
+    struct thread *curr_thread = &thread_table[current_thread_id];
+    struct process *curr_proc = curr_thread->process;
+
+    if (!curr_proc || !curr_thread) {
+        return -1;
+    }
+
+    // Safely parse target path
+    char kpath[256];
+    memset(kpath, 0, sizeof(kpath));
+    for (int i = 0; i < 255; i++) {
+        char c = path[i];
+        kpath[i] = c;
+        if (c == '\0') break;
+        if (i == 254) kpath[255] = '\0';
+    }
+
+    // Count and parse argv vector safely
+    int argc = 0;
+    if (argv != NULL) {
+        while (argv[argc] != NULL) {
+            argc++;
+            if (argc > 64) {
+                printk(LOG_ERROR, "[EXECVE] Too many arguments\n");
+                return -1;
+            }
+        }
+    }
+
+    // 2. Open executable binary from VFS
+    int user_fd = vfs_open(kpath, O_RDONLY, 0);
+    if (user_fd < 0) {
+        printk(LOG_ERROR, "[EXECVE] Cannot open binary '%s'\n", kpath);
+        return -1;
+    }
+
+    // 3. Create fresh user page table PML4
+    page_table_t *new_pml4 = vmm_create_address_space();
+    if (!new_pml4) {
+        printk(LOG_ERROR, "[EXECVE] Failed to allocate PML4\n");
+        vfs_free_fd(user_fd);
+        return -1;
+    }
+
+    // 4. Allocate memory buffers & read raw ELF binary into memory
+    struct vfs_stat stat = {0};
+    vfs_fstat(user_fd, &stat);
+    uint64_t user_flags = PTE_USER | PTE_WRITABLE;
+
+    uint64_t safe_code_phys_base = (uint64_t)arena_alloc(stat.st_size);
+    uint64_t safe_stack_phys_base = stack_alloc(256 * 1024);
+    uint64_t raw_elf_phys_base = safe_code_phys_base + (9216 * PAGE_SIZE);
+
+    void *raw_elf_hhdm_ptr = (void *)(raw_elf_phys_base + HHDM_OFFSET);
+    int file_cursor = 0;
+    uint64_t total_bytes_read = 0;
+
+    while (1) {
+        void *dst = (void *)((uint8_t *)raw_elf_hhdm_ptr + total_bytes_read);
+        int read = vfs_read(user_fd, dst, PAGE_SIZE, file_cursor);
+        if (read <= 0) break;
+        total_bytes_read += read;
+        file_cursor += read;
+    }
+
+    uint64_t user_code_vma = elf_vaddr(raw_elf_hhdm_ptr);
+    vfs_free_fd(user_fd);
+
+    // 5. Map code & staging pages into new virtual address space
+    int staging_pages = 8300;
+    for (int i = 0; i < staging_pages; i++) {
+        uint64_t phys = safe_code_phys_base + i * PAGE_SIZE;
+        uint64_t virt = user_code_vma + i * PAGE_SIZE;
+        memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
+        vmm_map_page(new_pml4, virt, phys, user_flags);
+    }
+
+    ElfLoadResult loaded = load_elf(raw_elf_hhdm_ptr, safe_code_phys_base, user_code_vma);
+    if (!loaded.entry_point) {
+        printk(LOG_ERROR, "[EXECVE] ELF loading failed\n");
+        return -1;
+    }
+
+    // 6. Map and setup user stack pages
+    uint64_t user_stack_vma = 0x600000;
+    int stack_pages = 64;
+
+    for (int i = 0; i < stack_pages; i++) {
+        uint64_t virt = user_stack_vma + i * PAGE_SIZE;
+        uint64_t phys = safe_stack_phys_base + i * PAGE_SIZE;
+        memset((void *)(phys + HHDM_OFFSET), 0, PAGE_SIZE);
+        vmm_map_page(new_pml4, virt, phys, user_flags);
+    }
+
+    uint64_t stack_top_vma = user_stack_vma + stack_pages * PAGE_SIZE;
+    uint64_t stack_top_hhdm = safe_stack_phys_base + stack_pages * PAGE_SIZE + HHDM_OFFSET;
+
+    uint64_t cur_vma = stack_top_vma;
+    uint64_t cur_hhdm = stack_top_hhdm;
+    uint64_t argv_ptrs[64];
+
+    // Push argument strings to user stack space
+    for (int i = argc - 1; i >= 0; i--) {
+        size_t len = strlen(argv[i]) + 1;
+        cur_vma -= len;
+        cur_hhdm -= len;
+        safe_memcpy((void *)cur_hhdm, argv[i], len);
+        argv_ptrs[i] = cur_vma;
+    }
+
+    // Align stack boundary (16-byte ABI alignment)
+    cur_vma &= -8ULL;
+    cur_hhdm &= -8ULL;
+
+    uint64_t stack_words = (uint64_t)argc + 2;
+    if (((cur_vma - (stack_words * 8)) & 0xFULL) != 0) {
+        cur_vma -= 8;
+        cur_hhdm -= 8;
+    }
+
+    // Push NULL string terminator pointer
+    cur_vma -= 8;
+    cur_hhdm -= 8;
+    *(uint64_t *)cur_hhdm = 0;
+
+    // Push argv array pointers onto stack
+    for (int i = argc - 1; i >= 0; i--) {
+        cur_vma -= 8;
+        cur_hhdm -= 8;
+        *(uint64_t *)cur_hhdm = argv_ptrs[i];
+    }
+
+    uint64_t argv_start = cur_vma;
+
+    // Push argc onto stack top
+    cur_vma -= 8;
+    cur_hhdm -= 8;
+    *(uint64_t *)cur_hhdm = argc;
+
+    // 7. POSIX behavior: Terminate sibling threads belonging to this process
+    uint64_t flags = irq_save();
+    for (int i = 0; i < MAX_THREADS; i++) {
+        if (i != current_thread_id && thread_table[i].process == curr_proc) {
+            thread_table[i].state = TASK_STATE_DEAD;
+            thread_table[i].rsp = 0;
+            thread_table[i].user_rsp = 0;
+            thread_table[i].joining_tid = -1;
+        }
+    }
+
+    // 8. Replace address space (PML4) & update current process metadata
+    curr_proc->pml4 = new_pml4;
+
+    // Extract base filename for process name
+    const char *last_slash = kpath;
+    for (const char *p = kpath; *p; p++) {
+        if (*p == '/') last_slash = p + 1;
+    }
+    strcpy(curr_proc->name, last_slash);
+
+    // Reset pending signals and IPC queues
+    curr_proc->pending_signals = 0;
+    curr_proc->msg_head = 0;
+    curr_proc->msg_tail = 0;
+    curr_proc->msg_count = 0;
+
+    // 9. Reset thread control state & overwrite trap frame to jump to entry point
+    init_fpu_context(curr_thread);
+    curr_thread->user_rsp = cur_vma;
+    curr_thread->fs_base = 0;
+    curr_thread->gs_base = 0;
+
+    // Switch active page tables immediately to child space
+    uint64_t new_cr3_phys = (uint64_t)new_pml4 - HHDM_OFFSET;
+    asm volatile("mov %0, %%cr3" :: "r"(new_cr3_phys) : "memory");
+
+    // Overwrite the interrupt context frame at current_rsp to jump directly into new entry
+    uint64_t *ctx = (uint64_t *)current_rsp;
+    memset(ctx, 0, 24 * sizeof(uint64_t));
+
+    ctx[4]  = argv_start;             // RSI = argv
+    ctx[5]  = (uint64_t)argc;         // RDI = argc
+    ctx[17] = loaded.entry_point;     // RIP = executable entry point
+    ctx[18] = 0x1B;                   // CS  = User Code Segment (0x1B)
+    ctx[19] = 0x202;                  // RFLAGS = Enable Interrupts
+    ctx[20] = cur_vma;                // RSP = New User Stack Pointer
+    ctx[21] = 0x23;                   // SS  = User Data Segment (0x23)
+
+    irq_restore(flags);
+
+    printk(LOG_TRACE, "[EXECVE] Process PID %d executing new binary '%s'\n", curr_proc->pid, curr_proc->name);
+
+    // Return current_rsp frame; kernel ISR return loop jumps into the new process entry
+    return 0;
+}
+
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -810,7 +1016,8 @@ static void tty_echo_off(char* path) {
 }
 pci_device_t* devices;
 uint32_t devicecount = 0;
-
+virtio_gpu_device_t g_virtio_gpu;
+virtio_device_t vdev;
 void tests(void);
 
 // ReSharper disable once CppUseInternalLinkage
@@ -909,6 +1116,11 @@ void _start(void) { // NOLINT(*-reserved-identifier)
     
     pci_scan_bus(devices, 256, &devicecount);
     for (int i=0; i<devicecount; i++) {
+        if (devices[i].vendor_id == 0x1AF4 && devices[i].device_id == 0x1050) {
+            virtio_init_device(&vdev, devices[i].bus, devices[i].device, devices[i].function);
+            virtio_gpu_init(&g_virtio_gpu, &vdev, 1280, 720, framebuffer->address);
+            tty_switch_gpu();
+        }
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
     nvme_init();

@@ -585,3 +585,105 @@
     * `a->arg[3]` (`uint64_t h`): Height in pixels.
     * `a->arg[4]` (`uint32_t color`): 32-bit color value.
 * **Description:** Fills a rectangular region on active TTY display using `tty_draw_pixel`.
+
+---
+
+### Syscall 64: sys_get_tls
+* **Signature:** `uint64_t get_tls(void)`
+* **Arguments:** None.
+* **Description:** Retrieves the thread-local storage pointer for the current thread.
+
+---
+
+### Syscall 65: sys_set_tls
+* **Signature:** `int set_tls(uint64_t value)`
+* **Arguments:**
+    * `a->arg[0]` (`uint64_t value`): TLS pointer value to set.
+* **Description:** Sets the thread-local storage pointer for the current thread.
+
+---
+
+### Syscall 66: sys_clone
+* **Signature:** `int clone(uint64_t stack, uint64_t arg)`
+* **Arguments:**
+    * `a->arg[0]` (`uint64_t stack`): Stack pointer for new thread.
+    * `a->arg[1]` (`uint64_t arg`): Thread argument.
+* **Description:** Creates a new thread with specified stack and argument.
+
+---
+
+### Syscall 67: sys_join
+* **Signature:** `int join(uint64_t thread_id)`
+* **Arguments:**
+    * `a->arg[0]` (`uint64_t thread_id`): Thread ID to wait for.
+* **Description:** Waits for a thread to exit.
+
+---
+
+### Syscall 68: sys_pci_lookup
+* **Signature:** `int pci_lookup(uint16_t vendor, uint16_t device, uint64_t *out_addr)`
+* **Arguments:**
+    * `a->arg[0]` (`uint16_t vendor`): PCI vendor ID.
+    * `a->arg[1]` (`uint16_t device`): PCI device ID.
+    * `a->arg[2]` (`uint64_t *out_addr`): Output pointer for device address.
+* **Description:** Queries PCI device table for matching vendor/device pair.
+
+---
+
+### Syscall 69: sys_thread_exit
+* **Signature:** `void thread_exit(int status)`
+* **Arguments:**
+    * `a->arg[0]` (`int status`): Thread exit status code.
+* **Description:** Terminates the current thread with specified status.
+
+---
+
+### Syscall 70: sys_fork
+* **Signature:** `int fork(void)`
+* **Arguments:** None.
+* **Description:** Creates a child process as a copy of the parent.
+
+---
+
+### Syscall 71: sys_execve
+* **Signature:** `int execve(const char *path, char *const argv[], char *const envp[])`
+* **Arguments:**
+    * `a->arg[0]` (`const char *path`): Executable file path.
+    * `a->arg[1]` (`char *const argv[]`): Argument array.
+    * `a->arg[2]` (`char *const envp[]`): Environment array.
+* **Description:** Replaces current process image with new executable.
+
+---
+
+### Syscall 72: sys_link
+* **Signature:** `int link(const char *oldpath, const char *newpath)`
+* **Arguments:**
+    * `a->arg[0]` (`const char *oldpath`): Existing file path.
+    * `a->arg[1]` (`const char *newpath`): New hard link path.
+* **Description:** Creates a hard link to an existing file.
+
+---
+
+### Syscall 73: sys_socket_listen
+* **Signature:** `int listen(int sock_fd, const char *addr)`
+* **Arguments:**
+    * `a->arg[0]` (`int sock_fd`): Socket index in system socket table.
+    * `a->arg[1]` (`const char *addr`): Local address to listen on (e.g., "192.168.1.1:8080").
+* **Description:** Marks a socket as passive listener and binds it to a local address. Invokes `sock.listen()`.
+
+---
+
+### Syscall 74: sys_socket_accept
+* **Signature:** `int accept(int sock_fd)`
+* **Arguments:**
+    * `a->arg[0]` (`int sock_fd`): Listening socket index.
+* **Description:** Blocks until an incoming connection arrives, creates a new connected socket, and returns its index. Invokes `sock.accept()`.
+
+---
+
+### Syscall 75: sys_socket_bind
+* **Signature:** `int bind(int sock_fd, const char *addr)`
+* **Arguments:**
+    * `a->arg[0]` (`int sock_fd`): Socket index in system socket table.
+    * `a->arg[1]` (`const char *addr`): Local address to bind to (e.g., "192.168.1.1:8080" for IPv4 or "unix:///tmp/mysock" for Unix domain sockets).
+* **Description:** Binds a socket to a local address without marking it as passive listener. Can be followed by `listen()` to start accepting connections, or used with UDP for explicit port binding. Invokes `sock.bind()`.

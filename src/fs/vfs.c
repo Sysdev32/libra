@@ -13,6 +13,7 @@
 
 #define MAX_OPEN_FILES 32
 #define MAX_VFS_FILES  128  // Set a safe maximum for your ramdisk files
+
 // The array that securely holds the raw VFS file pointers
 static struct file *global_fd_table[MAX_OPEN_FILES];
 
@@ -49,7 +50,7 @@ int perms(int fd, int flag) {
         int u_r = (u >> 2) & 1; int u_w = (u >> 1) & 1; int u_x = u & 1;
         int g_r = (g >> 2) & 1; int g_w = (g >> 1) & 1; int g_x = g & 1;
         int o_r = (o >> 2) & 1; int o_w = (o >> 1) & 1; int o_x = o & 1;
-        
+
         int u_f = 0, g_f = 0, o_f = 0;
         if (flag == 0) {
             u_f = u_r; g_f = g_r; o_f = o_r;
@@ -71,13 +72,8 @@ int perms(int fd, int flag) {
 }
 
 int permdir(struct dentry *dir, int flag) {
-    if (dir == NULL || dir->inode == NULL) {
-        return 0;
-    }
-
-    if (getuid() == 0) {
-        return 1;
-    }
+    if (dir == NULL || dir->inode == NULL) return 0;
+    if (getuid() == 0) return 1;
 
     uint32_t permissions = dir->inode->mode & 00777;
     uint32_t u = (permissions >> 6) & 7;
@@ -104,9 +100,8 @@ int permdir(struct dentry *dir, int flag) {
         return u_f;
     } else if ((uint32_t)getgid() == dir->inode->gid) {
         return g_f;
-    } else {
-        return o_f;
     }
+    return o_f;
 }
 
 __attribute__((used, section(".limine_requests")))
@@ -158,8 +153,10 @@ static void clear_files(void) __attribute__((unused));
 static void clear_files(void) {
     for (size_t i = 0; i < file_count; i++) {
         memset(files[i].path, 0, 256);
+        if (files[i].data) {
             kfree(files[i].data);
             files[i].data = NULL;
+        }
         files[i].size = 0;
         files[i].mode = 0;
         files[i].uid = 0;
@@ -202,13 +199,14 @@ uint32_t global_ino_counter = 1;
 
 static struct dentry *create_dentry_node(const char *name, size_t name_len, uint32_t mode, uint32_t uid, uint32_t gid, uint32_t nlink, uint64_t mtime, struct dentry *parent) {
     if (parent != NULL && parent->child_count >= MAX_DIR_CHILDREN) {
-        printk(LOG_ERROR, "VFS: Maximum directory child limit (%d) reached!\n", MAX_DIR_CHILDREN);
+        printk(LOG_ERROR, "[VFS] create_dentry_node: Maximum directory child limit reached\n");
         return NULL;
     }
 
     struct dentry *d = kmalloc(sizeof(struct dentry));
     struct inode *in = kmalloc(sizeof(struct inode));
     if (!d || !in) {
+        printk(LOG_ERROR, "[VFS] create_dentry_node: kmalloc failed\n");
         if (d) kfree(d);
         if (in) kfree(in);
         return NULL;
@@ -236,7 +234,7 @@ static struct dentry *create_dentry_node(const char *name, size_t name_len, uint
     }
     memcpy(d->name, name, name_len);
     d->name[name_len] = '\0';
-    
+
     d->inode = in;
     d->parent = parent;
     d->child_count = 0;
@@ -254,10 +252,11 @@ static struct dentry *create_dentry_node(const char *name, size_t name_len, uint
 }
 
 struct dentry *vfs_lookup(const char *path) {
-    if (path == NULL || path[0] != '/') return NULL;
+    if (path == NULL) return NULL;
 
     struct dentry *current = root_dentry;
-    const char *ptr = path + 1;
+    const char *ptr = path;
+    if (*ptr == '/') ptr++;
 
     while (*ptr != '\0') {
         while (*ptr == '/') ptr++;
@@ -269,7 +268,7 @@ struct dentry *vfs_lookup(const char *path) {
 
         if (component_len > 0) {
             current = find_child(current, component_start, component_len);
-            if (current == NULL) return NULL; 
+            if (current == NULL) return NULL;
         }
     }
     return current;
@@ -277,7 +276,10 @@ struct dentry *vfs_lookup(const char *path) {
 
 static int append_file(const char *path, uint64_t path_size, const uint8_t *data, uint64_t size, uint32_t mode, uint32_t uid, uint32_t gid, uint64_t mtime) {
     if (path == NULL || path_size == 0) return -1;
-    if (file_count >= MAX_VFS_FILES) return -1;
+    if (file_count >= MAX_VFS_FILES) {
+        printk(LOG_ERROR, "[VFS] append_file: table full\n");
+        return -1;
+    }
 
     memset(files[file_count].path, 0, 256);
 
@@ -301,37 +303,38 @@ static int append_file(const char *path, uint64_t path_size, const uint8_t *data
     files[file_count].st_mtim.tv_nsec = 0;
     files[file_count].st_ctim.tv_sec = mtime;
     files[file_count].st_ctim.tv_nsec = 0;
-    
+
     int created_fd = (int)file_count;
     file_count++;
-    
-    return created_fd; 
+
+    return created_fd;
 }
 
 int init_vfs(void) {
+    printk(LOG_INFO, "[VFS] Initializing VFS...\n");
     struct limine_file *initramfs_file = find_initramfs_module(module_request.response);
     if (initramfs_file == NULL) {
-        printk(LOG_ERROR, "initramfs module pointer is NULL from Limine.\n");
+        printk(LOG_ERROR, "[VFS] init_vfs: initramfs module pointer is NULL from Limine.\n");
         return -1;
     }
-    
+
     struct timespec ts = {0};
     rtc_get_time(&ts);
     root_dentry = create_dentry_node("", 0, S_IFDIR | 0755, 0, 0, 1, ts.tv_sec, NULL);
     if (root_dentry == NULL) {
-        printk(LOG_ERROR, "Failed to allocate root dentry node memory.\n");
+        printk(LOG_ERROR, "[VFS] init_vfs: Failed to allocate root dentry node memory.\n");
         return -1;
     }
-    
+
     const uint8_t *archive = (const uint8_t *)initramfs_file->address;
     uint64_t archive_size = initramfs_file->size;
     uint64_t offset = 0;
 
     while (offset + sizeof(struct cpio_newc_header) <= archive_size) {
         const struct cpio_newc_header *header = (const struct cpio_newc_header *)(archive + offset);
-        
+
         if (memcmp(header->c_magic, "070701", 6) != 0) {
-            printk(LOG_ERROR, "Invalid CPIO format signature magic mismatch.\n");
+            printk(LOG_ERROR, "[VFS] init_vfs: Invalid CPIO format signature magic mismatch.\n");
             return -1;
         }
 
@@ -351,7 +354,7 @@ int init_vfs(void) {
         uint64_t next_offset = align4(data_offset + file_size);
 
         if (name_offset + name_size > archive_size || data_offset + file_size > archive_size) {
-            printk(LOG_ERROR, "Header metrics exceed boundaries of loaded ramdisk image.\n");
+            printk(LOG_ERROR, "[VFS] init_vfs: Header metrics exceed boundaries of loaded ramdisk image.\n");
             return -1;
         }
 
@@ -361,16 +364,17 @@ int init_vfs(void) {
             continue;
         }
         if (strcmp(path, "TRAILER!!!") == 0) {
+            printk(LOG_INFO, "[VFS] init_vfs: Initramfs unpacked successfully.\n");
             return 0;
         }
         size_t pure_path_len = strlen(path);
         int appended_fd = append_file(path, pure_path_len + 1, archive + data_offset, file_size, mode, uid, gid, mtime);
-        
+
         if (appended_fd < 0) {
-            printk(LOG_WARNING, "append_file failed! File entry was rejected by global tracker.\n");
+            printk(LOG_ERROR, "[VFS] init_vfs: append_file failed! Ramdisk entry rejected.\n");
             for(;;);
         }
-        
+
         struct dentry *current_dir = root_dentry;
         const char *ptr = path;
         while (*ptr != '\0') {
@@ -389,7 +393,7 @@ int init_vfs(void) {
                 rtc_get_time(&spec);
                 next_node = create_dentry_node(component_start, component_len, node_mode, uid, gid, nlink, spec.tv_sec, current_dir);
                 if (next_node == NULL) {
-                    printk(LOG_ERROR, "Static array directory child allocation limits hit.\n");
+                    printk(LOG_ERROR, "[VFS] init_vfs: Static array directory child allocation limits hit.\n");
                     return -1;
                 }
                 if (*ptr == '\0' && (node_mode & S_IFMT) == S_IFREG) {
@@ -397,17 +401,17 @@ int init_vfs(void) {
                     next_node->inode->mode = mode;
                     next_node->inode->uid  = uid;
                     next_node->inode->gid  = gid;
-                    next_node->inode->data = files[appended_fd].data; 
+                    next_node->inode->data = files[appended_fd].data;
                 }
             }
-            
+
             current_dir = next_node;
         }
-        
+
         offset = next_offset;
     }
 
-    printk(LOG_ERROR, "Loop finished naturally without reaching a TRAILER!!! marker sequence.\n");
+    printk(LOG_ERROR, "[VFS] init_vfs: Reached end of archive without TRAILER!!! marker.\n");
     return -1;
 }
 
@@ -449,53 +453,43 @@ int vfs_read(int fd, void *buf, size_t count, uint64_t offset) {
         }
 
         memcpy(buf, (const uint8_t *)file->data + offset, count);
-        return (int)count; 
+        return (int)count;
     }
 
     return -EBADF;
 }
 
-/**
- * Modern POSIX-compliant vfs_open
- */
 int vfs_open(const char *path, int flags, uint32_t mode) {
     if (path == NULL) return -EINVAL;
 
-    char formatted_path[256];
-    memset(formatted_path, 0, 256);
-
-    if (path[0] != '/') {
-        formatted_path[0] = '/';
-        strncpy(formatted_path + 1, path, 254);
-    } else {
-        strncpy(formatted_path, path, 255);
-    }
-
-    struct dentry *target = vfs_lookup(formatted_path);
+    // 1. Resolve target
+    struct dentry *target = vfs_lookup(path);
 
     if (target != NULL) {
         if ((flags & O_CREAT) && (flags & O_EXCL)) {
-            return -EEXIST; // File exists but O_CREAT | O_EXCL specified
+            return -EEXIST;
         }
     } else {
+        // Must have O_CREAT flag set to create missing target
         if (!(flags & O_CREAT)) {
-            return -ENOENT; // File doesn't exist and O_CREAT not specified
+            return -ENOENT;
         }
 
-        // Create the new file
-        int create_res = vfs_create_file(NULL, formatted_path, 0);
+        // Create the file
+        int create_res = vfs_create_file(NULL, path, 0);
+        printk(LOG_INFO, "create_res=%d\n", create_res);
         if (create_res < 0) return create_res;
 
-        target = vfs_lookup(formatted_path);
+        // Re-lookup the newly created dentry
+        target = vfs_lookup(path);
         if (target == NULL) return -EIO;
 
-        // Apply specified creation mode
         if (mode != 0) {
             target->inode->mode = S_IFREG | (mode & 0777);
         }
     }
 
-    // Allocate handle in global_fd_table
+    // Allocate open file descriptor slot
     int open_fd = -1;
     for (int i = 0; i < MAX_OPEN_FILES; i++) {
         if (global_fd_table[i] == NULL) {
@@ -504,7 +498,7 @@ int vfs_open(const char *path, int flags, uint32_t mode) {
         }
     }
 
-    if (open_fd == -1) return -EMFILE; // Maximum process file limit reached
+    if (open_fd == -1) return -EMFILE;
 
     struct file *f = kmalloc(sizeof(struct file));
     if (f == NULL) return -ENOMEM;
@@ -515,20 +509,17 @@ int vfs_open(const char *path, int flags, uint32_t mode) {
 
     global_fd_table[open_fd] = f;
 
-    // Truncate file data if O_TRUNC specified
-    if ((flags & O_TRUNC) && ((flags & O_ACCMODE) != O_RDONLY)) {
-        vfs_write_file(open_fd, "", 0);
-    }
-
-    return open_fd; 
+    return open_fd;
 }
 
 struct dentry *vfs_lookup_parent(const char *path) {
-    if (path == NULL || path[0] != '/') return NULL;
+    if (path == NULL) return NULL;
 
     struct dentry *current = root_dentry;
-    const char *ptr = path + 1;
-    struct dentry *parent = NULL;
+    const char *ptr = path;
+    if (*ptr == '/') ptr++;
+
+    struct dentry *parent = root_dentry;
 
     while (*ptr != '\0') {
         while (*ptr == '/') ptr++;
@@ -539,12 +530,15 @@ struct dentry *vfs_lookup_parent(const char *path) {
         size_t component_len = (size_t)(ptr - component_start);
 
         if (component_len > 0) {
-            parent = current; 
-            current = find_child(current, component_start, component_len);
-            if (current == NULL) {
-                if (*ptr == '\0') return parent;
-                return NULL; 
+            struct dentry *next = find_child(current, component_start, component_len);
+            if (next == NULL) {
+                const char *peek = ptr;
+                while (*peek == '/') peek++;
+                if (*peek == '\0') return current;
+                return NULL;
             }
+            parent = current;
+            current = next;
         }
     }
     return parent;
@@ -552,40 +546,16 @@ struct dentry *vfs_lookup_parent(const char *path) {
 
 struct dentry *vfs_lookup_parent_by_flat_fd(int fd) {
     if (fd < 0 || (size_t)fd >= file_count) return NULL;
-
-    const char *path = files[fd].path; 
-    struct dentry *current = root_dentry;
-    const char *ptr = path;
-    
-    if (*ptr == '/') ptr++;
-
-    struct dentry *parent = NULL;
-
-    while (*ptr != '\0') {
-        while (*ptr == '/') ptr++;
-        if (*ptr == '\0') break;
-
-        const char *component_start = ptr;
-        while (*ptr != '\0' && *ptr != '/') ptr++;
-        size_t component_len = (size_t)(ptr - component_start);
-
-        if (component_len > 0) {
-            parent = current; 
-            current = find_child(current, component_start, component_len);
-            if (current == NULL) {
-                if (*ptr == '\0') return parent;
-                return NULL; 
-            }
-        }
-    }
-    return parent;
+    return vfs_lookup_parent(files[fd].path);
 }
 
 int vfs_create_file(const void *data, const char *path, int dlen) {
     struct timespec ts;
     rtc_get_time(&ts);
 
-    if (append_file(path, strlen(path) + 1, NULL, 0, S_IFREG | 0644, 0, 0, ts.tv_sec) < 0) return -1;
+    if (append_file(path, strlen(path) + 1, NULL, 0, S_IFREG | 0644, 0, 0, ts.tv_sec) < 0) {
+        return -1;
+    }
     int fd = (int)(file_count - 1);
 
     struct dentry *parent = vfs_lookup_parent(path);
@@ -625,7 +595,9 @@ int vfs_create_file(const void *data, const char *path, int dlen) {
 }
 
 int vfs_free_fd(int fd) {
-    if (fd < 0 || fd >= MAX_OPEN_FILES || global_fd_table[fd] == NULL) return -1;
+    if (fd < 0 || fd >= MAX_OPEN_FILES || global_fd_table[fd] == NULL) {
+        return -1;
+    }
     kfree(global_fd_table[fd]);
     global_fd_table[fd] = NULL;
     return 0;
@@ -633,16 +605,14 @@ int vfs_free_fd(int fd) {
 
 int vfs_delete_file(const char *path) {
     struct dentry *target = vfs_lookup(path);
-    
-    // Clear matches from open file handles
+
     for (int i = 0; i < MAX_OPEN_FILES; i++) {
         if (global_fd_table[i] != NULL && global_fd_table[i]->dentry == target) {
             kfree(global_fd_table[i]);
-            global_fd_table[i] = NULL; 
+            global_fd_table[i] = NULL;
         }
     }
 
-    // 1. Unlink from dentry tree
     if (target != NULL && target->parent != NULL) {
         struct dentry *parent = target->parent;
         for (size_t i = 0; i < parent->child_count; i++) {
@@ -655,12 +625,14 @@ int vfs_delete_file(const char *path) {
                 break;
             }
         }
-        if (target->inode) kfree(target->inode);
+        if (target->inode) {
+            if (target->inode->data) kfree(target->inode->data);
+            kfree(target->inode);
+        }
         if (target->name) kfree(target->name);
         kfree(target);
     }
 
-    // 2. Remove entry from flat files[] table
     const char *lookup_path = path;
     if (lookup_path[0] == '/') lookup_path++;
     else if (lookup_path[0] == '.' && lookup_path[1] == '/') lookup_path += 2;
@@ -671,7 +643,6 @@ int vfs_delete_file(const char *path) {
         else if (stored_path[0] == '.' && stored_path[1] == '/') stored_path += 2;
 
         if (strcmp(stored_path, lookup_path) == 0) {
-                kfree(files[i].data);
             for (size_t j = i; j < file_count - 1; j++) {
                 files[j] = files[j + 1];
             }
@@ -683,132 +654,60 @@ int vfs_delete_file(const char *path) {
     return 0;
 }
 
-/**
- * vfs_write_file
- * Atomic Delete-and-Recreate strategy that captures, updates, and restores metadata.
- */
 int vfs_write_file(int fd, const void *data, uint64_t size) {
-    if (fd < 0 || (size != 0 && data == NULL)) {
-        return -EBADF;
-    }
+    if (fd < 0 || (size != 0 && data == NULL)) return -EBADF;
 
-    char file_path[256];
-    memset(file_path, 0, 256);
+    struct inode *in = NULL;
 
-    uint8_t *payload_buffer = (uint8_t *)data;
-    uint64_t write_size = size;
-
-    // Metadata preservation struct
-    struct {
-        uint32_t mode;
-        uint32_t uid;
-        uint32_t gid;
-        uint32_t nlink;
-        struct timespec st_atim;
-        struct timespec st_mtim;
-        struct timespec st_ctim;
-    } saved_meta;
-
-    memset(&saved_meta, 0, sizeof(saved_meta));
-
-    // Step 1: Check permissions & locate metadata/path
     if (fd < MAX_OPEN_FILES && global_fd_table[fd] != NULL) {
         struct file *f = global_fd_table[fd];
         if (f->dentry == NULL || f->dentry->inode == NULL) return -EBADF;
-        if ((f->flags & O_ACCMODE) == O_RDONLY) return -EACCES;
-        if (!perms(fd, 1)) return -EACCES;
-
-        // Extract path from flat files[] array matching this dentry
-        for (size_t i = 0; i < file_count; i++) {
-            if (vfs_lookup(files[i].path) == f->dentry) {
-                strncpy(file_path, files[i].path, 255);
-                break;
-            }
-        }
-        
-        saved_meta.mode = f->dentry->inode->mode;
-        saved_meta.uid  = f->dentry->inode->uid;
-        saved_meta.gid  = f->dentry->inode->gid;
-        saved_meta.nlink = f->dentry->inode->links;
-        saved_meta.st_atim = f->dentry->inode->st_atim;
-        saved_meta.st_mtim = f->dentry->inode->st_mtim;
-        saved_meta.st_ctim = f->dentry->inode->st_ctim;
-
-        // Process Append logic (O_APPEND)
-        if ((f->flags & O_APPEND) && f->dentry->inode->size > 0) {
-            write_size = f->dentry->inode->size + size;
-            payload_buffer = kmalloc((size_t)write_size);
-            if (!payload_buffer) return -ENOMEM;
-
-            memcpy(payload_buffer, f->dentry->inode->data, f->dentry->inode->size);
-            memcpy(payload_buffer + f->dentry->inode->size, data, size);
-        }
-
+        in = f->dentry->inode;
     } else if ((size_t)fd < file_count) {
-        if (!perms(fd, 1)) return -EACCES;
+        struct dentry *d = vfs_lookup(files[fd].path);
+        if (d != NULL && d->inode != NULL) {
+            in = d->inode;
+        }
+    }
 
-        strncpy(file_path, files[fd].path, 255);
+    if (in == NULL) return -ENOENT;
 
-        saved_meta.mode = files[fd].mode;
-        saved_meta.uid  = files[fd].uid;
-        saved_meta.gid  = files[fd].gid;
-        saved_meta.nlink = files[fd].nlink;
-        saved_meta.st_atim = files[fd].st_atim;
-        saved_meta.st_mtim = files[fd].st_mtim;
-        saved_meta.st_ctim = files[fd].st_ctim;
+    if (fd < MAX_OPEN_FILES && global_fd_table[fd] != NULL && (global_fd_table[fd]->flags & O_APPEND)) {
+        uint64_t new_size = in->size + size;
+        uint8_t *new_data = kmalloc((size_t)new_size);
+        if (!new_data) return -ENOMEM;
+
+        if (in->data && in->size > 0) {
+            memcpy(new_data, in->data, in->size);
+            kfree(in->data);
+        }
+        memcpy(new_data + in->size, data, size);
+
+        in->data = new_data;
+        in->size = new_size;
+        global_fd_table[fd]->offset = new_size;
     } else {
-        return -EBADF;
+        if (in->data) {
+            kfree(in->data);
+            in->data = NULL;
+        }
+
+        if (size > 0) {
+            in->data = kmalloc((size_t)size);
+            if (!in->data) return -ENOMEM;
+            memcpy(in->data, data, (size_t)size);
+        }
+
+        in->size = size;
+        if (fd < MAX_OPEN_FILES && global_fd_table[fd] != NULL) {
+            global_fd_table[fd]->offset = size;
+        }
     }
 
-    if (file_path[0] == '\0') {
-        if (payload_buffer != data) kfree(payload_buffer);
-        return -ENOENT;
-    }
-
-    // Step 2: Update modification and change timestamps
     struct timespec current_ts;
     rtc_get_time(&current_ts);
-    saved_meta.st_mtim = current_ts;
-    saved_meta.st_ctim = current_ts;
-
-    // Step 3: Delete the file via vfs_delete_file
-    vfs_delete_file(file_path);
-
-    // Step 4: Recreate the file with the new data via vfs_create_file
-    int new_fd = vfs_create_file(payload_buffer, file_path, (int)write_size);
-    if (payload_buffer != data) kfree(payload_buffer);
-
-    if (new_fd < 0) {
-        return -1;
-    }
-
-    // Step 5: Restore and update preserved metadata across both storage models
-    if ((size_t)new_fd < file_count) {
-        files[new_fd].mode = saved_meta.mode;
-        files[new_fd].uid  = saved_meta.uid;
-        files[new_fd].gid  = saved_meta.gid;
-        files[new_fd].nlink = saved_meta.nlink;
-        files[new_fd].st_atim = saved_meta.st_atim;
-        files[new_fd].st_mtim = saved_meta.st_mtim;
-        files[new_fd].st_ctim = saved_meta.st_ctim;
-    }
-
-    struct dentry *new_dentry = vfs_lookup(file_path);
-    if (new_dentry != NULL && new_dentry->inode != NULL) {
-        new_dentry->inode->mode = saved_meta.mode;
-        new_dentry->inode->uid  = saved_meta.uid;
-        new_dentry->inode->gid  = saved_meta.gid;
-        new_dentry->inode->links = saved_meta.nlink;
-        new_dentry->inode->st_atim = saved_meta.st_atim;
-        new_dentry->inode->st_mtim = saved_meta.st_mtim;
-        new_dentry->inode->st_ctim = saved_meta.st_ctim;
-    }
-
-    // If writing through an active open file table descriptor handle, point it to the new dentry and update offset
-    if (fd < MAX_OPEN_FILES && global_fd_table[fd] != NULL) {
-        global_fd_table[fd]->dentry = new_dentry;
-        global_fd_table[fd]->offset += size;
-    }
+    in->st_mtim = current_ts;
+    in->st_ctim = current_ts;
 
     return (int)size;
 }
@@ -834,10 +733,11 @@ int vfs_move_file(int fd, const char *newpath) {
 }
 
 int vfs_mkdir(const char *path, uint32_t mode) {
-    if (path == NULL || *path != '/') return -1;
+    if (path == NULL) return -1; // return
 
     struct dentry *current_dir = root_dentry;
-    const char *ptr = path + 1;
+    const char *ptr = path;
+    if (*ptr == '/') ptr++;
 
     while (*ptr != '\0') {
         while (*ptr == '/') ptr++;
@@ -847,30 +747,23 @@ int vfs_mkdir(const char *path, uint32_t mode) {
         while (*ptr != '\0' && *ptr != '/') ptr++;
         size_t component_len = (size_t)(ptr - component_start);
 
-        if (!permdir(current_dir, 2)) {
-            return -EACCES;
-        }
+        if (!permdir(current_dir, 2)) return -EACCES; // return
 
         struct dentry *next_node = find_child(current_dir, component_start, component_len);
 
         if (next_node == NULL) {
             if (*ptr == '\0') {
-                if (current_dir->inode && (current_dir->inode->mode & S_IFMT) != S_IFDIR) {
-                    return -1;
-                }
-                
-                if (!permdir(current_dir, 1)) {
-                    return -EACCES;
-                }
+                if (current_dir->inode && (current_dir->inode->mode & S_IFMT) != S_IFDIR) return -1; // also a return
+                if (!permdir(current_dir, 1)) return -EACCES; // a return
 
                 struct timespec ts;
                 rtc_get_time(&ts);
-                
+
                 next_node = create_dentry_node(component_start, component_len, S_IFDIR | (mode & 0777), 0, 0, 1, ts.tv_sec, current_dir);
-                if (next_node == NULL) return -1;
-                return 0;
+                if (next_node == NULL) return -1; // return
+                return 0; // return
             } else {
-                return -1;
+                return -1; // return
             }
         }
         current_dir = next_node;
@@ -886,9 +779,7 @@ int vfs_rmdir(const char *path) {
 
     struct dentry *parent = target->parent;
 
-    if (!permdir(parent, 1) || !permdir(parent, 2)) {
-        return -EACCES;
-    }
+    if (!permdir(parent, 1) || !permdir(parent, 2)) return -EACCES;
 
     for (size_t i = 0; i < parent->child_count; i++) {
         if (parent->children[i] == target) {
@@ -931,11 +822,11 @@ int vfs_fstat(int fd, struct vfs_stat *st) {
     if (fd < 0 || fd >= MAX_OPEN_FILES) return -3;
 
     struct file *file = global_fd_table[fd];
-    
+
     if (file == NULL) {
         if ((size_t)fd < vfs_file_count()) {
             struct vfs_file *vf = &files[fd];
-            
+
             st->st_ino     = (uint32_t)(fd + 100);
             st->st_mode    = vf->mode;
             st->st_uid     = vf->uid;
@@ -959,8 +850,8 @@ int vfs_fstat(int fd, struct vfs_stat *st) {
 
     st->st_ino     = inode->ino_num;
     st->st_mode    = inode->mode;
-    st->st_uid     = inode->uid;   
-    st->st_gid     = inode->gid;   
+    st->st_uid     = inode->uid;
+    st->st_gid     = inode->gid;
     st->st_size    = inode->size;
     st->st_blksize = 512;
     st->st_blocks  = (uint32_t)((inode->size + 511) >> 9);
@@ -1087,5 +978,73 @@ struct vfs_dirent *readdir(DIR *dirp) {
 int closedir(DIR *dirp) {
     if (dirp == NULL) return -1;
     kfree(dirp);
+    return 0;
+}
+int vfs_link(const char *oldpath, const char *newpath)
+{
+    if (!oldpath || !newpath)
+        return -EINVAL;
+
+    // destination must not exist
+    if (vfs_lookup(newpath))
+        return -EEXIST;
+
+    struct dentry *src = vfs_lookup(oldpath);
+    if (!src || !src->inode)
+        return -ENOENT;
+
+    // Don't hard-link directories.
+    if ((src->inode->mode & S_IFMT) == S_IFDIR)
+        return -EPERM;
+
+    struct dentry *parent = vfs_lookup_parent(newpath);
+    if (!parent)
+        return -ENOENT;
+
+    if (!permdir(parent, 1) || !permdir(parent, 2))
+        return -EACCES;
+
+    const char *name = strrchr(newpath, '/');
+    name = name ? name + 1 : newpath;
+
+    struct timespec ts;
+    rtc_get_time(&ts);
+
+    struct dentry *d = create_dentry_node(
+        name,
+        strlen(name),
+        src->inode->mode,
+        src->inode->uid,
+        src->inode->gid,
+        src->inode->links + 1,
+        ts.tv_sec,
+        parent);
+
+    if (!d)
+        return -ENOMEM;
+
+    /* Share the SAME inode. */
+    kfree(d->inode);
+    d->inode = src->inode;
+
+    src->inode->links++;
+
+    if (file_count < MAX_VFS_FILES) {
+        memset(files[file_count].path, 0, sizeof(files[file_count].path));
+        strncpy(files[file_count].path, newpath, 255);
+
+        files[file_count].data   = src->inode->data;
+        files[file_count].size   = src->inode->size;
+        files[file_count].mode   = src->inode->mode;
+        files[file_count].uid    = src->inode->uid;
+        files[file_count].gid    = src->inode->gid;
+        files[file_count].nlink  = src->inode->links;
+        files[file_count].st_atim = src->inode->st_atim;
+        files[file_count].st_mtim = src->inode->st_mtim;
+        files[file_count].st_ctim = src->inode->st_ctim;
+
+        file_count++;
+    }
+
     return 0;
 }

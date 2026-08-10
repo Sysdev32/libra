@@ -4,26 +4,27 @@
 #include <fs/mnt.h>
 #include "font.h"
 #include <drivers/tty.h>
+#include <hals/virtio/virtio_gpu.h>
+
 #define BIT(x) (1ULL << (x))
 
 // Standard terminal IOCTL definitions
 #define TCGETS          0x5401
 #define TCSETS          0x5402
-#define TCSETSW         0x5403  // Set termios after draining output
-#define TCSETSF         0x5404  // Set termios after drain and flush input
-#define TIOCGWINSZ      0x5413  // Get window size
-#define TIOCSWINSZ      0x5414  // Set window size (RESIZE)
-#define TIOCFLUSH       0x540B  // Flush queues
-#define TIOCGPGRP       0x540F  // Get foreground process group
-#define TIOCSPGRP       0x5410  // Set foreground process group
-#define TIOCSPTLCK      0x40045431 // Lock/Unlock replica PTY
-#define TIOCGPTN        0x80045430 // Get PTY pair number
+#define TCSETSW         0x5403  
+#define TCSETSF         0x5404  
+#define TIOCGWINSZ      0x5413  
+#define TIOCSWINSZ      0x5414  
+#define TIOCFLUSH       0x540B  
+#define TIOCGPGRP       0x540F  
+#define TIOCSPGRP       0x5410  
+#define TIOCSPTLCK      0x40045431 
+#define TIOCGPTN        0x80045430 
 
 #define TTY_MAX_COLS    256
 #define TTY_MAX_ROWS    128
-#define MAX_PTYS        32         // Maximum number of concurrent dynamic PTY pairs
+#define MAX_PTYS        32         
 
-// TTY7 Framebuffer Backing Store Allocation (Maximum target resolution: 1920x1080 ARGB8888)
 #define TTY7_MAX_FB_WIDTH   1920
 #define TTY7_MAX_FB_HEIGHT  1080
 #define TTY7_MAX_FB_SIZE    (TTY7_MAX_FB_WIDTH * TTY7_MAX_FB_HEIGHT * sizeof(uint32_t))
@@ -34,6 +35,9 @@
 
 extern char kgetc(void);
 int echo = 1;
+
+// Global VirtIO GPU device reference
+extern virtio_gpu_device_t g_virtio_gpu;
 
 typedef struct {
     unsigned char magic[2];
@@ -52,28 +56,31 @@ static const uint32_t ansi_palette[16] = {
 
 static framebuffer_t global_fb;
 static int fb_initialized = 0;
-static tty_t ttys[8]; // Fixed mapping for physical VTs tty0 through tty7
+static tty_t ttys[8];
 static uint32_t active_tty_idx = 1;
 static uint32_t font_height = 16;
 static const uint32_t font_width = 8;
+bool gpu = false;
 
-// TTY7 Pixel Backing Store Buffer & State Metadata
+// Dirty Tracking State for Batch VirtIO Updates
+static uint32_t dirty_min_x = UINT32_MAX;
+static uint32_t dirty_min_y = UINT32_MAX;
+static uint32_t dirty_max_x = 0;
+static uint32_t dirty_max_y = 0;
+
+// TTY7 Pixel Backing Store Buffer
 static uint32_t tty7_backing_store[TTY7_MAX_FB_WIDTH * TTY7_MAX_FB_HEIGHT];
 static size_t tty7_write_offset = 0;
 static size_t tty7_read_offset = 0;
 
-// Input/Output Ring Buffers for termios flushing emulation
 #define TTY_BUF_SIZE 1024
 static char input_buffers[8][TTY_BUF_SIZE];
 static uint32_t input_head[8] = {0};
 static uint32_t input_tail[8] = {0};
 
 static tty_cell_t static_grid_pool[8][TTY_MAX_ROWS * TTY_MAX_COLS];
-
-// Foreground process group IDs for job control support
 static int32_t tty_pgrps[8] = {0};
 
-// --- Linux Unix98 PTY Internal Structures ---
 typedef struct {
     char buf[TTY_BUF_SIZE];
     uint32_t head;
@@ -98,8 +105,41 @@ size_t tty_write_dev(int fd, const void *buf, size_t count);
 int tty_ioctl(int fd, unsigned long request, void *arg);
 void tty_putchar_to(uint32_t tty_idx, char c);
 static void tty_draw_cursor(uint32_t tty_idx, bool show);
+static void tty_redraw_active(void);
 
-// --- PTY Internal Ring Buffer Mechanics ---
+// --- Dirty Region Helper Functions ---
+static inline void mark_dirty_region(uint32_t x, uint32_t y, uint32_t w, uint32_t h) {
+    if (x < dirty_min_x) dirty_min_x = x;
+    if (y < dirty_min_y) dirty_min_y = y;
+    if (x + w > dirty_max_x) dirty_max_x = x + w;
+    if (y + h > dirty_max_y) dirty_max_y = y + h;
+}
+
+static inline void mark_dirty_full(void) {
+    dirty_min_x = 0;
+    dirty_min_y = 0;
+    dirty_max_x = global_fb.width;
+    dirty_max_y = global_fb.height;
+}
+
+static void tty_flush_dirty(void) {
+    if (!gpu || dirty_min_x >= dirty_max_x || dirty_min_y >= dirty_max_y) return;
+
+    if (dirty_max_x > global_fb.width) dirty_max_x = global_fb.width;
+    if (dirty_max_y > global_fb.height) dirty_max_y = global_fb.height;
+
+    uint32_t w = dirty_max_x - dirty_min_x;
+    uint32_t h = dirty_max_y - dirty_min_y;
+
+    virtio_gpu_flush(&g_virtio_gpu, dirty_min_x, dirty_min_y, w, h);
+
+    // Reset bounding box
+    dirty_min_x = UINT32_MAX;
+    dirty_min_y = UINT32_MAX;
+    dirty_max_x = 0;
+    dirty_max_y = 0;
+}
+
 static void pty_putc(pty_ringbuf_t *rb, char c) {
     uint32_t next = (rb->head + 1) % TTY_BUF_SIZE;
     if (next != rb->tail) {
@@ -119,9 +159,52 @@ static bool pty_has_data(pty_ringbuf_t *rb) {
     return rb->head != rb->tail;
 }
 
-// --- Core Renderer ---
+// --- Core Pixel & Rectangle Rendering ---
+void tty_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
+    if (!fb_initialized) return;
+    if (x >= global_fb.width || y >= global_fb.height) return;
+
+    tty7_backing_store[y * global_fb.width + x] = color;
+
+    if (gpu && g_virtio_gpu.framebuffer) {
+        g_virtio_gpu.framebuffer[y * global_fb.width + x] = color;
+        mark_dirty_region(x, y, 1, 1);
+    } else if (active_tty_idx == 7 && global_fb.address) {
+        uint32_t stride = global_fb.pitch / sizeof(uint32_t);
+        global_fb.address[y * stride + x] = color;
+    }
+}
+
+void tty_draw_rect(int x, int y, int w, int h, uint32_t color) {
+    if (!fb_initialized) return;
+
+    uint32_t *target_buf = (gpu && g_virtio_gpu.framebuffer) ? g_virtio_gpu.framebuffer : global_fb.address;
+    if (!target_buf) return;
+
+    uint32_t pitch = (gpu) ? global_fb.width : (global_fb.pitch / sizeof(uint32_t));
+
+    for (int cy = y; cy < y + h && cy < (int)global_fb.height; cy++) {
+        if (cy < 0) continue;
+        for (int cx = x; cx < x + w && cx < (int)global_fb.width; cx++) {
+            if (cx < 0) continue;
+            target_buf[cy * pitch + cx] = color;
+        }
+    }
+
+    if (gpu) {
+        mark_dirty_region(x, y, w, h);
+    }
+}
+
+void tty_switch_gpu(void) {
+    gpu = true;
+    tty_draw_rect(0, 0, global_fb.width, global_fb.height, 0xFF000000);
+    tty_flush_dirty();
+}
+
+// --- Software In-Memory PSF1 Character Renderer ---
 void tty_draw_char_psf1(framebuffer_t *fb, char c, int cx, int cy, uint32_t fg_color, uint32_t bg_color) {
-    if (!fb || !fb->address) return;
+    if (!fb_initialized) return;
     psf1_header_t *font = (psf1_header_t *)Lat2_Terminus16_psf;
     if (font->magic[0] != PSF1_MAGIC0 || font->magic[1] != PSF1_MAGIC1) return;
 
@@ -130,36 +213,41 @@ void tty_draw_char_psf1(framebuffer_t *fb, char c, int cx, int cy, uint32_t fg_c
                            sizeof(psf1_header_t) +
                            ((unsigned char)c < num_glyphs ? (unsigned char)c : 0) * font->charsize;
 
-    for (uint32_t y = 0; y < font->charsize; y++) {
-        unsigned char row_byte = glyph[y];
-        for (uint32_t x = 0; x < font_width; x++) {
-            uint32_t bit_mask = 0x80 >> x;
-            uint32_t color = (row_byte & bit_mask) ? fg_color : bg_color;
-            uint32_t screen_x = cx + x;
-            uint32_t screen_y = cy + y;
+    uint32_t *dest = (gpu && g_virtio_gpu.framebuffer) ? g_virtio_gpu.framebuffer : fb->address;
+    if (!dest) return;
 
-            if (screen_x < fb->width && screen_y < fb->height) {
-                fb->address[screen_y * (fb->pitch / 4) + screen_x] = color;
-            }
+    uint32_t stride = gpu ? global_fb.width : (fb->pitch / sizeof(uint32_t));
+
+    for (uint32_t y = 0; y < font->charsize; y++) {
+        uint32_t sy = cy + y;
+        if (sy >= global_fb.height) break;
+
+        unsigned char row_byte = glyph[y];
+        uint32_t row_offset = sy * stride;
+
+        for (uint32_t x = 0; x < font_width; x++) {
+            uint32_t sx = cx + x;
+            if (sx >= global_fb.width) break;
+
+            dest[row_offset + sx] = (row_byte & (0x80 >> x)) ? fg_color : bg_color;
         }
+    }
+
+    if (gpu) {
+        mark_dirty_region(cx, cy, font_width, font->charsize);
     }
 }
 
-// --- Cursor Painting Engine ---
 static void tty_draw_cursor(uint32_t tty_idx, bool show) {
-    if (tty_idx == 7) return;
-    if (!fb_initialized || tty_idx != active_tty_idx) return;
+    if (tty_idx == 7 || !fb_initialized || tty_idx != active_tty_idx) return;
     tty_t *tty = &ttys[tty_idx];
     if (!tty->grid || !tty->cursor_enabled) return;
 
     uint32_t col = tty->cursor_x;
     uint32_t row = tty->cursor_y;
-
     if (col >= tty->cols || row >= tty->rows) return;
 
-    uint32_t offset = row * tty->cols + col;
-    tty_cell_t cell = tty->grid[offset];
-
+    tty_cell_t cell = tty->grid[row * tty->cols + col];
     if (show) {
         tty_draw_char_psf1(&global_fb, cell.ch, col * font_width, row * font_height, cell.bg, cell.fg);
     } else {
@@ -167,10 +255,8 @@ static void tty_draw_cursor(uint32_t tty_idx, bool show) {
     }
 }
 
-// --- Screen Management & Resizing Utilities ---
 static void tty_flush_cell(uint32_t tty_idx, uint32_t col, uint32_t row) {
-    if (tty_idx == 7) return;
-    if (!fb_initialized || tty_idx != active_tty_idx) return;
+    if (tty_idx == 7 || !fb_initialized || tty_idx != active_tty_idx) return;
     tty_t *tty = &ttys[tty_idx];
     if (!tty->grid || col >= tty->cols || row >= tty->rows) return;
 
@@ -178,33 +264,26 @@ static void tty_flush_cell(uint32_t tty_idx, uint32_t col, uint32_t row) {
     tty_draw_char_psf1(&global_fb, cell.ch, col * font_width, row * font_height, cell.fg, cell.bg);
 }
 
-static void tty_redraw_active() {
+static void tty_redraw_active(void) {
     if (!fb_initialized) return;
 
-    // Direct blit from off-screen backing store to display on VT switch to tty7
     if (active_tty_idx == 7) {
-        size_t stride = global_fb.pitch / sizeof(uint32_t);
-        for (uint32_t y = 0; y < global_fb.height; y++) {
-            memcpy(&global_fb.address[y * stride],
-                   &tty7_backing_store[y * global_fb.width],
-                   global_fb.width * sizeof(uint32_t));
+        uint32_t *dest = (gpu && g_virtio_gpu.framebuffer) ? g_virtio_gpu.framebuffer : global_fb.address;
+        if (dest) {
+            size_t stride = gpu ? global_fb.width : (global_fb.pitch / sizeof(uint32_t));
+            for (uint32_t y = 0; y < global_fb.height; y++) {
+                for (uint32_t x = 0; x < global_fb.width; x++) {
+                    dest[y * stride + x] = tty7_backing_store[y * global_fb.width + x];
+                }
+            }
         }
+        mark_dirty_full();
+        tty_flush_dirty();
         return;
     }
 
     tty_t *tty = &ttys[active_tty_idx];
     if (!tty->grid) return;
-
-    uint32_t active_pixels_x = tty->cols * font_width;
-    uint32_t active_pixels_y = tty->rows * font_height;
-
-    for (uint32_t y = 0; y < global_fb.height; y++) {
-        for (uint32_t x = 0; x < global_fb.width; x++) {
-            if (x >= active_pixels_x || y >= active_pixels_y) {
-                global_fb.address[y * (global_fb.pitch / 4) + x] = tty->default_bg;
-            }
-        }
-    }
 
     for (uint32_t r = 0; r < tty->rows; r++) {
         for (uint32_t c = 0; c < tty->cols; c++) {
@@ -215,6 +294,8 @@ static void tty_redraw_active() {
     if (tty->cursor_enabled && tty->cursor_draw_state) {
         tty_draw_cursor(active_tty_idx, true);
     }
+
+    tty_flush_dirty();
 }
 
 static void tty_scroll(uint32_t tty_idx) {
@@ -224,19 +305,22 @@ static void tty_scroll(uint32_t tty_idx) {
 
     uint32_t top = tty->scroll_top;
     uint32_t bottom = tty->scroll_bottom;
-
     if (top >= bottom || bottom >= tty->rows) return;
 
     if (tty_idx == active_tty_idx && tty->cursor_draw_state) {
         tty_draw_cursor(tty_idx, false);
     }
 
+    // 1. Loop-based Grid Row Shifting (No memmove dependency)
     for (uint32_t r = top; r < bottom; r++) {
-        memcpy(&tty->grid[r * tty->cols],
-               &tty->grid[(r + 1) * tty->cols],
-               sizeof(tty_cell_t) * tty->cols);
+        uint32_t dst_offset = r * tty->cols;
+        uint32_t src_offset = (r + 1) * tty->cols;
+        for (uint32_t c = 0; c < tty->cols; c++) {
+            tty->grid[dst_offset + c] = tty->grid[src_offset + c];
+        }
     }
 
+    // 2. Clear Last Row in Cell Grid
     uint32_t last_row_offset = bottom * tty->cols;
     for (uint32_t c = 0; c < tty->cols; c++) {
         tty->grid[last_row_offset + c].ch = ' ';
@@ -244,6 +328,7 @@ static void tty_scroll(uint32_t tty_idx) {
         tty->grid[last_row_offset + c].bg = tty->current_bg;
     }
 
+    // 3. Full repaint sync on screen
     if (tty_idx == active_tty_idx) {
         tty_redraw_active();
     }
@@ -265,7 +350,9 @@ static void tty_resize(uint32_t tty_idx, uint16_t new_cols, uint16_t new_rows) {
     }
 
     tty_cell_t temp_grid[TTY_MAX_ROWS * TTY_MAX_COLS];
-    memcpy(temp_grid, tty->grid, sizeof(tty_cell_t) * tty->rows * tty->cols);
+    for (uint32_t i = 0; i < tty->rows * tty->cols; i++) {
+        temp_grid[i] = tty->grid[i];
+    }
 
     uint32_t old_cols = tty->cols;
     uint32_t old_rows = tty->rows;
@@ -353,6 +440,12 @@ static void tty_ansi_execute_csi(tty_t *tty, char command) {
                 tty->grid[idx].fg = tty->current_fg;
                 tty->grid[idx].bg = tty->current_bg;
             }
+
+            if (p1 == 2 || p1 == 0) {
+                tty->cursor_x = 0;
+                tty->cursor_y = 0;
+            }
+
             if (tty - ttys == active_tty_idx) tty_redraw_active();
             break;
         }
@@ -464,7 +557,16 @@ void tty_switch(uint32_t tty_idx) {
     }
 
     active_tty_idx = tty_idx;
+
+    // Direct background clear when switching screens
+    if (active_tty_idx != 7) {
+        tty_draw_rect(0, 0, global_fb.width, global_fb.height, ttys[active_tty_idx].default_bg);
+    } else {
+        tty_draw_rect(0, 0, global_fb.width, global_fb.height, 0xFF000000);
+    }
+
     tty_redraw_active();
+    tty_flush_dirty();
 }
 
 uint32_t tty_get_active(void) {
@@ -480,6 +582,7 @@ void tty_putchar_to(uint32_t tty_idx, char c) {
         tty_draw_cursor(tty_idx, false);
     }
 
+    // ANSI Parsing logic
     if (tty->ansi_state == ANSI_STATE_ESC) {
         if (c == '[') {
             tty->ansi_state = ANSI_STATE_CSI;
@@ -534,6 +637,7 @@ void tty_putchar_to(uint32_t tty_idx, char c) {
         goto draw_cursor_after_write;
     }
 
+    // Control Characters
     if (c == '\n') {
         tty->cursor_x = 0;
         tty->cursor_y++;
@@ -542,11 +646,14 @@ void tty_putchar_to(uint32_t tty_idx, char c) {
         tty->cursor_x = 0;
     }
     else if (c == '\b') {
-        if (tty->cursor_x > 0) tty->cursor_x--;
-        else if (tty->cursor_y > tty->scroll_top) {
+        if (tty->cursor_x > 0) {
+            tty->cursor_x--;
+        } else if (tty->cursor_y > tty->scroll_top) {
             tty->cursor_y--;
             tty->cursor_x = tty->cols - 1;
-        } else goto draw_cursor_after_write;
+        } else {
+            goto draw_cursor_after_write;
+        }
 
         uint32_t offset = tty->cursor_y * tty->cols + tty->cursor_x;
         tty->grid[offset].ch = ' ';
@@ -561,7 +668,8 @@ void tty_putchar_to(uint32_t tty_idx, char c) {
         }
     }
     else {
-        if (tty->cursor_x < tty->cols && tty->cursor_y <= tty->scroll_bottom) {
+        // Printable Characters
+        if (tty->cursor_x < tty->cols && tty->cursor_y < tty->rows) {
             uint32_t offset = tty->cursor_y * tty->cols + tty->cursor_x;
             tty->grid[offset].ch = c;
             tty->grid[offset].fg = tty->current_fg;
@@ -571,13 +679,15 @@ void tty_putchar_to(uint32_t tty_idx, char c) {
         }
     }
 
+    // Line wrap logic
     if (tty->cursor_x >= tty->cols) {
         tty->cursor_x = 0;
         tty->cursor_y++;
     }
 
-    if (tty->cursor_y > tty->scroll_bottom) {
-        tty->cursor_y = tty->scroll_bottom;
+    // Scroll check
+    while (tty->cursor_y > tty->scroll_bottom) {
+        tty->cursor_y--;
         tty_scroll(tty_idx);
     }
 
@@ -588,22 +698,27 @@ draw_cursor_after_write:
         tty_draw_cursor(tty_idx, true);
     }
 }
+
 void tty_putchar_active(char c) {
     tty_putchar_to(active_tty_idx, c);
+    tty_flush_dirty();
 }
+
 void tty_putchar(char c) {
     tty_putchar_to(active_tty_idx, c);
+    tty_flush_dirty();
 }
 
 void tty_write(const char *str) {
-    while (*str) tty_putchar(*str++);
+    while (*str) tty_putchar_to(active_tty_idx, *str++);
+    tty_flush_dirty();
 }
 
 void tty_write_to(uint32_t tty_idx, const char *str) {
     while (*str) tty_putchar_to(tty_idx, *str++);
+    if (tty_idx == active_tty_idx) tty_flush_dirty();
 }
 
-// --- Dynamic Keyboard Input Routing API ---
 void tty_handle_input(char c) {
     if (c >= ' ' && c <= '~') {
         uint32_t tty_idx = active_tty_idx;
@@ -620,11 +735,9 @@ void tty_handle_input(char c) {
     }
 }
 
-// --- Driver VFS Read Callbacks ---
 size_t tty_read(int fd, void *buf, size_t count, int offset) {
     if (!buf || count == 0) return 0;
 
-    // --- Dynamic Linux/Unix98 PTY Parsing Logic ---
     if (fd >= 100 && fd < 200) {
         int pty_idx = fd - 100;
         pty_pair_t *pair = &pty_pairs[pty_idx];
@@ -657,7 +770,6 @@ size_t tty_read(int fd, void *buf, size_t count, int offset) {
         return read_bytes;
     }
 
-    // --- tty7: Raw pixel buffer memory reading via backing store ---
     if (active_tty_idx == 7) {
         if (!fb_initialized) return 0;
 
@@ -674,7 +786,9 @@ size_t tty_read(int fd, void *buf, size_t count, int offset) {
         }
 
         uint8_t *bs_byte_ptr = (uint8_t *)tty7_backing_store;
-        memcpy(buf, bs_byte_ptr + read_ptr, count);
+        for (size_t i = 0; i < count; i++) {
+            ((uint8_t *)buf)[i] = bs_byte_ptr[read_ptr + i];
+        }
 
         if (offset <= 0) {
             tty7_read_offset = (read_ptr + count) % total_fb_bytes;
@@ -682,7 +796,6 @@ size_t tty_read(int fd, void *buf, size_t count, int offset) {
         return count;
     }
 
-    // --- Standard VTs (tty0 - tty6) cooked/raw processing loop ---
     char *char_buf = (char *)buf;
     size_t bytes_read = 0;
     uint32_t tty_idx = active_tty_idx;
@@ -762,27 +875,34 @@ size_t tty_write_dev(int fd, const void *buf, size_t count) {
 
         size_t total_fb_bytes = global_fb.height * global_fb.width * sizeof(uint32_t);
         uint8_t *bs_byte_ptr = (uint8_t *)tty7_backing_store;
+        uint8_t *gpu_byte_ptr = (uint8_t *)g_virtio_gpu.framebuffer;
         const uint8_t *src_pixels = (const uint8_t *)buf;
+
+        size_t start_offset = tty7_write_offset;
 
         for (size_t i = 0; i < count; i++) {
             bs_byte_ptr[tty7_write_offset] = src_pixels[i];
-
-            // Render live pixel to global framebuffer if tty7 is active
-            if (active_tty_idx == 7 && global_fb.address) {
-                size_t pixel_idx = tty7_write_offset / sizeof(uint32_t);
-                uint32_t x = pixel_idx % global_fb.width;
-                uint32_t y = pixel_idx / global_fb.width;
-                size_t stride = global_fb.pitch / sizeof(uint32_t);
-
-                if (x < global_fb.width && y < global_fb.height) {
-                    global_fb.address[y * stride + x] = tty7_backing_store[pixel_idx];
-                }
+            if (gpu && gpu_byte_ptr) {
+                gpu_byte_ptr[tty7_write_offset] = src_pixels[i];
+            } else if (global_fb.address) {
+                ((uint8_t *)global_fb.address)[tty7_write_offset] = src_pixels[i];
             }
 
             tty7_write_offset++;
             if (tty7_write_offset >= total_fb_bytes) {
                 tty7_write_offset = 0;
             }
+        }
+
+        if (gpu) {
+            uint32_t start_pixel = start_offset / sizeof(uint32_t);
+            uint32_t end_pixel = (start_offset + count) / sizeof(uint32_t);
+            uint32_t start_y = start_pixel / global_fb.width;
+            uint32_t end_y = (end_pixel / global_fb.width) + 1;
+
+            if (end_y > global_fb.height) end_y = global_fb.height;
+            mark_dirty_region(0, start_y, global_fb.width, end_y - start_y);
+            tty_flush_dirty();
         }
         return count;
     }
@@ -791,10 +911,11 @@ size_t tty_write_dev(int fd, const void *buf, size_t count) {
     for (size_t i = 0; i < count; i++) {
         tty_putchar_to(active_tty_idx, char_buf[i]);
     }
+
+    tty_flush_dirty();
     return count;
 }
 
-// --- MASTER IOCTL HANDLER ---
 int tty_ioctl(int fd, unsigned long request, void *arg) {
     if (fd == 99 || (fd >= 100 && fd < 200)) {
         int pty_idx = (fd == 99) ? 0 : (fd - 100);
@@ -824,12 +945,28 @@ int tty_ioctl(int fd, unsigned long request, void *arg) {
         if (!pair->allocated) return -1;
 
         switch (request) {
-            case TCGETS: memcpy((struct termios *)arg, &pair->term, sizeof(struct termios)); return 0;
+            case TCGETS:
+                for (size_t i = 0; i < sizeof(struct termios); i++) {
+                    ((char *)arg)[i] = ((char *)&pair->term)[i];
+                }
+                return 0;
             case TCSETS:
             case TCSETSW:
-            case TCSETSF: memcpy(&pair->term, (struct termios *)arg, sizeof(struct termios)); return 0;
-            case TIOCGWINSZ: memcpy((struct winsize *)arg, &pair->winsz, sizeof(struct winsize)); return 0;
-            case TIOCSWINSZ: memcpy(&pair->winsz, (struct winsize *)arg, sizeof(struct winsize)); return 0;
+            case TCSETSF:
+                for (size_t i = 0; i < sizeof(struct termios); i++) {
+                    ((char *)&pair->term)[i] = ((char *)arg)[i];
+                }
+                return 0;
+            case TIOCGWINSZ:
+                for (size_t i = 0; i < sizeof(struct winsize); i++) {
+                    ((char *)arg)[i] = ((char *)&pair->winsz)[i];
+                }
+                return 0;
+            case TIOCSWINSZ:
+                for (size_t i = 0; i < sizeof(struct winsize); i++) {
+                    ((char *)&pair->winsz)[i] = ((char *)arg)[i];
+                }
+                return 0;
             case TIOCGPGRP: *(int32_t *)arg = pair->pgrp; return 0;
             case TIOCSPGRP: pair->pgrp = *(int32_t *)arg; return 0;
             default: return -1;
@@ -855,7 +992,9 @@ int tty_ioctl(int fd, unsigned long request, void *arg) {
 
     switch (request) {
         case TCGETS: {
-            memcpy((struct termios *)arg, &tty->term, sizeof(struct termios));
+            for (size_t i = 0; i < sizeof(struct termios); i++) {
+                ((char *)arg)[i] = ((char *)&tty->term)[i];
+            }
             return 0;
         }
         case TCSETS:
@@ -865,7 +1004,9 @@ int tty_ioctl(int fd, unsigned long request, void *arg) {
                 input_head[tty_idx] = 0;
                 input_tail[tty_idx] = 0;
             }
-            memcpy(&tty->term, (struct termios *)arg, sizeof(struct termios));
+            for (size_t i = 0; i < sizeof(struct termios); i++) {
+                ((char *)&tty->term)[i] = ((char *)arg)[i];
+            }
             return 0;
         }
         case TIOCGWINSZ: {
@@ -925,6 +1066,7 @@ int tty_ioctl(int fd, unsigned long request, void *arg) {
             if (tty_idx == active_tty_idx && tty->cursor_draw_state) {
                 tty_draw_cursor(tty_idx, true);
             }
+            tty_flush_dirty();
             return 0;
         }
         default:
@@ -932,15 +1074,15 @@ int tty_ioctl(int fd, unsigned long request, void *arg) {
     }
 }
 
-// --- Initialization & DevFS Device Registration ---
 void tty_init(framebuffer_t *fb) {
     if (!fb) return;
 
     global_fb = *fb;
     fb_initialized = 1;
 
-    // Zero out off-screen pixel backing store
-    memset(tty7_backing_store, 0, sizeof(tty7_backing_store));
+    for (size_t i = 0; i < TTY7_MAX_FB_WIDTH * TTY7_MAX_FB_HEIGHT; i++) {
+        tty7_backing_store[i] = 0;
+    }
 
     psf1_header_t *font = (psf1_header_t *)Lat2_Terminus16_psf;
     font_height = font->charsize;
@@ -950,10 +1092,6 @@ void tty_init(framebuffer_t *fb) {
 
     uint32_t max_cols = (computed_cols < TTY_MAX_COLS) ? computed_cols : TTY_MAX_COLS;
     uint32_t max_rows = (computed_rows < TTY_MAX_ROWS) ? computed_rows : TTY_MAX_ROWS;
-
-    uint32_t colors[8] = {
-        0xFFFFFFFF, 0xFF00FF00, 0xFF00FFFF, 0xFFFF5555, 0xFFFF55FF, 0xFFFFFF55, 0xFFFFFFFF, 0x00000000
-    };
 
     for (uint32_t t = 0; t < 8; t++) {
         ttys[t].cols = max_cols;
@@ -994,7 +1132,16 @@ void tty_init(framebuffer_t *fb) {
         }
     }
 
-    memset(pty_pairs, 0, sizeof(pty_pairs));
+    for (size_t i = 0; i < MAX_PTYS; i++) {
+        pty_pairs[i].allocated = false;
+        pty_pairs[i].locked = false;
+        pty_pairs[i].controller_to_replica.head = 0;
+        pty_pairs[i].controller_to_replica.tail = 0;
+        pty_pairs[i].replica_to_controller.head = 0;
+        pty_pairs[i].replica_to_controller.tail = 0;
+        pty_pairs[i].pgrp = 0;
+    }
+
     active_tty_idx = 0;
     tty_redraw_active();
 }
@@ -1056,19 +1203,24 @@ void tty_update_cursor(void) {
         active_tty->cursor_tick = 0;
         active_tty->cursor_draw_state = !active_tty->cursor_draw_state;
         tty_draw_cursor(active_tty_idx, active_tty->cursor_draw_state);
+        tty_flush_dirty();
     }
 }
 
 void echo_off() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag &= ~ECHO; echo = 0; } }
 void echo_on() { if (active_tty_idx != 7) { ttys[active_tty_idx].term.c_lflag |= ECHO; echo = 1; } }
 int echo_is_on() { return (active_tty_idx == 7) ? 0 : ((ttys[active_tty_idx].term.c_lflag & ECHO) && echo); }
+
 static void tty_clear_tty(uint32_t tty_idx) {
     if (tty_idx >= 8) return;
 
     if (tty_idx == 7) {
-        memset(tty7_backing_store, 0, sizeof(tty7_backing_store));
+        for (size_t i = 0; i < TTY7_MAX_FB_WIDTH * TTY7_MAX_FB_HEIGHT; i++) {
+            tty7_backing_store[i] = 0;
+        }
         if (active_tty_idx == 7) {
-            tty_redraw_active();
+            tty_draw_rect(0, 0, global_fb.width, global_fb.height, 0xFF000000);
+            tty_flush_dirty();
         }
         return;
     }
@@ -1076,7 +1228,10 @@ static void tty_clear_tty(uint32_t tty_idx) {
     tty_t *tty = &ttys[tty_idx];
     if (!tty->grid) return;
 
-    // Reset grid cells to spaces using current terminal colors
+    // Reset Cursor Positions to (0,0)
+    tty->cursor_x = 0;
+    tty->cursor_y = 0;
+
     uint32_t total_cells = tty->rows * tty->cols;
     for (uint32_t i = 0; i < total_cells; i++) {
         tty->grid[i].ch = ' ';
@@ -1084,42 +1239,13 @@ static void tty_clear_tty(uint32_t tty_idx) {
         tty->grid[i].bg = tty->current_bg;
     }
 
-    // Reset cursor to top-left corner
-    tty->cursor_x = 0;
-    tty->cursor_y = 0;
-
-    // Redraw screen if clearing the active TTY
+    // Fully repaint background rectangle & active grid
     if (tty_idx == active_tty_idx) {
+        tty_draw_rect(0, 0, global_fb.width, global_fb.height, tty->current_bg);
         tty_redraw_active();
     }
 }
 
 void tty_clear(void) {
     tty_clear_tty(active_tty_idx);
-}
-/**
- * @brief Draws a single pixel to the backing store and live screen (if active).
- *
- * @param x Pixel X coordinate (0 to width - 1)
- * @param y Pixel Y coordinate (0 to height - 1)
- * @param color 32-bit ARGB/XRGB color (e.g., 0xFFRRGGBB)
- */
-void tty_draw_pixel(uint32_t x, uint32_t y, uint32_t color) {
-    if (!fb_initialized) {
-        return;
-    }
-
-    // Boundary check to prevent buffer overflow
-    if (x >= global_fb.width || y >= global_fb.height || x >= TTY7_MAX_FB_WIDTH || y >= TTY7_MAX_FB_HEIGHT) {
-        return;
-    }
-
-    // Update the backing store array regardless of whether TTY7 is active
-    tty7_backing_store[y * global_fb.width + x] = color;
-
-    // Direct write to physical display if TTY7 is currently active
-    if (active_tty_idx == 7 && global_fb.address) {
-        uint32_t stride = global_fb.pitch / sizeof(uint32_t);
-        global_fb.address[y * stride + x] = color;
-    }
 }

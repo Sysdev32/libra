@@ -195,7 +195,10 @@ run: iso
 		-drive file=nvme.img,if=none,id=nvme0,format=raw \
 		-device nvme,drive=nvme0,serial=deadbeef \
 		-device qemu-xhci,id=xhci \
-		-smp 4
+		-smp 4 -device virtio-gpu-pci,xres=1280,yres=720 \
+		-trace "virtio_*" \
+	    -trace "virtio_gpu_*" \
+	    -trace "pci_*"
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

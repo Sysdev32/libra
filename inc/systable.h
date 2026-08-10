@@ -221,7 +221,24 @@ unsigned long long sys_pci_lookup(arg* a);
 // Syscall 69
 unsigned long long sysc_thread_exit(arg *a);
 
-static const syscall systable[70] = {
+// Syscall 70
+unsigned long long sys_fork(arg *a);
+
+// Syscall 71
+unsigned long long sys_execve(arg *a);
+
+// Syscall 72
+unsigned long long sys_link(arg *a);
+
+// Syscall 73
+unsigned long long sys_socket_listen(arg *a);
+
+// Syscall 74
+unsigned long long sys_socket_accept(arg *a);
+
+// Syscall 75
+unsigned long long sys_socket_bind(arg *a);
+static const syscall systable[76] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
@@ -293,5 +310,11 @@ static const syscall systable[70] = {
     sys_clone,
     sys_join,
     sys_pci_lookup,
-    sysc_thread_exit
+    sysc_thread_exit,
+    sys_fork,
+    sys_execve,
+    sys_link,
+    sys_socket_listen,
+    sys_socket_accept,
+    sys_socket_bind
 };

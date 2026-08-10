@@ -8,9 +8,9 @@ static const char kbd_us_keymap[128] = {
   '\t', /* Tab */
   'q', 'w', 'e', 'r', 't', 'y', 'u', 'i', 'o', 'p', '[', ']', '\n', /* Enter */
     0,  /* 29   - Control */
-  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',   
+  'a', 's', 'd', 'f', 'g', 'h', 'j', 'k', 'l', ';', '\'', '`',
     0,  /* 42   - Left Shift */
- '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',   
+ '\\', 'z', 'x', 'c', 'v', 'b', 'n', 'm', ',', '.', '/',
     0,  /* 54   - Right Shift */
   '*',
     0,  /* 56   - Alt */
@@ -185,7 +185,7 @@ char kgetc() {
 void keyboard_dispatch() {
     uint8_t scancode = inb(0x60);
     last_scancode = scancode;
-    
+
     // Virtual Console Switching via Function Keys (F1 - F6)
     if (scancode == 0x3B) {
         tty_switch(1);
@@ -205,7 +205,7 @@ void keyboard_dispatch() {
     // Ensure it's a make code (press event)
     if (!(scancode & 0x80)) {
         char c = kbd_us_keymap[last_scancode];
-        
+
         // Only forward standard printable character keys down to the TTY sub-system
         if (c >= ' ' && c <= '~') {
             tty_handle_input(c);
@@ -221,12 +221,12 @@ static int mouse_phase = 0;
 // Call this inside your keyboard interrupt handler to save a scancode
 void kbd_buffer_push(uint8_t scancode) {
     uint32_t next = (kbd_buf.head + 1) % KBD_BUFFER_SIZE;
-    
+
     // If the buffer is full, discard the scancode to protect kernel memory
     if (next == kbd_buf.tail) {
         return;
     }
-    
+
     kbd_buf.data[kbd_buf.head] = scancode;
     kbd_buf.head = next;
 }
@@ -236,7 +236,7 @@ int kbd_buffer_pop(uint8_t *out_scancode) {
     if (kbd_buf.head == kbd_buf.tail) {
         return 0; // Buffer is empty
     }
-    
+
     *out_scancode = kbd_buf.data[kbd_buf.tail];
     kbd_buf.tail = (kbd_buf.tail + 1) % KBD_BUFFER_SIZE;
     return 1; // Successfully popped a scancode
@@ -262,14 +262,14 @@ int mouse_buffer_pop(mouse_event_t *out_event) {
 // System call wrapper exposed to your interrupt/syscall table
 int sys_read_key(uint8_t *user_buffer) {
     uint8_t scancode;
-    
+
     // Attempt to pull a key out of the queue
     if (kbd_buffer_pop(&scancode)) {
         // Safely write the byte to the user space pointer address
         *user_buffer = scancode;
         return 1; // Success
     }
-    
+
     return 0; // No keys available right now
 }
 
