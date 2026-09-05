@@ -269,67 +269,71 @@ int ahci_ioctl(int fd, unsigned long request, void* arg) {
     return -ENOTTY;
 }
 extern char *itoa(uint64_t value, char *str, int base, int uppercase);
-void init_ahci() {
+void init_ahci(uint8_t bus, uint8_t dev, uint8_t func) {
     printk(LOG_DEBUG, "=================== AHCI INITIALIZATION LOG ===================\n");
     memset(&primary_sata_drive, 0, sizeof(ahci_device_t));
-    
-    pci_device_t device;
-    memset(&device, 0, sizeof(pci_device_t));
-    int found = 0;
 
-    for (int i = 0; i < devicecount; i++) {
-        if (devices[i].class_code == 1 && devices[i].subclass == 6) {
-            device = devices[i];
-            found = 1;
-            break; 
-        }
-    }
+    // Verify PCI class and subclass for AHCI (Mass Storage Controller / SATA Controller)
+    uint32_t pci_class_reg = pci_read32(bus, dev, func, 0x08);
+    uint8_t class_code = (pci_class_reg >> 24) & 0xFF;
+    uint8_t subclass   = (pci_class_reg >> 16) & 0xFF;
 
-    if (!found) {
-        printk(LOG_DEBUG, "[AHCI INIT CRITICAL] No AHCI storage controller found on PCI bus.\n");
+    if (class_code != 0x01 || subclass != 0x06) {
+        printk(LOG_DEBUG, "[AHCI INIT ERROR] PCI device %02x:%02x.%d is not an AHCI controller (Class 0x%02x, Subclass 0x%02x).\n",
+               bus, dev, func, class_code, subclass);
         return;
     }
 
-    uint32_t bar5_val = pci_read32(device.bus, device.device, device.function, 0x24);
+    // Read BAR5 (ABAR)
+    uint32_t bar5_val = pci_read32(bus, dev, func, 0x24);
     uint64_t abar_physical = 0;
 
-    if ((bar5_val & 0x6) == 0x4) {
-        uint32_t bar6_val = pci_read32(device.bus, device.device, device.function, 0x28);
+    // Check if 64-bit MMIO BAR (bits 1-2 == 0b10)
+    if ((bar5_val & 0x06) == 0x04) {
+        uint32_t bar6_val = pci_read32(bus, dev, func, 0x28);
         abar_physical = ((uint64_t)bar6_val << 32) | (bar5_val & 0xFFFFFFF0);
     } else {
         abar_physical = bar5_val & 0xFFFFFFF0;
     }
 
-    printk(LOG_DEBUG, "[AHCI INIT] Resolved ABAR Physical Base Address: 0x%llx\n", abar_physical);
+    if (!abar_physical) {
+        printk(LOG_DEBUG, "[AHCI INIT CRITICAL] Invalid ABAR physical address on PCI device %02x:%02x.%d.\n", bus, dev, func);
+        return;
+    }
 
+    printk(LOG_DEBUG, "[AHCI INIT] Target BDF %02x:%02x.%d -> ABAR Physical: 0x%llx\n", bus, dev, func, abar_physical);
+
+    // Map the ABAR memory into page tables
     page_table_t *pml4 = vmm_get_current_pml4();
     uint64_t abar_virtual = abar_physical + HHDM_OFFSET;
-    vmm_map_page(pml4, abar_virtual, abar_physical, PTE_WRITABLE);
-    
-    volatile uint32_t pi = *(volatile uint32_t *)(abar_virtual + 0x0C); 
+
+    // Map ABAR region (typically 0x1100 bytes minimum to cover all 32 ports)
+    for (uint64_t offset = 0; offset < 0x2000; offset += PAGE_SIZE) {
+        vmm_map_page(pml4, abar_virtual + offset, abar_physical + offset, PTE_WRITABLE);
+    }
+
+    // Read Implemented Ports Bitmask (PI at ABAR + 0x0C)
+    volatile uint32_t pi = *(volatile uint32_t *)(abar_virtual + 0x0C);
     printk(LOG_DEBUG, "[AHCI INIT] Implemented Ports Bitmask (PI): 0x%x\n", pi);
 
     for (int i = 0; i < 32; i++) {
         if (pi & (1 << i)) {
             uint64_t port_base = abar_virtual + 0x100 + (i * 0x80);
-            
-            volatile uint32_t ssts = *(volatile uint32_t *)(port_base + 0x28); 
-            volatile uint32_t sig = *(volatile uint32_t *)(port_base + 0x24);
-            uint8_t det = ssts & 0xF;
-            
+
+            volatile uint32_t ssts = *(volatile uint32_t *)(port_base + 0x28);
+            volatile uint32_t sig  = *(volatile uint32_t *)(port_base + 0x24);
+            uint8_t det = ssts & 0x0F;
+
             printk(LOG_DEBUG, "[AHCI PORT %d] Status: PxSSTS=0x%x, PxSIG=0x%x, DET=0x%x\n", i, ssts, sig, det);
 
-            if (det == 3) { 
-                if (sig == AHCI_SIG_ATAPI) {
-                    continue; 
-                }
-                if (sig != AHCI_SIG_SATA) {
+            if (det == 3) {
+                if (sig == AHCI_SIG_ATAPI || sig != AHCI_SIG_SATA) {
                     continue;
                 }
 
-                printk(LOG_DEBUG, "[AHCI PORT %d] SATA HDD found. Allocating core memory mappings structures...\n", i);
-                
-                void* cl_virt = pmm_alloc_pages(0); 
+                printk(LOG_DEBUG, "[AHCI PORT %d] SATA HDD found. Allocating core memory structures...\n", i);
+
+                void* cl_virt = pmm_alloc_pages(0);
                 uint64_t cl_phys = (uint64_t)cl_virt - HHDM_OFFSET;
 
                 void* fis_virt = pmm_alloc_pages(0);
@@ -338,7 +342,7 @@ void init_ahci() {
                 void* table_virt = pmm_alloc_pages(0);
                 uint64_t table_phys = (uint64_t)table_virt - HHDM_OFFSET;
 
-                void* identify_buf_virt = pmm_alloc_pages(0); 
+                void* identify_buf_virt = pmm_alloc_pages(0);
                 uint64_t identify_buf_phys = (uint64_t)identify_buf_virt - HHDM_OFFSET;
 
                 memset(cl_virt, 0, PAGE_SIZE);
@@ -348,14 +352,14 @@ void init_ahci() {
 
                 ahci_stop_port(port_base);
 
-                *(volatile uint32_t*)(port_base + 0x00) = (uint32_t)cl_phys;         
-                *(volatile uint32_t*)(port_base + 0x04) = (uint32_t)(cl_phys >> 32);  
-                *(volatile uint32_t*)(port_base + 0x08) = (uint32_t)fis_phys;         
-                *(volatile uint32_t*)(port_base + 0x0C) = (uint32_t)(fis_phys >> 32);  
+                *(volatile uint32_t*)(port_base + 0x00) = (uint32_t)cl_phys;
+                *(volatile uint32_t*)(port_base + 0x04) = (uint32_t)(cl_phys >> 32);
+                *(volatile uint32_t*)(port_base + 0x08) = (uint32_t)fis_phys;
+                *(volatile uint32_t*)(port_base + 0x0C) = (uint32_t)(fis_phys >> 32);
 
                 ahci_start_port(port_base);
 
-                int cmd_success = ahci_send_command(port_base, cl_virt, table_virt, table_phys, 
+                int cmd_success = ahci_send_command(port_base, cl_virt, table_virt, table_phys,
                                                     0xEC, identify_buf_phys, 512, 0);
 
                 if (!cmd_success) {
@@ -366,18 +370,19 @@ void init_ahci() {
                 uint16_t* identify_data = (uint16_t*)identify_buf_virt;
                 uint64_t total_sectors = 0;
 
+                // Word 83 bit 10 determines LBA48 support
                 if (identify_data[83] & (1 << 10)) {
                     total_sectors = ((uint64_t)identify_data[103] << 48) |
                                     ((uint64_t)identify_data[102] << 32) |
                                     ((uint64_t)identify_data[101] << 16) |
                                      (uint64_t)identify_data[100];
                 } else {
-                    total_sectors = ((uint32_t)identify_data[61] << 16) | 
+                    total_sectors = ((uint32_t)identify_data[61] << 16) |
                                      (uint32_t)identify_data[60];
                 }
 
                 uint64_t drive_gb = (total_sectors * 512) / (1024 * 1024 * 1024);
-                
+
                 primary_sata_drive.port_base = port_base;
                 primary_sata_drive.cl_virt = cl_virt;
                 primary_sata_drive.table_virt = table_virt;
@@ -396,7 +401,7 @@ void init_ahci() {
                 drives[lastd].port_number = i;
                 drives[lastd].is_initialized = 1;
 
-                printk(LOG_DEBUG, "[AHCI] Drive Registered: Port %d, Total Sectors: %llu (%d GB).\n", 
+                printk(LOG_DEBUG, "[AHCI] Drive Registered: Port %d, Total Sectors: %llu (%d GB).\n",
                        i, total_sectors, primary_sata_drive.size_gb);
 
                 void* test_block_virt = pmm_alloc_pages(0);
@@ -411,19 +416,21 @@ void init_ahci() {
                     }
                     printk(LOG_DEBUG, "\n");
                 }
-                char name[6] = "/ada";
-                char buf[2];
+
+                char name[16] = "/ada";
+                char buf[8];
                 itoa(lastd, buf, 10, false);
                 strcat(name, buf);
-                register_device((read_func_t)ahci_read, (ioctl_func_t)ahci_ioctl, (write_func_t)ahci_write, DISK_FLAGS, DISK, name, drives[lastd], 0);
+
+                register_device((read_func_t)ahci_read, (ioctl_func_t)ahci_ioctl,
+                                (write_func_t)ahci_write, DISK_FLAGS, DISK, name, drives[lastd], 0);
                 lastd++;
-                break; 
+                break;
             }
         }
     }
     printk(LOG_DEBUG, "===============================================================\n");
 }
-
 ahci_device_t* get_primary_sata_drive(void) {
     return primary_sata_drive.is_initialized ? &primary_sata_drive : NULL; 
 }

@@ -1161,3 +1161,10 @@ int fork(uint64_t current_rsp) {
     // Parent return: returns child's PID
     return child_pid;
 }
+
+init_volume_t* get_vol_array() {
+    return thread_table[current_thread_id].process->vtables;
+}
+int* get_vol_counter() {
+    return thread_table[current_thread_id].process->vtable_counter;
+}

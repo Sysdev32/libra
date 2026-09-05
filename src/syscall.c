@@ -162,7 +162,7 @@ uint64_t get_tls(size_t key) {
 
 /* --- System Call Dispatcher Handlers --- */
 
-// Syscall 0: read
+// Syscall 0: read// Syscall 0: read
 unsigned long long sys_read(arg *a) {
     if (a == NULL) return (unsigned long long)-EINVAL;
 
@@ -178,15 +178,17 @@ unsigned long long sys_read(arg *a) {
 
     if (fd == 1 || fd == 2) {
         printk(LOG_WARNING, "[SYSCALL] sys_read: Attempted to read write-only descriptor %llu.\n", fd);
-        return 0;
+        return (unsigned long long)-EBADF;
     }
 
     int tracking_idx = (int)(fd - 2);
-    if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
-        return read(tracking_idx, buf, count, offset);
+    if (tracking_idx < 0) {
+        return (unsigned long long)-EBADF;
     }
 
-    return vfs_read(tracking_idx, buf, count, offset);
+    // Call open-subsystem read wrapper directly; falls back to VFS internally
+    int res = read(tracking_idx, buf, count, offset);
+    return (res < 0) ? (unsigned long long)res : (unsigned long long)res;
 }
 
 // Syscall 1: write
@@ -204,10 +206,9 @@ unsigned long long sys_write(arg *a) {
 
     if (fd > 2) {
         int tracking_idx = (int)(fd - 2);
-        if (tracking_idx >= 0 && tracking_idx < 32 && fd_is_mnt[tracking_idx]) {
-            return write(tracking_idx, buf, count);
-        }
-        return vfs_write_file(tracking_idx, buf, count);
+        // Direct write dispatcher that delegates between mountpoints, devfs, and VFS fallback
+        int res = write(tracking_idx, buf, count);
+        return (res < 0) ? (unsigned long long)res : (unsigned long long)res;
     } else if (fd == 1 || fd == 2) {
         const char *user_str = (const char *)buf;
 
@@ -239,34 +240,23 @@ unsigned long long sys_open(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    bool is_dev = (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v');
-
-    if (is_dev) {
-        long fd = open((char *)path, flags, mode);
-        if (fd < 0) {
-            printk(LOG_ERROR, "[SYSCALL] sys_open: Device open failed for path '%s'.\n", path);
-            return (unsigned long long)fd;
-        }
-        int tracking_idx = (int)fd;
-        if (tracking_idx >= 0 && tracking_idx < 32) {
-            fd_is_mnt[tracking_idx] = true;
-        }
-        return (unsigned long long)(fd + 2);
-    } else {
-        long fd = vfs_open(path, flags, mode);
-        if (fd < 0) {
-            printk(LOG_WARNING, "[SYSCALL] sys_open: VFS file open failed for path '%s', return: %d. flags: %x. mode: %x\n", path, fd, flags, mode);
-            return (unsigned long long)fd;
-        }
-        int tracking_idx = (int)fd;
-        if (tracking_idx >= 0 && tracking_idx < 32) {
-            fd_is_mnt[tracking_idx] = false;
-        }
-        return (unsigned long long)(fd + 2);
+    // Call open() directly. Mount resolution and VFS fallback will handle routing.
+    int fd = open((char *)path, flags, mode);
+    if (fd < 0) {
+        printk(LOG_WARNING, "[SYSCALL] sys_open: Open failed for path '%s', return: %d, flags: %x, mode: %x\n", path, fd, flags, mode);
+        return (unsigned long long)fd;
     }
+
+    int tracking_idx = fd;
+    if (tracking_idx >= 0 && tracking_idx < 32) {
+        fd_is_mnt[tracking_idx] = true;
+    }
+
+    // Shift by 2 to reserve 0 (stdin), 1 (stdout), and 2 (stderr) for user space
+    return (unsigned long long)(fd + 2);
 }
 
-// Syscall 3: vfs_mkdir
+// Syscall 3: mkdir
 unsigned long long sys_mkdir(arg *a) {
     if (a == NULL) {
         printk(LOG_ERROR, "[SYSCALL] sys_mkdir: NULL arg pointer\n");
@@ -282,16 +272,16 @@ unsigned long long sys_mkdir(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    int res = vfs_mkdir(path_buf, (uint32_t)a->arg[1]);
+    // Delegate directory creation through mount wrapper
+    int res = mnt_mkdir(path_buf, (uint32_t)a->arg[1]);
     if (res < 0) {
-        printk(LOG_WARNING, "[SYSCALL] sys_mkdir: vfs_mkdir returned %d for '%s'\n", res, path_buf);
+        printk(LOG_WARNING, "[SYSCALL] sys_mkdir: mnt_mkdir returned %d for '%s'\n", res, path_buf);
     } else {
         printk(LOG_INFO, "[SYSCALL] sys_mkdir: created '%s'\n", path_buf);
     }
     return (unsigned long long)res;
 }
-
-// Syscall 4: vfs_rmdir
+// Syscall 4: rmdir
 unsigned long long sys_rmdir(arg *a) {
     if (a == NULL) return (unsigned long long)-EINVAL;
 
@@ -301,7 +291,8 @@ unsigned long long sys_rmdir(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    return (unsigned long long)vfs_rmdir(path_buf);
+    // Direct routing to mountpoint directory remover
+    return (unsigned long long)mnt_rmdir(path_buf);
 }
 
 // Syscall 5: close
@@ -310,7 +301,7 @@ unsigned long long sys_close(arg *a) {
 
     uint64_t fd = a->arg[0];
     if (fd <= 2) {
-        return 0; // Standard input/output/error descriptor handling
+        return 0; // Standard input/output/error descriptors
     }
 
     int tracking_idx = (int)(fd - 2);
@@ -318,10 +309,11 @@ unsigned long long sys_close(arg *a) {
         fd_is_mnt[tracking_idx] = false;
     }
 
-    return (unsigned long long)vfs_free_fd(tracking_idx);
+    // Call open-subsystem close wrapper (handles both devfs/mount entries and VFS descriptor deallocation)
+    return (unsigned long long)close(tracking_idx);
 }
 
-// Syscall 6: vfs_move_file
+// Syscall 6: move_file
 unsigned long long sys_move_file(arg *a) {
     if (a == NULL) return (unsigned long long)-EINVAL;
 
@@ -337,7 +329,8 @@ unsigned long long sys_move_file(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    return (unsigned long long)vfs_move_file((int)(fd - 2), path_buf);
+    int tracking_idx = (int)(fd - 2);
+    return (unsigned long long)vfs_move_file(tracking_idx, path_buf);
 }
 
 // Syscall 7: create_file
@@ -352,34 +345,23 @@ unsigned long long sys_create_file(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    bool is_dev = (path[0] == '/' && path[1] == 'd' && path[2] == 'e' && path[3] == 'v');
-
-    if (is_dev) {
-        long status = create((char *)path);
-        if (status < 0) {
-            printk(LOG_ERROR, "[SYSCALL] sys_create_file: Device node creation failed.\n");
-            return (unsigned long long)status;
-        }
-        int tracking_idx = (int)status;
-        if (tracking_idx >= 0 && tracking_idx < 32) {
-            fd_is_mnt[tracking_idx] = true;
-        }
-        return (unsigned long long)(status + 2);
-    } else {
-        long fd = vfs_create_file((void *)a->arg[0], path, (int)a->arg[2]);
-        if (fd < 0) {
-            printk(LOG_ERROR, "[SYSCALL] sys_create_file: VFS file creation failed.\n");
-            return (unsigned long long)fd;
-        }
-        int tracking_idx = (int)fd;
-        if (tracking_idx >= 0 && tracking_idx < 32) {
-            fd_is_mnt[tracking_idx] = false;
-        }
-        return (unsigned long long)(fd + 2);
+    // Unified call to create(). Mount resolution falls back to vfs_create_file automatically.
+    long status = create((char *)path);
+    if (status < 0) {
+        printk(LOG_ERROR, "[SYSCALL] sys_create_file: Node creation failed for path '%s'.\n", path);
+        return (unsigned long long)status;
     }
+
+    int tracking_idx = (int)status;
+    if (tracking_idx >= 0 && tracking_idx < 32) {
+        fd_is_mnt[tracking_idx] = true;
+    }
+
+    // Shift descriptor for user space
+    return (unsigned long long)(status + 2);
 }
 
-// Syscall 8: vfs_delete_file
+// Syscall 8: delete_file
 unsigned long long sys_delete_file(arg *a) {
     if (a == NULL) return (unsigned long long)-EINVAL;
 
@@ -389,7 +371,8 @@ unsigned long long sys_delete_file(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    return (unsigned long long)vfs_delete_file(path_buf);
+    // Delegate node deletion through mnt_unlink
+    return (unsigned long long)mnt_unlink(path_buf);
 }
 
 // Syscall 9: get_permission_keys
@@ -743,7 +726,7 @@ unsigned long long sys_listdir(arg *a) {
         return (unsigned long long)-ENOENT;
     }
 
-    return (unsigned long long)vfs_listdir(path_buf, (char **)a->arg[1], a->arg[2]);
+    return (unsigned long long)mnt_listdir(path_buf, (char **)a->arg[1], a->arg[2]);
 }
 
 // Syscall 43: uacpi_reboot
@@ -1088,8 +1071,10 @@ unsigned long long sys_socket_accept(arg *a) {
 
     struct net_socket client;
     memset(&client, 0, sizeof(client));
+    printk(LOG_DEBUG, "memsetting client to null\n");
 
     int new_idx = sock.accept(&sock, &client);
+    printk(LOG_DEBUG, "ran func, sock type: %d\n", sock.protocol);
     if (new_idx < 0) {
         printk(LOG_WARNING, "[SYSCALL] sys_socket_accept: accept() returned failure.\n");
         return (unsigned long long)new_idx;
@@ -1124,4 +1109,129 @@ unsigned long long sys_socket_bind(arg *a) {
         printk(LOG_WARNING, "[SYSCALL] sys_socket_bind: bind returned %d\n", result);
     }
     return (unsigned long long)result;
+}
+typedef struct {
+    drive_type_t backend;
+    FormattingSystem scheme;
+    bool opened;
+    int partition_count;
+    int partitions[16];
+    int id;
+} disk;
+typedef struct {
+    int disk_count;
+    disk disks[16];
+} dtable;
+extern initialized_drive init_drives[32];
+extern int init_drives_count;
+// Syscall 76: sys_dtable
+unsigned long long sys_dtable(arg *a) {
+    dtable* buffer = (dtable*)a->arg[0];
+    buffer->disk_count = init_drives_count;
+    for (int i=0; i<init_drives_count; i++) {
+        buffer->disks[i].backend = init_drives[i].drive.type;
+        buffer->disks[i].scheme = init_drives[i].formatType;
+        buffer->disks[i].id = i;
+        buffer->disks[i].opened = false;
+    }
+}
+
+// Syscall 77: sys_dopen
+unsigned long long sys_dopen(arg *a) {
+    dtable* buffer = (dtable*)a->arg[0];
+    int disk_id = a->arg[1];
+    int index = -1;
+    for (int i=0; i<buffer->disk_count && i<16; i++) {
+        if (buffer->disks[i].id == disk_id) {
+            index = i;
+            break;
+        }
+    }
+    if (index == -1) return index;
+    int partition_count = init_drives[buffer->disks[index].id].format.gpt_partition_table.count;
+    init_volume_t* vols = get_vol_array();
+    int* vol_count = get_vol_counter();
+    for (int i=0; i<partition_count; i++) {
+        init_volume_t volume = init_drives[buffer->disks[index].id].format.gpt_partition_table.vols[i];
+        vols[(*vol_count)++] = volume;
+        buffer->disks[index].partitions[buffer->disks[index].partition_count++] = *vol_count;
+    }
+    buffer->disks[index].opened = true;
+    return 0;
+}
+typedef struct {
+    FileSystem st_fs;
+    uint64_t st_size;
+    char st_name[36];
+} dpstat;
+
+typedef struct {
+    FormattingSystem st_format;
+    drive_type_t drive;
+    uint64_t st_total_sectors;
+    uint64_t st_sector_size;
+} ddstat;
+
+// Syscall 78: sys_dpstat
+unsigned long long sys_dpstat(arg *a) {
+    dtable* d_table = (dtable*)a->arg[0];
+    int disk_id = a->arg[1];
+    int partition_id = a->arg[2];
+    dpstat* buf = (dpstat*)a->arg[3];
+    init_volume_t* vol = &(get_vol_array()[d_table->disks[disk_id].partitions[partition_id]]);
+    buf->st_fs = vol->fsType;
+    buf->st_size = vol->fs.filesystem.vol->total_sectors * vol->fs.filesystem.vol->drive.sector_size;
+    strncpy(buf->st_name, vol->base.name, 36);
+    return 0;
+}
+
+// Syscall 79: sys_ddstat
+unsigned long long sys_ddstat(arg *a) {
+    dtable* d_table = (dtable*)a->arg[0];
+    int disk_id = a->arg[1];
+    ddstat* buf = (ddstat*)a->arg[3];
+    initialized_drive* drive = &init_drives[d_table->disks[disk_id].id];
+    buf->st_format = drive->formatType;
+    buf->st_sector_size = drive->drive.sector_size;
+    buf->drive = drive->drive.type;
+    buf->st_total_sectors = drive->drive.total_sectors;
+    return 0;
+}
+typedef struct {
+    char name[64];
+    int integer;
+} hashmap_entry;
+hashmap_entry mount_table[256];
+int mount_count = 0;
+// Syscall 80: sys_mount
+unsigned long long sys_mount(arg *a) {
+    if (mount_count == 256) return -1;
+    dtable* d_table = (dtable*)a->arg[0];
+    int disk_id = a->arg[1];
+    char* name = (char*)a->arg[2];
+    char* path = (char*)a->arg[3];
+    initialized_drive* drive = &init_drives[d_table->disks[disk_id].id];
+    partition_table_t table = gpt_parse_partitions(&drive->drive);
+    for (int i=0; i<table.count; i++) {
+        if (!strcmp(table.partitions[i]->name, name)) {
+            hashmap_entry e;
+            strncpy(e.name, path, 64);
+            e.integer = mount(drive, i, path);
+            mount_table[mount_count++] = e;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+// Syscall 81: sys_umount
+unsigned long long sys_umount(arg *a) {
+    char* path = (char*)a->arg[0];
+    for (int i=0; i<mount_count; i++) {
+        if (!strcmp(path, mount_table[i].name)) {
+            umount(mount_table[i].integer);
+            return 0;
+        }
+    }
+    return -1;
 }

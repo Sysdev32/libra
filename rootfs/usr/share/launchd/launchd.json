@@ -1,0 +1,8 @@
+{
+    "services": [
+        {
+            "name": "sh",
+            "path": "/usr/bin/sh"
+        }
+    ]
+}

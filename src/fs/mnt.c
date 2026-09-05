@@ -1,12 +1,16 @@
 #include <fs/mnt.h>
+#include <fs/vfs.h>
 #include <string.h>
 #include <drivers/fb.h>
 #include <drivers/alloc.h>
 #include <fs/chfs.h>
-#include <hals/ahci.h> // Required for proper struct sizing
+#include <hals/ahci.h>
+#include <errno.h>
+#include <fcntl.h>
+
 #define BIT(x) (1ULL << (x))
 
-// Replicating the CHFS internal caching structure perfectly to match chfs.c memory boundaries
+// CHFS caching layout mirror
 typedef struct {
     CHFS_HDR* hdr;
     CHFS_FHDR* fhdr;
@@ -19,24 +23,23 @@ typedef struct {
     char vol_name[36];
     uint32_t free_fhdr;
     uint32_t free_inodes;
-    ahci_device_t dev;  // MUST be by value to match chfs.c layout
+    ahci_device_t dev;
     uint64_t start_lba;
 } chfs_cached_t;
 
-// Accessing the global metadata tracking array instantiated inside chfs.c
 extern chfs_cached_t metadata[32];
 extern uint32_t global_ino_counter;
 
-// Prototypes for foreign file system operations called by routing branches
 extern int read_chfs(int disk, char* path, void* buffer, int offset, int count);
 extern int write_chfs(int disk, char* path, void* buffer, size_t size);
 extern int create_chfs(int disk, char* path);
 
 mountpoint_t mountpoints[32] = {0};
 full_t fd_table[32];
-devfs_file files[64];
+devfs_file files[64] = {0};
 int last_fd = 0;
-int8_t get_lowest_mnt() {
+
+int8_t get_lowest_mnt(void) {
     printk(LOG_TRACE, "[MNT] get_lowest_mnt: Scanning mountpoint slots\n");
     for (int i = 0; i < 32; i++) {
         if (!mountpoints[i].allocated) {
@@ -48,541 +51,79 @@ int8_t get_lowest_mnt() {
     return -1;
 }
 
-int8_t mount(partition_t *partition, char *path) {
+int8_t mount(initialized_drive *drive, int vol_index, char *path) {
     printk(LOG_TRACE, "[MNT] mount: Invoked for path '%s'\n", path ? path : "NULL");
-    if (!path || !partition) {
-        printk(LOG_TRACE, "[MNT] mount: Failure - Null path or partition pointer passed\n");
+    if (!path || !drive) {
+        printk(LOG_TRACE, "[MNT] mount: Failure - Null path or drive pointer passed\n");
         return -1;
     }
-    
-    mountpoint_t mnt;
-    printk(LOG_TRACE, "[MNT] mount: Initialized local mountpoint container!\n");
-    
-    mnt.part = *partition;
-    strcpy(mnt.path, path);
-    
+
+    // Check if path is already mounted
+    for (int i = 0; i < 32; i++) {
+        if (mountpoints[i].allocated && strcmp(mountpoints[i].path, path) == 0) {
+            printk(LOG_TRACE, "[MNT] mount: Failure - Path '%s' already mounted\n", path);
+            return -EBUSY;
+        }
+    }
+
     int mntpoint = get_lowest_mnt();
     if (mntpoint < 0) {
-        printk(LOG_TRACE, "[MNT] mount: Failure - Fetching lowest mountpoint failed with status %d\n", mntpoint);
+        printk(LOG_TRACE, "[MNT] mount: Failure - Fetching lowest mountpoint failed\n");
         return mntpoint;
     }
-    
-    mountpoints[mntpoint] = mnt;
+
+    mountpoints[mntpoint].drive = drive;
+    mountpoints[mntpoint].vol_index = vol_index;
+    strcpy(mountpoints[mntpoint].path, path);
     mountpoints[mntpoint].allocated = 1;
-    
-    printk(LOG_TRACE, "[MNT] mount: Successfully assigned partition type %d to slot %d at path '%s'\n", (int)partition->type, mntpoint, path);
+    mountpoints[mntpoint].is_devfs = false;
+
+    printk(LOG_TRACE, "[MNT] mount: Successfully assigned drive to slot %d at path '%s'\n", mntpoint, path);
     return mntpoint;
 }
 
 void umount(int8_t mnt) {
     printk(LOG_TRACE, "[MNT] umount: Invoked for index %d\n", (int)mnt);
     if (mnt >= 0 && mnt < 32) {
+        if (!mountpoints[mnt].allocated) {
+            printk(LOG_TRACE, "[MNT] umount: Target slot index %d is not allocated\n", (int)mnt);
+            return;
+        }
         mountpoints[mnt].allocated = 0;
+        mountpoints[mnt].drive = NULL;
+        mountpoints[mnt].is_devfs = false;
+        memset(mountpoints[mnt].path, 0, sizeof(mountpoints[mnt].path));
         printk(LOG_TRACE, "[MNT] umount: Deallocated slot index %d successfully\n", (int)mnt);
     } else {
         printk(LOG_TRACE, "[MNT] umount: Out-of-bounds slot index %d provided\n", (int)mnt);
     }
 }
 
-size_t path_split(const char* src, char* dest_buf, char** out_tokens) {
-    printk(LOG_TRACE, "[MNT] path_split: Splitting string input\n");
-    size_t token_count = 0;
-    size_t src_idx = 0;
-    size_t dest_idx = 0;
+void devfs_init(void) {
+    printk(LOG_TRACE, "[DEVFS] devfs_init: Initializing /dev pseudo-filesystem\n");
+    memset(files, 0, sizeof(files));
 
-    while (src[src_idx] != '\0') {
-        while (src[src_idx] == '/') {
-            src_idx++;
-        }
-        if (src[src_idx] == '\0') {
-            break;
-        }
-        out_tokens[token_count] = &dest_buf[dest_idx];
-        token_count++;
-
-        while (src[src_idx] != '\0' && src[src_idx] != '/') {
-            dest_buf[dest_idx] = src[src_idx];
-            dest_idx++;
-            src_idx++;
-        }
-        dest_buf[dest_idx] = '\0';
-        dest_idx++;
-    }
-    out_tokens[token_count] = NULL; 
-    
-    printk(LOG_TRACE, "[MNT] path_split: Processed total tokens counted: %d\n", (int)token_count);
-    return token_count;
-}
-
-void string_shift(char* str, int shift_index) {
-    printk(LOG_TRACE, "[MNT] string_shift: Requested displacement index %d\n", shift_index);
-    if (!str || shift_index <= 0) {
-        printk(LOG_TRACE, "[MNT] string_shift: Aborted - Null buffer or index zero or less\n");
+    int mntpoint = get_lowest_mnt();
+    if (mntpoint < 0) {
+        printk(LOG_TRACE, "[DEVFS] devfs_init: Error - No free slot to mount /dev\n");
         return;
     }
 
-    size_t len = strlen(str);
-    if ((size_t)shift_index >= len) {
-        printk(LOG_TRACE, "[MNT] string_shift: Shift index >= length (%d >= %d). Wiping string buffer\n", shift_index, (int)len);
-        memset(str, 0, len);
-        return;
-    }
+    mountpoints[mntpoint].drive = NULL;
+    mountpoints[mntpoint].vol_index = -1;
+    strcpy(mountpoints[mntpoint].path, "/dev");
+    mountpoints[mntpoint].allocated = 1;
+    mountpoints[mntpoint].is_devfs = true;
 
-    size_t move_len = len - shift_index;
-    memmove(str, str + shift_index, move_len);
-    memset(str + move_len, 0, shift_index);
-    printk(LOG_TRACE, "[MNT] string_shift: Operation complete. Resulting string path is '%s'\n", str);
+    printk(LOG_TRACE, "[DEVFS] devfs_init: Successfully registered /dev at slot %d\n", mntpoint);
 }
 
-int open(char* path, int flags, uint32_t mode) {
-    printk(LOG_TRACE, "[MNT] open: Request initiated for path target '%s'\n", path ? path : "NULL");
-    if (!path || path[0] == '\0') {
-        printk(LOG_TRACE, "[MNT] open: Rejected - Path reference empty or null pointer\n");
-        return -1;
-    }
-
-    char* tokens[32] = {0}; 
-    char buf[256] = {0};
-    size_t total_tokens = path_split(path, buf, tokens);
-    
-    int chars = 0;
-    char current_prefix[256] = {0};
-
-    for (size_t i = 0; i < total_tokens; i++) {
-        strcat(current_prefix, "/");
-        strcat(current_prefix, tokens[i]);
-        chars += 1 + (int)strlen(tokens[i]); 
-        
-        printk(LOG_TRACE, "[MNT] open: Matching lookup index %d, testing target prefix boundary '%s'\n", (int)i, current_prefix);
-
-        int partition = -1;
-        for (int l = 0; l < 32; l++) {
-            if (mountpoints[l].allocated && strcmp(mountpoints[l].path, current_prefix) == 0) {
-                partition = l;
-                break;
-            }
-        }
-
-        if (partition != -1) {
-            printk(LOG_TRACE, "[MNT] open: Bound match located at partition table slot index %d\n", partition);
-            char mutable_path[256] = {0};
-            strcpy(mutable_path, path);
-            string_shift(mutable_path, chars);
-
-            if (mutable_path[0] != '/') {
-                char temp[256];
-                temp[0] = '/';
-                temp[1] = '\0';
-                strcat(temp, mutable_path);
-                strcpy(mutable_path, temp);
-            }
-            printk(LOG_TRACE, "[MNT] open: Formatted interior active subsystem directory route path: '%s'\n", mutable_path);
-
-            // --- ROUTING BRANCH: VFS ---
-            if (mountpoints[partition].part.type == VFS) {
-                printk(LOG_TRACE, "[MNT] open: Executing routing branch -> Virtual File System (VFS)\n");
-                return vfs_open(mutable_path, flags, mode);
-            } 
-            
-            // --- ROUTING BRANCH: FAT32 ---
-            else if (mountpoints[partition].part.type == FAT32) {
-                printk(LOG_TRACE, "[MNT] open: Executing routing branch -> FAT32 File System\n");
-                char* new_tokens[32] = {0};
-                char bf[256] = {0};
-                size_t local_tokens = path_split(mutable_path, bf, new_tokens);
-
-                if (local_tokens == 0) {
-                    printk(LOG_TRACE, "[MNT] open [FAT32]: Failure - Resolved path depth evaluates to zero tokens\n");
-                    return -1; 
-                }
-
-                fat32_fs_t* fat = &mountpoints[partition].part.fat;
-                uint32_t current_cluster = fat->root_cluster;
-                uint32_t parent_cluster = fat->root_cluster; 
-                fat32_entry_t final_entry = {0};
-                bool lookup_success = true;
-
-                for (size_t j = 0; j < local_tokens; j++) {
-                    parent_cluster = current_cluster; 
-                    printk(LOG_TRACE, "[MNT] open [FAT32]: Looking up node component object token '%s'\n", new_tokens[j]);
-                    uint32_t next = fat32_find_object_lfn(fat, current_cluster, new_tokens[j], &final_entry);
-                    
-                    if (next == 0 && j < local_tokens - 1) {
-                        printk(LOG_TRACE, "[MNT] open [FAT32]: Intermediate tree element navigation node missing\n");
-                        lookup_success = false;
-                        break;
-                    }
-                    if (j < local_tokens - 1) {
-                        current_cluster = next; 
-                    }
-                }
-
-                if (!lookup_success) {
-                    printk(LOG_TRACE, "[MNT] open [FAT32]: Path resolution lookup failed\n");
-                    return -1;
-                }
-
-                uint32_t file_size = final_entry.file_size;
-                void* buffer = NULL;
-                printk(LOG_TRACE, "[MNT] open [FAT32]: File target resolution tracking metric size: %d bytes\n", (int)file_size);
-                
-                if (file_size > 0) {
-                    buffer = kmalloc(file_size);
-                    if (!buffer) {
-                        printk(LOG_TRACE, "[MNT] open [FAT32]: Failure allocating required sector reading cache buffer memory\n");
-                        return -1;
-                    }
-
-                    uint32_t read_bytes = fat32_read_file_lfn(fat, parent_cluster, new_tokens[local_tokens - 1], buffer, file_size);
-                    if (read_bytes == 0) {
-                        printk(LOG_TRACE, "[MNT] open [FAT32]: Zero bytes retrieved from driver stream read evaluation\n");
-                        kfree(buffer);
-                        return -1;
-                    }
-                }
-
-                if (last_fd >= 32) {
-                    printk(LOG_TRACE, "[MNT] open [FAT32]: Global file description allocation boundaries exceeded limit: %d\n", last_fd);
-                    if (buffer) kfree(buffer);
-                    return -1; 
-                }
-
-                struct vfs_file in;
-                in.data = buffer;
-                in.gid = 0;
-                in.uid = 0;
-                in.nlink = 1;
-                in.mode = 0100755; 
-                in.size = file_size;
-                strcpy(in.path, mutable_path);
-
-                uint32_t target_file_cluster = ((uint32_t)final_entry.first_cluster_high << 16) | final_entry.first_cluster_low;
-
-                int assigned_fd = last_fd;
-                fd_table[last_fd].ord = in;
-                fd_table[last_fd].file_cluster = target_file_cluster;
-                fd_table[last_fd].dir_cluster = parent_cluster;       
-                fd_table[last_fd].mountpoint = mountpoints[partition];
-                strcpy(fd_table[last_fd].resolved, mutable_path);    
-                last_fd++;
-                
-                printk(LOG_TRACE, "[MNT] open [FAT32]: Complete mapping sequence! Handing out descriptor: %d\n", assigned_fd);
-                return assigned_fd;
-            }
-            
-            // --- ROUTING BRANCH: CHFS ---
-            else if (mountpoints[partition].part.type == CHFS) {
-                printk(LOG_TRACE, "[MNT] open: Executing routing branch -> CHFS File System Layer\n");
-                int disk_idx = mountpoints[partition].part.chfs;
-                chfs_cached_t* cache = &metadata[disk_idx];
-                CHFS_FHDR* fhdr_table = (CHFS_FHDR*)cache->fhdr;
-                
-                int fhdr_match_idx = -1;
-                printk(LOG_TRACE, "[MNT] open [CHFS]: Parsing header entry logs array total size boundary %d files\n", (int)cache->file_count);
-                for (int file_idx = 0; file_idx < cache->file_count; file_idx++) {
-                    if (strcmp(fhdr_table[file_idx].path, mutable_path) == 0) {
-                        fhdr_match_idx = file_idx;
-                        break;
-                    }
-                }
-                
-                if (fhdr_match_idx == -1) {
-                    printk(LOG_TRACE, "[MNT] open [CHFS]: Path match target validation failure for '%s'\n", mutable_path);
-                    return -1; 
-                }
-
-                uint64_t file_size = fhdr_table[fhdr_match_idx].size;
-                void* buffer = NULL;
-                printk(LOG_TRACE, "[MNT] open [CHFS]: Target size configuration reported is %d bytes\n", (int)file_size);
-
-                if (file_size > 0) {
-                    buffer = kmalloc(file_size);
-                    if (!buffer) {
-                        printk(LOG_TRACE, "[MNT] open [CHFS]: Buffer memory frame creation exhausted resource pools\n");
-                        return -1;
-                    }
-
-                    int bytes_read = read_chfs(disk_idx, mutable_path, buffer, 0, (int)file_size);
-                    if (bytes_read < 0) {
-                        printk(LOG_TRACE, "[MNT] open [CHFS]: Internal error return encountered during raw filesystem extraction: %d\n", bytes_read);
-                        kfree(buffer);
-                        return -1;
-                    }
-                }
-
-                if (last_fd >= 32) {
-                    printk(LOG_TRACE, "[MNT] open [CHFS]: Reached operating max threshold limit on standard process file tracking descriptors\n");
-                    if (buffer) kfree(buffer);
-                    return -1;
-                }
-
-                struct vfs_file in;
-                in.data = buffer;
-                in.gid = 0;
-                in.uid = 0;
-                in.nlink = 1;
-                in.mode = 0100644; 
-                in.size = file_size;
-                strcpy(in.path, mutable_path);
-
-                int assigned_fd = last_fd;
-                fd_table[last_fd].ord = in;
-                fd_table[last_fd].file_cluster = fhdr_match_idx; 
-                fd_table[last_fd].dir_cluster = 0;
-                fd_table[last_fd].mountpoint = mountpoints[partition];
-                strcpy(fd_table[last_fd].resolved, mutable_path);
-                last_fd++;
-                
-                printk(LOG_TRACE, "[MNT] open [CHFS]: Initialized file track setup loop. Assigning descriptor slot allocation index: %d\n", assigned_fd);
-                return assigned_fd;
-            } else if (mountpoints[partition].part.type == DEVFS) {
-                int fi = -1;
-                for (int i=0; i<64; i++) {
-                    if (files[i].allocated && !strcmp(files[i].name, mutable_path)) {
-                        fi = i;
-                        break;
-                    }
-                }
-                if (fi == -1) return -1;
-                if (last_fd >= 32) return -1;
-                int assigned_fd = last_fd;
-                fd_table[assigned_fd].file = files[fi];
-                if (fd_table[assigned_fd].file.type == DISK) {
-                    fd_table[assigned_fd].file.tty = assigned_fd;
-                }
-                fd_table[assigned_fd].mountpoint = mountpoints[partition];
-                strcpy(fd_table[assigned_fd].resolved, mutable_path);
-                last_fd++;
-                return assigned_fd;
-            }
-        }
-    }
-    printk(LOG_TRACE, "[MNT] open: Terminating - Zero matching volume mounts discovered across parameters context\n");
-    return -1; 
-}
-
-size_t buffer_crop_to_output(const void* src, size_t src_total_sz, 
-                             void* dest, size_t offset, size_t count) {
-    printk(LOG_TRACE, "[MNT] buffer_crop_to_output: Extraction execution requested from size %d, offset %d, chunk total count %d\n", (int)src_total_sz, (int)offset, (int)count);
-    if (!src || !dest || count == 0) {
-        printk(LOG_TRACE, "[MNT] buffer_crop_to_output: Safe rejection - Pointer verification fault or absolute zero length requested\n");
-        return 0;
-    }
-
-    const char* src_bytes = (const char*)src;
-    char* dest_bytes = (char*)dest;
-
-    if (offset >= src_total_sz) {
-        printk(LOG_TRACE, "[MNT] buffer_crop_to_output: Shift configuration request offset parameter breaks maximum boundary thresholds\n");
-        return 0;
-    }
-    if (offset + count > src_total_sz) {
-        count = src_total_sz - offset;
-        printk(LOG_TRACE, "[MNT] buffer_crop_to_output: Adjusted read operational configuration window payload length to %d\n", (int)count);
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        dest_bytes[i] = src_bytes[offset + i];
-    }
-    return count;
-}
-
-int read(int fd, void *buf, size_t count, uint64_t offset) {
-    printk(LOG_TRACE, "[MNT] read: Action query evaluated for descriptor slot %d, payload count requests %d, offset positioning %d\n", fd, (int)count, (int)offset);
-    if (fd < 0 || fd >= last_fd) {
-        printk(LOG_TRACE, "[MNT] read: Out-of-bounds or unallocated descriptor key request submitted\n");
-        return -1;
-    }
-    if (fd_table[fd].mountpoint.part.type != DEVFS) {
-        return (int)buffer_crop_to_output(fd_table[fd].ord.data, fd_table[fd].ord.size, buf, (size_t)offset, count);
-    } else {
-        if (fd_table[fd].file.bitmask & DEVFS_READ) {
-            return (int)fd_table[fd].file.read(fd_table[fd].file.tty, buf, count, (int)offset);
-        } else {
-            return -1;
-        }
-    }
-}
-
-const char* path_basename(const char* path) {
-    printk(LOG_TRACE, "[MNT] path_basename: Extracting terminal filename string token element sequence out from original source path '%s'\n", path ? path : "NULL");
-    if (!path || path[0] == '\0') return "";
-
-    size_t len = strlen(path);
-    int idx = (int)len - 1;
-
-    while (idx >= 0 && path[idx] == '/') {
-        idx--;
-    }
-    if (idx < 0) return "/";
-
-    while (idx >= 0 && path[idx] != '/') {
-        idx--;
-    }
-    
-    const char* base = &path[idx + 1];
-    printk(LOG_TRACE, "[MNT] path_basename: Extracted file leaf component results evaluate to: '%s'\n", base);
-    return base;
-}
-
-int write(int fd, const void *data, uint64_t size) {
-    printk(LOG_TRACE, "[MNT] write: Processing stream changes update for descriptor slot ID target: %d, stream payload length: %d\n", fd, (int)size);
-    if (fd < 0 || fd >= last_fd) {
-        printk(LOG_TRACE, "[MNT] write: Target evaluation rejected - Descriptor slot registry allocation key bounds breach\n");
-        return -1;
-    }
-
-    if (fd_table[fd].mountpoint.part.type == VFS) {
-        printk(LOG_TRACE, "[MNT] write [VFS]: Initiating block sector modifications across target pipeline path: '%s'\n", fd_table[fd].resolved);
-        int fdi = vfs_open(fd_table[fd].resolved, O_WRONLY, 0);
-        vfs_write_file(fdi, data, (size_t)size);
-    } 
-    else if (fd_table[fd].mountpoint.part.type == FAT32) {
-        printk(LOG_TRACE, "[MNT] write [FAT32]: Initializing data injection to volume structures allocation segments\n");
-        fat32_write_file_lfn(&fd_table[fd].mountpoint.part.fat, fd_table[fd].dir_cluster, path_basename(fd_table[fd].ord.path), data, (uint32_t)size);
-    } 
-    else if (fd_table[fd].mountpoint.part.type == CHFS) {
-        int chfs_disk = fd_table[fd].mountpoint.part.chfs;
-        printk(LOG_TRACE, "[MNT] write [CHFS]: Initializing structural modifications across hardware disk target volume ID %d\n", chfs_disk);
-        int status = write_chfs(chfs_disk, fd_table[fd].resolved, (void*)data, (size_t)size);
-        if (status < 0) {
-            printk(LOG_TRACE, "[MNT] write [CHFS]: Internal driver engine failure reported via status flag metrics: %d\n", status);
-            return -1;
-        }
-    } else if (fd_table[fd].mountpoint.part.type == DEVFS) {
-        if (fd_table[fd].file.bitmask & DEVFS_WRITE) {
-            return (int)fd_table[fd].file.write(fd_table[fd].file.tty, data, (size_t)size);
-        }
-        return -1;
-    }
-    if (fd_table[fd].mountpoint.part.type != DEVFS) {
-        printk(LOG_TRACE, "[MNT] write: Re-caching dynamic data contents tracking inside runtime mirror tables structures\n");
-        if (fd_table[fd].ord.data) {
-            kfree(fd_table[fd].ord.data);
-        }
-        
-        fd_table[fd].ord.data = kmalloc((size_t)size);
-        if (fd_table[fd].ord.data) {
-            memcpy(fd_table[fd].ord.data, data, (size_t)size);
-        } else {
-            printk(LOG_TRACE, "[MNT] write: Cache reallocation failure occurred during mirror framework update processing\n");
-        }
-        fd_table[fd].ord.size = (size_t)size;
-
-        printk(LOG_TRACE, "[MNT] write: Updates deployed completely\n");
-        return 0;
-    }
-    return -1;
-}
-
-int create(char* path) {
-    printk(LOG_TRACE, "[MNT] create: Node creation process initialized for asset destination reference allocation mapping route path '%s'\n", path ? path : "NULL");
-    if (!path || path[0] == '\0') {
-        printk(LOG_TRACE, "[MNT] create: System parsing configuration cancelled - Destination parameter path is invalid or empty\n");
-        return -1;
-    }
-
-    char* tokens[32] = {0}; 
-    char buf[256] = {0};
-    size_t total_tokens = path_split(path, buf, tokens);
-    
-    int chars = 0;
-    char current_prefix[256] = {0};
-
-    for (size_t i = 0; i < total_tokens; i++) {
-        strcat(current_prefix, "/");
-        strcat(current_prefix, tokens[i]);
-        chars += 1 + (int)strlen(tokens[i]); 
-        
-        printk(LOG_TRACE, "[MNT] create: Testing parent prefix boundaries matching condition for value string: '%s'\n", current_prefix);
-
-        int partition = -1;
-        for (int l = 0; l < 32; l++) {
-            if (mountpoints[l].allocated && strcmp(mountpoints[l].path, current_prefix) == 0) {
-                partition = l;
-                break;
-            }
-        }
-
-        if (partition != -1) {
-            printk(LOG_TRACE, "[MNT] create: Found matching partition assignment cluster reference profile index slot ID: %d\n", partition);
-            char mutable_path[256] = {0};
-            strcpy(mutable_path, path);
-            string_shift(mutable_path, chars);
-
-            if (mutable_path[0] != '/') {
-                char temp[256];
-                temp[0] = '/';
-                temp[1] = '\0';
-                strcat(temp, mutable_path);
-                strcpy(mutable_path, temp);
-            }
-            printk(LOG_TRACE, "[MNT] create: Generated sub-system translation route path argument profile reference target: '%s'\n", mutable_path);
-
-            if (mountpoints[partition].part.type == VFS) {
-                printk(LOG_TRACE, "[MNT] create [VFS]: Processing initialization parameters sequence towards VFS subsystem driver infrastructure\n");
-                char data[1] = "";
-                vfs_create_file(data, mutable_path, 1);
-                return 0;
-            } 
-            else if (mountpoints[partition].part.type == FAT32) {
-                printk(LOG_TRACE, "[MNT] create [FAT32]: Processing node entry allocation sequences inside cluster maps indices tables\n");
-                char* new_tokens[32] = {0};
-                char bf[256] = {0};
-                size_t local_tokens = path_split(mutable_path, bf, new_tokens);
-
-                if (local_tokens == 0) {
-                    printk(LOG_TRACE, "[MNT] create [FAT32]: Operational node directory hierarchy validation step fault\n");
-                    return -1; 
-                }
-
-                fat32_fs_t* fat = &mountpoints[partition].part.fat;
-                uint32_t current_cluster = fat->root_cluster;
-                uint32_t parent_cluster = fat->root_cluster; 
-                fat32_entry_t final_entry = {0};
-                bool lookup_success = true;
-
-                for (size_t j = 0; j < local_tokens; j++) {
-                    parent_cluster = current_cluster; 
-                    printk(LOG_TRACE, "[MNT] create [FAT32]: Tracking segment tree node directory boundary lookup: '%s'\n", new_tokens[j]);
-                    uint32_t next = fat32_find_object_lfn(fat, current_cluster, new_tokens[j], &final_entry);
-                    
-                    if (next == 0 && j < local_tokens - 1) {
-                        printk(LOG_TRACE, "[MNT] create [FAT32]: Intermediate tree reference folder hierarchy tracking failed\n");
-                        lookup_success = false;
-                        break;
-                    }
-                    if (j < local_tokens - 1) {
-                        current_cluster = next; 
-                    }
-                }
-
-                if (!lookup_success) {
-                    printk(LOG_TRACE, "[MNT] create [FAT32]: Execution failed due to missing components along the path route map hierarchy\n");
-                    return -1;
-                }
-                
-                printk(LOG_TRACE, "[MNT] create [FAT32]: Calling low-level filesystem implementation wrapper block to write entity record named: '%s'\n", final_entry.name);
-                return fat32_create_file_lfn(fat, parent_cluster, final_entry.name, 0);
-            }
-            else if (mountpoints[partition].part.type == CHFS) {
-                int chfs_disk = mountpoints[partition].part.chfs;
-                printk(LOG_TRACE, "[MNT] create [CHFS]: Initializing block map expansion steps against hardware storage target unit tracking profile ID %d\n", chfs_disk);
-                return create_chfs(chfs_disk, mutable_path);
-            }
-        }
-    }
-    printk(LOG_TRACE, "[MNT] create: Resolution routing phase aborted - Zero matching mounts mappings matches valid signatures inside registry arrays tables\n");
-    return -1; 
-}
 void register_device(read_func_t read, ioctl_func_t ioctl, write_func_t write,
                      uint8_t bitmask, DevFsType type, char* name,
                      ahci_device_t dev, int tty) {
-    printk(LOG_TRACE, "[MNT] register_device: Registering device '%s'\n", name ? name : "NULL");
+    printk(LOG_TRACE, "[DEVFS] register_device: Registering device '%s'\n", name ? name : "NULL");
 
-    if (!name) {
-        return;
-    }
+    if (!name) return;
 
     for (int i = 0; i < 64; i++) {
         if (!files[i].allocated) {
@@ -593,8 +134,9 @@ void register_device(read_func_t read, ioctl_func_t ioctl, write_func_t write,
             files[i].type = type;
             files[i].dev = dev;
             files[i].tty = tty;
+
             const char *dev_name = (name[0] == '/' && name[1] == 'd' && name[2] == 'e' &&
-                                    name[3] == 'v' && name[4] == '/') ? name + 4 : name;
+                                    name[3] == 'v' && name[4] == '/') ? name + 5 : name;
             strncpy(files[i].name, dev_name, sizeof(files[i].name) - 1);
             files[i].name[sizeof(files[i].name) - 1] = '\0';
             files[i].allocated = true;
@@ -602,5 +144,585 @@ void register_device(read_func_t read, ioctl_func_t ioctl, write_func_t write,
         }
     }
 
-    printk(LOG_TRACE, "[MNT] register_device: No free device slots available for '%s'\n", name);
+    printk(LOG_TRACE, "[DEVFS] register_device: No free device slots available for '%s'\n", name);
+}
+
+size_t path_split(const char* src, char* dest_buf, char** out_tokens) {
+    size_t token_count = 0;
+    size_t src_idx = 0;
+    size_t dest_idx = 0;
+
+    while (src[src_idx] != '\0') {
+        while (src[src_idx] == '/') src_idx++;
+        if (src[src_idx] == '\0') break;
+
+        out_tokens[token_count++] = &dest_buf[dest_idx];
+
+        while (src[src_idx] != '\0' && src[src_idx] != '/') {
+            dest_buf[dest_idx++] = src[src_idx++];
+        }
+        dest_buf[dest_idx++] = '\0';
+    }
+    out_tokens[token_count] = NULL;
+    return token_count;
+}
+
+void string_shift(char* str, int shift_index) {
+    if (!str || shift_index <= 0) return;
+
+    size_t len = strlen(str);
+    if ((size_t)shift_index >= len) {
+        memset(str, 0, len);
+        return;
+    }
+
+    size_t move_len = len - shift_index;
+    memmove(str, str + shift_index, move_len);
+    memset(str + move_len, 0, shift_index);
+}
+
+static inline fat32_fs_t* get_fat32_instance(mountpoint_t* mnt) {
+    if (!mnt || !mnt->drive) return NULL;
+    int vi = mnt->vol_index;
+    return &mnt->drive->format.gpt_partition_table.vols[vi].fs.filesystem;
+}
+
+// Helper: Resolve a path to its associated mountpoint and local target path
+static int resolve_mount(const char* path, mountpoint_t** out_mnt, char* local_path_out) {
+    if (!path || path[0] == '\0') return -EINVAL;
+
+    char* tokens[32] = {0};
+    char buf[256] = {0};
+    size_t total_tokens = path_split(path, buf, tokens);
+
+    int chars = 0;
+    char current_prefix[256] = {0};
+    int best_match = -1;
+    int best_chars = 0;
+
+    for (size_t i = 0; i < total_tokens; i++) {
+        strcat(current_prefix, "/");
+        strcat(current_prefix, tokens[i]);
+        chars += 1 + (int)strlen(tokens[i]);
+
+        for (int l = 0; l < 32; l++) {
+            if (mountpoints[l].allocated && strcmp(mountpoints[l].path, current_prefix) == 0) {
+                best_match = l;
+                best_chars = chars;
+                break;
+            }
+        }
+    }
+
+    if (best_match != -1) {
+        *out_mnt = &mountpoints[best_match];
+        strcpy(local_path_out, path);
+        string_shift(local_path_out, best_chars);
+        if (local_path_out[0] != '/') {
+            char temp[256] = "/";
+            strcat(temp, local_path_out);
+            strcpy(local_path_out, temp);
+        }
+        return 0;
+    }
+
+    *out_mnt = NULL;
+    strcpy(local_path_out, path);
+    return 0;
+}
+
+int open(char* path, int flags, uint32_t mode) {
+    printk(LOG_TRACE, "[MNT] open: Request initiated for path target '%s'\n", path ? path : "NULL");
+    if (!path || path[0] == '\0') return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt) {
+        // --- DEVFS ROUTING ---
+        if (mnt->is_devfs) {
+            int fi = -1;
+            const char *search_name = (local_path[0] == '/') ? local_path + 1 : local_path;
+
+            for (int i = 0; i < 64; i++) {
+                if (files[i].allocated && strcmp(files[i].name, search_name) == 0) {
+                    fi = i;
+                    break;
+                }
+            }
+            // Fallback to VFS open if target device missing in devfs
+            if (fi == -1) return vfs_open(path, flags, mode);
+            if (last_fd >= 32) return -EMFILE;
+
+            int assigned_fd = last_fd;
+            fd_table[assigned_fd].file = files[fi];
+            if (fd_table[assigned_fd].file.type == DISK) {
+                fd_table[assigned_fd].file.tty = assigned_fd;
+            }
+            fd_table[assigned_fd].mountpoint = *mnt;
+            strcpy(fd_table[assigned_fd].resolved, local_path);
+            last_fd++;
+            return assigned_fd;
+        }
+
+        // --- FAT32 ROUTING ---
+        if (mnt->drive) {
+            int vi = mnt->vol_index;
+            FileSystem fs_type = mnt->drive->format.gpt_partition_table.vols[vi].fsType;
+
+            if (fs_type == FS_FAT32) {
+                printk(LOG_TRACE, "[MNT] open: Executing routing branch -> FAT32 File System\n");
+                char* new_tokens[32] = {0};
+                char bf[256] = {0};
+                size_t local_tokens = path_split(local_path, bf, new_tokens);
+
+                if (local_tokens == 0) return vfs_open(path, flags, mode);
+
+                fat32_fs_t* fat = get_fat32_instance(mnt);
+                uint32_t current_cluster = fat->root_cluster;
+                uint32_t parent_cluster = fat->root_cluster;
+                fat32_entry_t final_entry = {0};
+                bool lookup_success = true;
+
+                for (size_t j = 0; j < local_tokens; j++) {
+                    parent_cluster = current_cluster;
+                    uint32_t next = fat32_find_object_lfn(fat, current_cluster, new_tokens[j], &final_entry);
+
+                    if (next == 0 && j < local_tokens - 1) {
+                        lookup_success = false;
+                        break;
+                    }
+                    if (j < local_tokens - 1) current_cluster = next;
+                }
+
+                if (!lookup_success) return vfs_open(path, flags, mode);
+
+                uint32_t file_size = final_entry.file_size;
+                void* buffer = NULL;
+
+                if (file_size > 0) {
+                    buffer = kmalloc(file_size);
+                    if (!buffer) return -ENOMEM;
+
+                    uint32_t read_bytes = fat32_read_file_lfn(fat, parent_cluster, new_tokens[local_tokens - 1], buffer, file_size);
+                    if (read_bytes == 0) {
+                        kfree(buffer);
+                        return -EIO;
+                    }
+                }
+
+                if (last_fd >= 32) {
+                    if (buffer) kfree(buffer);
+                    return -EMFILE;
+                }
+
+                struct vfs_file in;
+                in.data = buffer;
+                in.gid = 0;
+                in.uid = 0;
+                in.nlink = 1;
+                in.mode = 0100755;
+                in.size = file_size;
+                strcpy(in.path, local_path);
+
+                uint32_t target_file_cluster = ((uint32_t)final_entry.first_cluster_high << 16) | final_entry.first_cluster_low;
+
+                int assigned_fd = last_fd;
+                fd_table[last_fd].ord = in;
+                fd_table[last_fd].file_cluster = target_file_cluster;
+                fd_table[last_fd].dir_cluster = parent_cluster;
+                fd_table[last_fd].mountpoint = *mnt;
+                strcpy(fd_table[last_fd].resolved, local_path);
+                last_fd++;
+
+                return assigned_fd;
+            }
+        }
+    }
+
+    // --- VFS FALLBACK ROUTING ---
+    return vfs_open(path, flags, mode);
+}
+
+size_t buffer_crop_to_output(const void* src, size_t src_total_sz, void* dest, size_t offset, size_t count) {
+    if (!src || !dest || count == 0) return 0;
+    if (offset >= src_total_sz) return 0;
+
+    if (offset + count > src_total_sz) {
+        count = src_total_sz - offset;
+    }
+
+    memcpy(dest, (const char*)src + offset, count);
+    return count;
+}
+
+int read(int fd, void *buf, size_t count, uint64_t offset) {
+    if (fd < 0) return -EBADF;
+
+    if (fd < last_fd) {
+        if (fd_table[fd].mountpoint.is_devfs) {
+            if (fd_table[fd].file.bitmask & DEVFS_READ) {
+                return (int)fd_table[fd].file.read(fd_table[fd].file.tty, buf, count, (int)offset);
+            }
+            return -EACCES;
+        }
+
+        if (fd_table[fd].mountpoint.allocated) {
+            return (int)buffer_crop_to_output(fd_table[fd].ord.data, fd_table[fd].ord.size, buf, (size_t)offset, count);
+        }
+    }
+
+    // Fall back to VFS descriptor/flat file read
+    return vfs_read(fd, buf, count, offset);
+}
+
+const char* path_basename(const char* path) {
+    if (!path || path[0] == '\0') return "";
+
+    size_t len = strlen(path);
+    int idx = (int)len - 1;
+
+    while (idx >= 0 && path[idx] == '/') idx--;
+    if (idx < 0) return "/";
+
+    while (idx >= 0 && path[idx] != '/') idx--;
+
+    return &path[idx + 1];
+}
+
+int write(int fd, const void *data, uint64_t size) {
+    if (fd < 0) return -EBADF;
+
+    if (fd < last_fd) {
+        if (fd_table[fd].mountpoint.is_devfs) {
+            if (fd_table[fd].file.bitmask & DEVFS_WRITE) {
+                return (int)fd_table[fd].file.write(fd_table[fd].file.tty, data, (size_t)size);
+            }
+            return -EACCES;
+        }
+
+        if (fd_table[fd].mountpoint.allocated) {
+            mountpoint_t* mnt = &fd_table[fd].mountpoint;
+            fat32_fs_t* fat = get_fat32_instance(mnt);
+
+            if (fat) {
+                fat32_write_file_lfn(fat, fd_table[fd].dir_cluster, path_basename(fd_table[fd].ord.path), data, (uint32_t)size);
+            }
+
+            if (fd_table[fd].ord.data) kfree(fd_table[fd].ord.data);
+
+            fd_table[fd].ord.data = kmalloc((size_t)size);
+            if (fd_table[fd].ord.data) {
+                memcpy(fd_table[fd].ord.data, data, (size_t)size);
+            }
+            fd_table[fd].ord.size = (size_t)size;
+
+            return (int)size;
+        }
+    }
+
+    // Fall back to VFS file write
+    return vfs_write_file(fd, data, size);
+}
+
+int create(char* path) {
+    if (!path || path[0] == '\0') return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt) {
+        if (mnt->is_devfs) return -EPERM;
+
+        fat32_fs_t* fat = get_fat32_instance(mnt);
+        if (fat) {
+            char* new_tokens[32] = {0};
+            char bf[256] = {0};
+            size_t local_tokens = path_split(local_path, bf, new_tokens);
+
+            if (local_tokens == 0) return vfs_create_file(NULL, path, 0);
+
+            uint32_t current_cluster = fat->root_cluster;
+            uint32_t parent_cluster = fat->root_cluster;
+            fat32_entry_t final_entry = {0};
+
+            for (size_t j = 0; j < local_tokens; j++) {
+                parent_cluster = current_cluster;
+                uint32_t next = fat32_find_object_lfn(fat, current_cluster, new_tokens[j], &final_entry);
+                if (j < local_tokens - 1) {
+                    if (next == 0) return vfs_create_file(NULL, path, 0);
+                    current_cluster = next;
+                }
+            }
+
+            return fat32_create_file_lfn(fat, parent_cluster, path_basename(local_path), 0);
+        }
+    }
+
+    // Fall back to VFS file creation
+    return vfs_create_file(NULL, path, 0);
+}
+
+// --- Extended VFS Wrappers with Mount Checks ---
+
+int mnt_mkdir(const char *path, uint32_t mode) {
+    if (!path) return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt && mnt->is_devfs) {
+        return -EPERM;
+    }
+
+    return vfs_mkdir(path, mode);
+}
+
+int mnt_rmdir(const char *path) {
+    if (!path) return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt && mnt->is_devfs) {
+        return -EPERM;
+    }
+
+    return vfs_rmdir(path);
+}
+
+int mnt_unlink(const char *path) {
+    if (!path) return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt && mnt->is_devfs) {
+        return -EPERM;
+    }
+
+    return vfs_delete_file(path);
+}
+
+int mnt_stat(const char *path, struct vfs_stat *st) {
+    if (!path || !st) return -EINVAL;
+
+    mountpoint_t* mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    if (mnt && mnt->is_devfs) {
+        const char *search_name = (local_path[0] == '/') ? local_path + 1 : local_path;
+        for (int i = 0; i < 64; i++) {
+            if (files[i].allocated && strcmp(files[i].name, search_name) == 0) {
+                memset(st, 0, sizeof(struct vfs_stat));
+                st->st_ino = (uint32_t)(i + 500);
+                st->st_mode = 0020666;
+                st->st_nlink = 1;
+                return 0;
+            }
+        }
+        return -ENOENT;
+    }
+
+    return vfs_stat(path, st);
+}
+
+int mnt_fstat(int fd, struct vfs_stat *st) {
+    if (!st) return -EINVAL;
+    if (fd < 0) return -EBADF;
+
+    if (fd < last_fd && fd_table[fd].mountpoint.allocated) {
+        memset(st, 0, sizeof(struct vfs_stat));
+        if (fd_table[fd].mountpoint.is_devfs) {
+            st->st_ino = (uint32_t)(fd + 500);
+            st->st_mode = 0020666;
+            st->st_nlink = 1;
+        } else {
+            st->st_ino = fd_table[fd].file_cluster;
+            st->st_mode = fd_table[fd].ord.mode;
+            st->st_size = fd_table[fd].ord.size;
+            st->st_nlink = fd_table[fd].ord.nlink;
+        }
+        return 0;
+    }
+
+    return vfs_fstat(fd, st);
+}
+
+int mnt_getdents(int fd, void *buf, size_t count, uint64_t offset) {
+    if (!buf) return -EINVAL;
+    if (fd < 0) return -EBADF;
+
+    if (fd < last_fd && fd_table[fd].mountpoint.is_devfs) {
+        if (count < sizeof(struct vfs_dirent)) return -EINVAL;
+
+        uint8_t *user_buf = (uint8_t *)buf;
+        size_t bytes_written = 0;
+        uint64_t idx = offset;
+        uint64_t active_count = 0;
+
+        for (int i = 0; i < 64; i++) {
+            if (!files[i].allocated) continue;
+
+            if (active_count < idx) {
+                active_count++;
+                continue;
+            }
+
+            if (bytes_written + sizeof(struct vfs_dirent) > count) break;
+
+            struct vfs_dirent *vd = (struct vfs_dirent *)(user_buf + bytes_written);
+            vd->d_ino = (uint32_t)(i + 500);
+            vd->d_type = 2;
+
+            memset(vd->d_name, 0, 256);
+            strncpy(vd->d_name, files[i].name, 255);
+
+            bytes_written += sizeof(struct vfs_dirent);
+            active_count++;
+        }
+
+        return (int)bytes_written;
+    }
+
+    return vfs_getdents(fd, buf, count, offset);
+}
+
+int close(int fd) {
+    if (fd < 0) return -EBADF;
+
+    if (fd < last_fd && fd_table[fd].mountpoint.allocated) {
+        if (!fd_table[fd].mountpoint.is_devfs && fd_table[fd].ord.data) {
+            kfree(fd_table[fd].ord.data);
+            fd_table[fd].ord.data = NULL;
+        }
+        memset(&fd_table[fd], 0, sizeof(full_t));
+        return 0;
+    }
+
+    return vfs_free_fd(fd);
+}
+int mnt_listdir(const char *path, char **out_names, size_t max_entries) {
+    printk(LOG_TRACE, "[MNT_LISTDIR] Called for path: '%s', max_entries: %zu\n",
+           path ? path : "NULL", max_entries);
+
+    if (!path || !out_names || max_entries == 0) {
+        printk(LOG_TRACE, "[MNT_LISTDIR] Error: Invalid argument(s) passed\n");
+        return -EINVAL;
+    }
+
+    mountpoint_t *mnt = NULL;
+    char local_path[256] = {0};
+    resolve_mount(path, &mnt, local_path);
+
+    printk(LOG_TRACE, "[MNT_LISTDIR] Resolved path -> mnt: %p, local_path: '%s'\n",
+           (void*)mnt, local_path);
+
+    if (mnt) {
+        // --- 1. DEVFS ROUTING ---
+        if (mnt->is_devfs) {
+            printk(LOG_TRACE, "[MNT_LISTDIR] Target mountpoint is DEVFS\n");
+            size_t count = 0;
+            for (int i = 0; i < 64 && count < max_entries; i++) {
+                if (!files[i].allocated) continue;
+                if (!out_names[count]) return -EINVAL;
+
+                strncpy(out_names[count], files[i].name, 255);
+                out_names[count][255] = '\0';
+
+                printk(LOG_TRACE, "[MNT_LISTDIR] DEVFS: Appended entry [%llu] -> '%s'\n", count, files[i].name);
+                count++;
+            }
+            printk(LOG_TRACE, "[MNT_LISTDIR] DEVFS: Returning %llu entries\n", count);
+            return (int)count;
+        }
+
+        // --- 2. FAT32 / DISK MOUNT ROUTING ---
+        if (mnt->drive) {
+            printk(LOG_TRACE, "[MNT_LISTDIR] Mountpoint has associated drive (%p), checking FAT32 instance...\n", (void*)mnt->drive);
+            fat32_fs_t *fat = get_fat32_instance(mnt);
+            if (fat) {
+                printk(LOG_TRACE, "[MNT_LISTDIR] FAT32 filesystem handle located (root_cluster: %u)\n", fat->root_cluster);
+                char *new_tokens[32] = {0};
+                char bf[256] = {0};
+                size_t local_tokens = path_split(local_path, bf, new_tokens);
+
+                printk(LOG_TRACE, "[MNT_LISTDIR] Path split into %llu token(s)\n", local_tokens);
+
+                uint32_t current_cluster = fat->root_cluster;
+                fat32_entry_t final_entry = {0};
+                bool lookup_failed = false;
+
+                for (size_t j = 0; j < local_tokens; j++) {
+                    printk(LOG_TRACE, "[MNT_LISTDIR] Traversing path token [%llu]: '%s' from cluster %u\n",
+                           j, new_tokens[j], current_cluster);
+                    uint32_t next = fat32_find_object_lfn(fat, current_cluster, new_tokens[j], &final_entry);
+                    if (next == 0) {
+                        printk(LOG_TRACE, "[MNT_LISTDIR] FAT32: Object '%s' not found under cluster %u\n",
+                               new_tokens[j], current_cluster);
+                        lookup_failed = true;
+                        break;
+                    }
+                    current_cluster = next;
+                    printk(LOG_TRACE, "[MNT_LISTDIR] Found object '%s', moved to next cluster %u\n",
+                           new_tokens[j], current_cluster);
+                }
+
+                if (!lookup_failed) {
+                    size_t dirent_buf_sz = max_entries * sizeof(struct vfs_dirent);
+                    printk(LOG_TRACE, "[MNT_LISTDIR] Allocating dirent buffer (%llu bytes) for reading cluster %u\n",
+                           dirent_buf_sz, current_cluster);
+
+                    struct vfs_dirent *dir_buf = kmalloc(dirent_buf_sz);
+                    if (!dir_buf) {
+                        printk(LOG_TRACE, "[MNT_LISTDIR] Error: Failed to allocate dirent buffer\n");
+                        return -ENOMEM;
+                    }
+
+                    int bytes_read = fat32_read_dir_lfn(fat, current_cluster, dir_buf, max_entries);
+                    printk(LOG_TRACE, "[MNT_LISTDIR] fat32_read_dir_lfn returned %d bytes\n", bytes_read);
+
+                    if (bytes_read >= 0) {
+                        int entry_count = bytes_read / sizeof(struct vfs_dirent);
+                        if (entry_count > (int)max_entries) entry_count = (int)max_entries;
+
+                        printk(LOG_TRACE, "[MNT_LISTDIR] Processing %d dirent entry/entries\n", entry_count);
+
+                        for (int i = 0; i < entry_count; i++) {
+                            if (!out_names[i]) {
+                                printk(LOG_TRACE, "[MNT_LISTDIR] Error: NULL buffer pointer at out_names[%d]\n", i);
+                                kfree(dir_buf);
+                                return -EINVAL;
+                            }
+
+                            strncpy(out_names[i], dir_buf[i].d_name, 255);
+                            out_names[i][255] = '\0';
+
+                            printk(LOG_TRACE, "[MNT_LISTDIR] FAT32: Appended entry [%d] -> '%s'\n", i, dir_buf[i].d_name);
+                        }
+
+                        kfree(dir_buf);
+                        printk(LOG_TRACE, "[MNT_LISTDIR] Successfully returning %d entries\n", entry_count);
+                        return entry_count;
+                    }
+                    kfree(dir_buf);
+                }
+            } else {
+                printk(LOG_TRACE, "[MNT_LISTDIR] Failed to retrieve FAT32 instance from mountpoint\n");
+            }
+        }
+    }
+
+    // --- 3. VFS FALLBACK ROUTING ---
+    printk(LOG_TRACE, "[MNT_LISTDIR] Falling back to vfs_listdir for path: '%s'\n", path);
+    int vfs_res = vfs_listdir(path, out_names, max_entries);
+    printk(LOG_TRACE, "[MNT_LISTDIR] vfs_listdir returned code: %d\n", vfs_res);
+
+    return vfs_res;
 }

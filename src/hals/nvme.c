@@ -330,32 +330,119 @@ static bool nvme_init_single_device(nvme_device_t* ctrl, pci_device_t* pci_dev, 
 /* ============================================================================
  * PUBLIC DRIVER APIS
  * ============================================================================ */
-
-nvme_list_t nvme_init(void) {
-    memset(nvme_devices, 0, sizeof(nvme_devices));
-    num_nvme_devices = 0;
-
-    for (uint32_t i = 0; i < devicecount; i++) {
-        if (devices[i].class_code == NVME_CLASS_CODE &&
-            devices[i].subclass   == NVME_SUBCLASS   &&
-            devices[i].prog_if    == NVME_PROG_IF) {
-            
-            if (num_nvme_devices >= NVME_MAX_DEVICES) break;
-
-            if (nvme_init_single_device(&nvme_devices[num_nvme_devices], &devices[i], num_nvme_devices)) {
-                num_nvme_devices++;
-            }
-        }
+int32_t nvme_init(uint8_t bus, uint8_t dev, uint8_t func) {
+    if (num_nvme_devices >= NVME_MAX_DEVICES) {
+        printk(LOG_ERROR, "NVMe [HAL]: Max device limit reached (%d)\n", NVME_MAX_DEVICES);
+        return -1;
     }
 
-    nvme_list_t list = {
-        .devices = nvme_devices,
-        .count = num_nvme_devices
-    };
+    uint32_t id = num_nvme_devices;
+    nvme_device_t* ctrl = &nvme_devices[id];
+    memset(ctrl, 0, sizeof(nvme_device_t));
+    ctrl->id = id;
 
-    return list;
+    // 1. Enable PCI Bus Mastering, Memory, and IO Space
+    uint16_t pci_cmd = pci_read16(bus, dev, func, 0x04);
+    pci_cmd |= (1 << 0) | (1 << 1) | (1 << 2);
+    pci_write16(bus, dev, func, 0x04, pci_cmd);
+
+    // 2. Read full 64-bit BAR0
+    uint32_t bar0_low  = pci_read32(bus, dev, func, 0x10);
+    uint32_t bar0_high = pci_read32(bus, dev, func, 0x14);
+
+    ctrl->bar0 = ((uint64_t)bar0_high << 32) | ((uint64_t)bar0_low & 0xFFFFFFF0ULL);
+
+    ctrl->regs = (volatile nvme_regs_t*)hal_mmio_map(ctrl->bar0, 0x2000);
+    if (!ctrl->regs) {
+        return -1;
+    }
+
+    uint32_t dstrd = (uint32_t)((ctrl->regs->cap >> 32) & 0x0F);
+    ctrl->db_stride = 1 << (2 + dstrd);
+
+    // 3. Reset Controller (CC.EN = 0)
+    ctrl->regs->cc &= ~1U;
+    while ((ctrl->regs->csts & 1) != 0) {
+        asm volatile("pause");
+    }
+
+    // 4. Allocate Admin Queues
+    ctrl->admin_sq = (nvme_sqe_t*)hal_alloc_dma_page();
+    ctrl->admin_cq = (nvme_cqe_t*)hal_alloc_dma_page();
+
+    if (!ctrl->admin_sq || !ctrl->admin_cq) {
+        return -1;
+    }
+
+    ctrl->admin_sq_tail = 0;
+    ctrl->admin_cq_head = 0;
+    ctrl->admin_phase   = 1;
+
+    // 0-based depth for AQA register
+    uint32_t aqa = ((QUEUE_DEPTH - 1) << 16) | (QUEUE_DEPTH - 1);
+    uint64_t asq_phys = (uint64_t)hal_virt_to_phys(ctrl->admin_sq);
+    uint64_t acq_phys = (uint64_t)hal_virt_to_phys(ctrl->admin_cq);
+
+    ctrl->regs->aqa = aqa;
+    ctrl->regs->asq = asq_phys;
+    ctrl->regs->acq = acq_phys;
+
+    // 5. Enable Controller (CC.EN = 1)
+    uint32_t cc = 0;
+    cc |= (1 << 0);   // EN = 1
+    cc |= (6 << 16);  // IOSQES = 64 bytes
+    cc |= (4 << 20);  // IOCQES = 16 bytes
+    ctrl->regs->cc = cc;
+
+    while ((ctrl->regs->csts & 1) == 0) {
+        asm volatile("pause");
+    }
+
+    // 6. Create I/O Completion Queue (QID = 1)
+    ctrl->io_cq = (nvme_cqe_t*)hal_alloc_dma_page();
+    if (!ctrl->io_cq) return -1;
+
+    uint64_t io_cq_phys = (uint64_t)hal_virt_to_phys(ctrl->io_cq);
+
+    nvme_sqe_t cmd_cq = {0};
+    cmd_cq.opcode = NVME_ADMIN_CREATE_IO_CQ;
+    cmd_cq.prp1   = io_cq_phys;
+    cmd_cq.cdw10  = ((QUEUE_DEPTH - 1) << 16) | 1;
+    cmd_cq.cdw11  = 1;
+    if (!nvme_submit_admin_cmd(ctrl, &cmd_cq, NULL)) {
+        printk(LOG_ERROR, "NVMe [%d]: Failed to create I/O Completion Queue!\n", ctrl->id);
+        return -1;
+    }
+
+    // 7. Create I/O Submission Queue (QID = 1)
+    ctrl->io_sq = (nvme_sqe_t*)hal_alloc_dma_page();
+    if (!ctrl->io_sq) return -1;
+
+    uint64_t io_sq_phys = (uint64_t)hal_virt_to_phys(ctrl->io_sq);
+
+    nvme_sqe_t cmd_sq = {0};
+    cmd_sq.opcode = NVME_ADMIN_CREATE_IO_SQ;
+    cmd_sq.prp1   = io_sq_phys;
+    cmd_sq.cdw10  = ((QUEUE_DEPTH - 1) << 16) | 1;
+    cmd_sq.cdw11  = (1 << 16) | 1;
+    if (!nvme_submit_admin_cmd(ctrl, &cmd_sq, NULL)) {
+        printk(LOG_ERROR, "NVMe [%d]: Failed to create I/O Submission Queue!\n", ctrl->id);
+        return -1;
+    }
+
+    ctrl->io_sq_tail = 0;
+    ctrl->io_cq_head = 0;
+    ctrl->io_phase   = 1;
+    ctrl->active     = true;
+
+    // Fetch drive and namespace details
+    if (!nvme_identify(ctrl)) {
+        return -1;
+    }
+
+    num_nvme_devices++;
+    return (int32_t)id;
 }
-
 bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sector_count, void* buffer) {
     if (nvme_id >= num_nvme_devices || !nvme_devices[nvme_id].active || !buffer) {
         return false;
@@ -363,6 +450,13 @@ bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sec
 
     nvme_device_t* ctrl = &nvme_devices[nvme_id];
     uint64_t phys_buf = (uint64_t)hal_virt_to_phys(buffer);
+    uint32_t total_bytes = sector_count * ctrl->sector_size;
+
+    // Calculate how many physical 4 KiB pages are spanned
+    uint64_t page_offset = phys_buf & (PAGE_SIZE - 1);
+    uint32_t bytes_in_first_page = PAGE_SIZE - page_offset;
+
+    void* prp_list_virt = NULL;
 
     nvme_sqe_t cmd = {0};
     cmd.opcode     = NVME_CMD_READ;
@@ -373,10 +467,33 @@ bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sec
     cmd.cdw11      = (uint32_t)(lba >> 32);
     cmd.cdw12      = (sector_count - 1);
 
+    // Multi-page transfer setup
+    if (total_bytes > bytes_in_first_page) {
+        uint32_t remaining_bytes = total_bytes - bytes_in_first_page;
+        uint64_t second_page_phys = phys_buf + bytes_in_first_page;
+
+        if (remaining_bytes <= PAGE_SIZE) {
+            // Exactly 2 pages: PRP2 points directly to the 2nd physical page
+            cmd.prp2 = second_page_phys;
+        } else {
+            // Spans > 2 pages: Allocate a PRP List page
+            prp_list_virt = hal_alloc_dma_page();
+            if (!prp_list_virt) return false;
+
+            uint64_t* prp_list = (uint64_t*)prp_list_virt;
+            uint32_t num_pages = (remaining_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+            for (uint32_t i = 0; i < num_pages; i++) {
+                prp_list[i] = second_page_phys + (i * PAGE_SIZE);
+            }
+
+            cmd.prp2 = (uint64_t)hal_virt_to_phys(prp_list_virt);
+        }
+    }
+
     memcpy(&ctrl->io_sq[ctrl->io_sq_tail], &cmd, sizeof(nvme_sqe_t));
     ctrl->io_sq_tail = (ctrl->io_sq_tail + 1) % QUEUE_DEPTH;
-    
-    // I/O SQ1 Doorbell Index = 2 * QID = 2
+
     nvme_ring_doorbell(ctrl, 2, ctrl->io_sq_tail);
 
     volatile nvme_cqe_t* cqe = (volatile nvme_cqe_t*)&ctrl->io_cq[ctrl->io_cq_head];
@@ -385,6 +502,7 @@ bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sec
         asm volatile("pause" ::: "memory");
         if (++spin_count > 100000000) {
             printk(LOG_ERROR, "NVMe [%d]: Read timeout!\n", ctrl->id);
+            if (prp_list_virt) hal_free_dma_page(prp_list_virt);
             return false;
         }
     }
@@ -392,8 +510,11 @@ bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sec
     ctrl->io_cq_head = (ctrl->io_cq_head + 1) % QUEUE_DEPTH;
     if (ctrl->io_cq_head == 0) ctrl->io_phase ^= 1;
 
-    // I/O CQ1 Doorbell Index = 2 * QID + 1 = 3
     nvme_ring_doorbell(ctrl, 3, ctrl->io_cq_head);
+
+    if (prp_list_virt) {
+        hal_free_dma_page(prp_list_virt);
+    }
 
     return (cqe->status >> 1) == 0;
 }
@@ -405,6 +526,12 @@ bool nvme_write_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t se
 
     nvme_device_t* ctrl = &nvme_devices[nvme_id];
     uint64_t phys_buf = (uint64_t)hal_virt_to_phys((void*)buffer);
+    uint32_t total_bytes = sector_count * ctrl->sector_size;
+
+    uint64_t page_offset = phys_buf & (PAGE_SIZE - 1);
+    uint32_t bytes_in_first_page = PAGE_SIZE - page_offset;
+
+    void* prp_list_virt = NULL;
 
     nvme_sqe_t cmd = {0};
     cmd.opcode     = NVME_CMD_WRITE;
@@ -415,10 +542,30 @@ bool nvme_write_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t se
     cmd.cdw11      = (uint32_t)(lba >> 32);
     cmd.cdw12      = (sector_count - 1);
 
+    if (total_bytes > bytes_in_first_page) {
+        uint32_t remaining_bytes = total_bytes - bytes_in_first_page;
+        uint64_t second_page_phys = phys_buf + bytes_in_first_page;
+
+        if (remaining_bytes <= PAGE_SIZE) {
+            cmd.prp2 = second_page_phys;
+        } else {
+            prp_list_virt = hal_alloc_dma_page();
+            if (!prp_list_virt) return false;
+
+            uint64_t* prp_list = (uint64_t*)prp_list_virt;
+            uint32_t num_pages = (remaining_bytes + PAGE_SIZE - 1) / PAGE_SIZE;
+
+            for (uint32_t i = 0; i < num_pages; i++) {
+                prp_list[i] = second_page_phys + (i * PAGE_SIZE);
+            }
+
+            cmd.prp2 = (uint64_t)hal_virt_to_phys(prp_list_virt);
+        }
+    }
+
     memcpy(&ctrl->io_sq[ctrl->io_sq_tail], &cmd, sizeof(nvme_sqe_t));
     ctrl->io_sq_tail = (ctrl->io_sq_tail + 1) % QUEUE_DEPTH;
-    
-    // I/O SQ1 Doorbell Index = 2 * QID = 2
+
     nvme_ring_doorbell(ctrl, 2, ctrl->io_sq_tail);
 
     volatile nvme_cqe_t* cqe = (volatile nvme_cqe_t*)&ctrl->io_cq[ctrl->io_cq_head];
@@ -427,6 +574,7 @@ bool nvme_write_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t se
         asm volatile("pause" ::: "memory");
         if (++spin_count > 100000000) {
             printk(LOG_ERROR, "NVMe [%d]: Write timeout!\n", ctrl->id);
+            if (prp_list_virt) hal_free_dma_page(prp_list_virt);
             return false;
         }
     }
@@ -434,8 +582,11 @@ bool nvme_write_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t se
     ctrl->io_cq_head = (ctrl->io_cq_head + 1) % QUEUE_DEPTH;
     if (ctrl->io_cq_head == 0) ctrl->io_phase ^= 1;
 
-    // I/O CQ1 Doorbell Index = 2 * QID + 1 = 3
     nvme_ring_doorbell(ctrl, 3, ctrl->io_cq_head);
+
+    if (prp_list_virt) {
+        hal_free_dma_page(prp_list_virt);
+    }
 
     return (cqe->status >> 1) == 0;
 }
@@ -462,4 +613,139 @@ void nvme_close(void) {
     }
 
     num_nvme_devices = 0;
+}
+
+int32_t nvme_get_namespaces(int32_t ctrl_id, nvme_namespace_t* out_ns, uint32_t max_ns) {
+    if (ctrl_id < 0 || ctrl_id >= (int32_t)num_nvme_devices || !out_ns || max_ns == 0) {
+        return -1;
+    }
+
+    nvme_device_t* ctrl = &nvme_devices[ctrl_id];
+    if (!ctrl->active) {
+        return -1;
+    }
+
+    uint32_t* ns_list = (uint32_t*)hal_alloc_dma_page();
+    if (!ns_list) return -1;
+    memset(ns_list, 0, 4096);
+
+    uint64_t ns_list_phys = (uint64_t)hal_virt_to_phys(ns_list);
+
+    // 1. Query Active Namespace List (CNS = 0x10) starting from NSID 0
+    nvme_sqe_t cmd = {0};
+    cmd.opcode = NVME_ADMIN_IDENTIFY;
+    cmd.nsid   = 0;
+    cmd.prp1   = ns_list_phys;
+    cmd.cdw10  = 0x10;
+
+    bool list_ok = nvme_submit_admin_cmd(ctrl, &cmd, NULL);
+
+    uint8_t* ns_id_buf = (uint8_t*)hal_alloc_dma_page();
+    if (!ns_id_buf) {
+        hal_free_dma_page(ns_list);
+        return -1;
+    }
+    uint64_t ns_id_phys = (uint64_t)hal_virt_to_phys(ns_id_buf);
+
+    int32_t ns_found = 0;
+
+    if (!list_ok || ns_list[0] == 0) {
+        ns_list[0] = 1;
+    }
+
+    for (uint32_t i = 0; i < 1024 && ns_found < (int32_t)max_ns; i++) {
+        uint32_t nsid = ns_list[i];
+        if (nsid == 0) break;
+
+        memset(ns_id_buf, 0, 4096);
+        nvme_sqe_t ns_cmd = {0};
+        ns_cmd.opcode = NVME_ADMIN_IDENTIFY;
+        ns_cmd.nsid   = nsid;
+        ns_cmd.prp1   = ns_id_phys;
+        ns_cmd.cdw10  = 0x00;
+
+        if (nvme_submit_admin_cmd(ctrl, &ns_cmd, NULL)) {
+            // FIX: Use proper struct layout rather than raw byte offsets
+            nvme_identify_ns_t* id_ns = (nvme_identify_ns_t*)ns_id_buf;
+
+            uint8_t flbas = id_ns->flbas & 0x0F;
+            uint8_t lbads = id_ns->lbaf[flbas].lbads;
+
+            // Fallback for valid NVMe block size range (minimum 512 bytes = 2^9)
+            if (lbads < 9) {
+                lbads = 9;
+            }
+
+            out_ns[ns_found].nsid         = nsid;
+            out_ns[ns_found].sector_count = id_ns->nsze;
+            out_ns[ns_found].sector_size  = (1U << lbads);
+
+            ns_found++;
+        }
+    }
+
+    hal_free_dma_page(ns_id_buf);
+    hal_free_dma_page(ns_list);
+
+    return ns_found;
+}
+/**
+ * Retrieve the sector (block) size in bytes for a specific NVMe controller namespace.
+ *
+ * @param ctrl_id  Device ID returned by nvme_init()
+ * @param nsid     Namespace ID (typically 1)
+ * @return uint32_t Sector size in bytes (e.g., 512, 4096), or 0 on failure
+ */
+uint32_t nvme_get_sector_size(int32_t ctrl_id, uint32_t nsid) {
+    if (ctrl_id < 0 || ctrl_id >= (int32_t)num_nvme_devices) {
+        return 0;
+    }
+
+    nvme_device_t* ctrl = &nvme_devices[ctrl_id];
+    if (!ctrl->active) {
+        return 0;
+    }
+
+    // NSIDs are 1-based. If 0 is passed, default to namespace 1 or ctrl->nsid
+    if (nsid == 0) {
+        nsid = (ctrl->nsid > 0) ? ctrl->nsid : 1;
+    }
+
+    // Fast path: return stored size if querying primary namespace
+    if (nsid == ctrl->nsid && ctrl->sector_size > 0) {
+        return ctrl->sector_size;
+    }
+
+    // Allocate DMA buffer to inspect target namespace structure
+    uint8_t* dma_buf = (uint8_t*)hal_alloc_dma_page();
+    if (!dma_buf) return 0;
+
+    uint64_t phys_buf = (uint64_t)hal_virt_to_phys(dma_buf);
+
+    nvme_sqe_t cmd = {0};
+    cmd.opcode = NVME_ADMIN_IDENTIFY; // 0x06
+    cmd.nsid   = nsid;                // Guaranteed >= 1 now
+    cmd.prp1   = phys_buf;
+    cmd.cdw10  = 0x00;                // CNS = 00h (Identify Namespace)
+
+    if (!nvme_submit_admin_cmd(ctrl, &cmd, NULL)) {
+        hal_free_dma_page(dma_buf);
+        return 0;
+    }
+
+    nvme_identify_ns_t* id_ns = (nvme_identify_ns_t*)dma_buf;
+
+    // Extract active LBA format details
+    uint8_t active_lbaf = id_ns->flbas & 0x0F;
+    uint8_t lbads = id_ns->lbaf[active_lbaf].lbads;
+
+    // Fallback if field is invalid
+    if (lbads < 9) {
+        lbads = 9; // Default to 2^9 = 512 bytes
+    }
+
+    uint32_t sector_size = 1U << lbads;
+
+    hal_free_dma_page(dma_buf);
+    return sector_size;
 }

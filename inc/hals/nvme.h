@@ -97,23 +97,36 @@ typedef nvme_cqe_t nvme_cq_entry_t;
  * ============================================================================ */
 
 typedef struct {
-    uint16_t vid;           /* PCI Vendor ID */
-    uint16_t ssvid;         /* PCI Subsystem Vendor ID */
-    char     sn[20];        /* Serial Number */
-    char     mn[40];        /* Model Number */
-    char     fr[8];         /* Firmware Revision */
-    uint8_t  rab;           /* Recommended Arbitration Burst */
-    uint8_t  ieee[3];       /* IEEE OUI Identifier */
-    uint8_t  cmic;          /* Controller Multi-Path I/O Capabilities */
-    uint8_t  mdts;          /* Maximum Data Transfer Size (Power of 2) */
-    uint16_t cntlid;        /* Controller ID */
-    uint32_t ver;           /* Version */
-    uint8_t  reserved[172];
-    uint16_t oaes;          /* Optional Asynchronous Events Supported */
-    uint32_t ctratt;        /* Controller Attributes */
-    uint8_t  reserved1[12];
-    uint8_t  nn;            /* Number of Namespaces */
-    uint8_t  reserved2[2791];
+    uint16_t vid;           /* 0..1: PCI Vendor ID */
+    uint16_t ssvid;         /* 2..3: PCI Subsystem Vendor ID */
+    char     sn[20];        /* 4..23: Serial Number */
+    char     mn[40];        /* 24..63: Model Number */
+    char     fr[8];         /* 64..71: Firmware Revision */
+    uint8_t  rab;           /* 72: Recommended Arbitration Burst */
+    uint8_t  ieee[3];       /* 73..75: IEEE OUI Identifier */
+    uint8_t  cmic;          /* 76: Controller Multi-Path I/O Capabilities */
+    uint8_t  mdts;          /* 77: Maximum Data Transfer Size */
+    uint16_t cntlid;        /* 78..79: Controller ID */
+    uint32_t ver;           /* 80..83: Version */
+    uint32_t rdy_timer;     /* 84..87: RTD3 Resume Latency */
+    uint8_t  reserved0[168];/* 88..255: Reserved */
+    uint16_t oacs;          /* 256..257: Optional Admin Command Support */
+    uint8_t  acl;           /* 258: Abort Command Limit */
+    uint8_t  aerl;          /* 259: Asynchronous Event Request Limit */
+    uint8_t  frmw;          /* 260: Firmware Updates */
+    uint8_t  lpa;           /* 261: Log Page Attributes */
+    uint8_t  elpe;          /* 262: Error Log Page Entries */
+    uint8_t  npss;          /* 263: Number of Power States Support */
+    uint8_t  avscc;         /* 264: Admin Vendor Specific Command Configuration */
+    uint8_t  apwc;          /* 265: Autonomous Power State Transition Attributes */
+    uint16_t wctemp;        /* 266..267: Warning Composite Temperature Threshold */
+    uint16_t cctemp;        /* 268..269: Critical Composite Temperature Threshold */
+    uint8_t  reserved1[242];/* 270..511: Reserved */
+    uint32_t sqes;          /* 512..515: Submission Queue Entry Size */
+    uint32_t cqes;          /* 516..519: Completion Queue Entry Size (Wait! Offset 516) */
+    /* Wait, NN is at offset 516 in standard NVMe controller identify: */
+    uint32_t nn;            /* 516..519: Number of Namespaces */
+    uint8_t  reserved2[3576];/* 520..4095: Reserved */
 } __attribute__((packed, aligned(4096))) nvme_identify_ctrl_t;
 
 typedef struct {
@@ -177,14 +190,21 @@ typedef struct {
     nvme_device_t*   devices;
     uint32_t         count;
 } nvme_list_t;
-
+typedef struct {
+    uint32_t nsid;
+    uint64_t sector_count;
+    uint32_t sector_size;
+} nvme_namespace_t;
 /* ============================================================================
  * PUBLIC DRIVER API
  * ============================================================================ */
 
-nvme_list_t nvme_init(void);
+
+int32_t nvme_init(uint8_t bus, uint8_t dev, uint8_t func);
 bool nvme_read_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sector_count, void* buffer);
 bool nvme_write_block(uint32_t nvme_id, uint32_t nsid, uint64_t lba, uint16_t sector_count, const void* buffer);
+int32_t nvme_get_namespaces(int32_t ctrl_id, nvme_namespace_t* out_ns, uint32_t max_ns);
+uint32_t nvme_get_sector_size(int32_t ctrl_id, uint32_t nsid);
 void nvme_close(void);
 
 #endif /* NVME_H */

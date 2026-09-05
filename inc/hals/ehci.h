@@ -53,7 +53,7 @@ typedef struct {
     uint16_t value;
     uint16_t index;
     uint16_t length;
-} __attribute__((packed)) usb_setup_packet_t;
+} __attribute__((packed)) ehci_usb_setup_packet_t;
 
 /* Standard USB Descriptors */
 typedef struct {
@@ -71,7 +71,7 @@ typedef struct {
     uint8_t  iProduct;
     uint8_t  iSerialNumber;
     uint8_t  bNumConfigurations;
-} __attribute__((packed)) usb_device_descriptor_t;
+} __attribute__((packed)) ehci_usb_device_descriptor_t;
 
 typedef struct {
     uint8_t  bLength;
@@ -82,7 +82,7 @@ typedef struct {
     uint8_t  iConfiguration;
     uint8_t  bmAttributes;
     uint8_t  bMaxPower;
-} __attribute__((packed)) usb_config_descriptor_t;
+} __attribute__((packed)) ehci_usb_config_descriptor_t;
 
 typedef struct {
     uint8_t  bLength;
@@ -94,7 +94,7 @@ typedef struct {
     uint8_t  bInterfaceSubClass;
     uint8_t  bInterfaceProtocol;
     uint8_t  iInterface;
-} __attribute__((packed)) usb_interface_descriptor_t;
+} __attribute__((packed)) ehci_usb_interface_descriptor_t;
 
 typedef struct {
     uint8_t  port;
@@ -104,7 +104,7 @@ typedef struct {
     uint8_t  device_protocol;
     uint16_t vendor_id;
     uint16_t product_id;
-} usb_matched_device_t;
+} ehci_usb_matched_device_t;
 
 typedef struct {
     uint8_t  bLength;
@@ -113,7 +113,7 @@ typedef struct {
     uint8_t  bmAttributes;
     uint16_t wMaxPacketSize;
     uint8_t  bInterval;
-} __attribute__((packed)) usb_endpoint_descriptor_t;
+} __attribute__((packed)) ehci_usb_endpoint_descriptor_t;
 
 typedef struct {
     uint8_t  bDescriptorType;
@@ -156,7 +156,7 @@ typedef struct {
     bool           connected;
     uint8_t        num_endpoints;
     usb_endpoint_t endpoints[EHCI_MAX_ENDPOINTS];
-} usb_device_t;
+} ehci_usb_device_t;
 
 typedef struct {
     ehci_cap_regs_t* cap_regs;
@@ -170,8 +170,8 @@ typedef struct {
 
 void ehci_init(void);
 void ehci_scan_ports(void);
-int  ehci_find_devices_by_class(uint8_t target_class, usb_matched_device_t* out_devices, int max_results);
-bool ehci_control_transfer(uint8_t dev_addr, usb_setup_packet_t* setup, void* data);
+int  ehci_find_devices_by_class(uint8_t target_class, ehci_usb_matched_device_t* out_devices, int max_results);
+bool ehci_control_transfer(uint8_t dev_addr, ehci_usb_setup_packet_t* setup, void* data);
 bool ehci_transfer_io(uint8_t dev_addr, uint8_t ep_addr, void* buffer, uint32_t length);
 bool ehci_bulk_transfer(uint8_t dev_addr, uint8_t ep_addr, void* data, uint32_t length, uint8_t* toggle, bool is_in);
 bool ehci_bulk_read(uint8_t dev_addr, uint8_t ep_in, void* buffer, uint32_t length);
@@ -179,3 +179,4 @@ bool ehci_bulk_write(uint8_t dev_addr, uint8_t ep_out, const void* buffer, uint3
 bool ehci_interrupt_transfer(uint8_t dev_addr, uint8_t ep_in, void* buffer, uint32_t length);
 bool ehci_hid_get_report_descriptor(uint8_t dev_addr, uint8_t interface_num, void* descriptor_buf, uint16_t length);
 bool ehci_enumerate_device(uint8_t port_idx, uint8_t dev_addr, uint8_t speed, bool behind_hub, uint8_t hub_addr, uint8_t hub_port);
+bool ehci_init_device(uint8_t bus, uint8_t dev, uint8_t fun);

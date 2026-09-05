@@ -3,11 +3,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <fs/gpt.h>
+#include <fs/fat32.h>
 struct timespec {
     int32_t  tv_sec;   /* 32-bit seconds (Year 2038 compliant!) */
     int32_t  tv_nsec;  /* Nanoseconds */
 };
-#define MAX_DIR_CHILDREN 32  // Safe upper bound for files/folders inside a single directory
+#define MAX_DIR_CHILDREN 256  // Safe upper bound for files/folders inside a single directory
 
 // The file tracking structure used in the global files array
 struct vfs_file {
@@ -117,7 +119,31 @@ struct vfs_stat {
     struct timespec st_mtim;    /* Modification time */
     struct timespec st_ctim;    /* Status change time */
 };
-
+typedef enum {
+    FS_GPT,
+    FS_MBR
+} FormattingSystem;
+typedef enum {
+    FS_FAT32
+} FileSystem;
+typedef struct {
+    FileSystem fsType;
+    union {
+        fat32_fs_t filesystem;
+    } fs;
+    volume_t base;
+} init_volume_t;
+typedef struct {
+    init_volume_t vols[16];
+    int count;
+} init_partition_table;
+typedef struct {
+    generic_drive_t drive;
+    FormattingSystem formatType;
+    union {
+        init_partition_table gpt_partition_table;
+    } format;
+} initialized_drive;
 // --- FUNCTION PROTOTYPES ---
 int init_vfs(void);
 size_t vfs_file_count(void);
@@ -140,8 +166,5 @@ struct vfs_dirent *readdir(DIR *dirp);
 int closedir(DIR *dirp);
 
 // --- MOUNT API ---
-int vfs_mount_fs(const char *source, const char *target, const char *fstype, uint32_t flags);
-int vfs_umount_fs(const char *target);
-struct vfs_mount *resolve_mount(const char *path);
 int vfs_getdents(int fd, void *buf, size_t count, uint64_t offset);
 int vfs_listdir(const char *path, char **buf, size_t max_len);

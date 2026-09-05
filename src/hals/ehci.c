@@ -106,7 +106,7 @@ extern void     printk(int level, const char* fmt, ...);
  * ============================================================================ */
 
 static ehci_controller_t g_ehci = {0};
-static usb_device_t     g_usb_devices[EHCI_MAX_DEVICES] = {0};
+static ehci_usb_device_t     g_usb_devices[EHCI_MAX_DEVICES] = {0};
 
 /* ============================================================================
  * STATIC BSS DMA POOL
@@ -273,7 +273,7 @@ static bool ehci_reset(ehci_controller_t* ehci) {
  * QUEUE HEAD SPLIT-TRANSACTION BUILDER ENGINE
  * ============================================================================ */
 
-static void ehci_init_qh_for_ep(ehci_qh_t* qh, usb_device_t* dev, uint8_t ep_num, uint16_t max_packet, uint8_t ep_type) {
+static void ehci_init_qh_for_ep(ehci_qh_t* qh, ehci_usb_device_t* dev, uint8_t ep_num, uint16_t max_packet, uint8_t ep_type) {
     uint32_t eps_speed = 0;
     if (dev->speed == USB_SPEED_LOW)       eps_speed = (1 << 12);
     else if (dev->speed == USB_SPEED_HIGH) eps_speed = (2 << 12);
@@ -430,14 +430,14 @@ static bool ehci_execute_transfer(ehci_qh_t* qh, ehci_qtd_t* head_qtd) {
  * EHCI TRANSFERS
  * ============================================================================ */
 
-bool ehci_control_transfer(uint8_t dev_addr, usb_setup_packet_t* setup, void* data) {
+bool ehci_control_transfer(uint8_t dev_addr, ehci_usb_setup_packet_t* setup, void* data) {
     if (!g_ehci.active) return false;
 
-    usb_device_t* dev = &g_usb_devices[dev_addr];
-    usb_device_t dummy_dev;
+    ehci_usb_device_t* dev = &g_usb_devices[dev_addr];
+    ehci_usb_device_t dummy_dev;
 
     if (dev_addr == 0 || !dev->connected) {
-        memset(&dummy_dev, 0, sizeof(usb_device_t));
+        memset(&dummy_dev, 0, sizeof(ehci_usb_device_t));
         dummy_dev.address = dev_addr;
         dummy_dev.speed   = USB_SPEED_HIGH;
         dev = &dummy_dev;
@@ -484,7 +484,7 @@ bool ehci_control_transfer(uint8_t dev_addr, usb_setup_packet_t* setup, void* da
 }
 
 usb_endpoint_t* ehci_get_endpoint(uint8_t dev_addr, uint8_t ep_addr) {
-    usb_device_t* dev = &g_usb_devices[dev_addr];
+    ehci_usb_device_t* dev = &g_usb_devices[dev_addr];
     if (!dev->connected) return NULL;
 
     for (int i = 0; i < dev->num_endpoints; i++) {
@@ -498,7 +498,7 @@ usb_endpoint_t* ehci_get_endpoint(uint8_t dev_addr, uint8_t ep_addr) {
 bool ehci_transfer_io(uint8_t dev_addr, uint8_t ep_addr, void* buffer, uint32_t length) {
     if (!g_ehci.active || length == 0) return false;
 
-    usb_device_t* dev = &g_usb_devices[dev_addr];
+    ehci_usb_device_t* dev = &g_usb_devices[dev_addr];
     usb_endpoint_t* ep = ehci_get_endpoint(dev_addr, ep_addr);
     if (!dev->connected || !ep) return false;
 
@@ -545,7 +545,7 @@ bool ehci_interrupt_transfer(uint8_t dev_addr, uint8_t ep_in, void* buffer, uint
 }
 
 bool ehci_hid_get_report_descriptor(uint8_t dev_addr, uint8_t interface_num, void* descriptor_buf, uint16_t length) {
-    usb_setup_packet_t setup;
+    ehci_usb_setup_packet_t setup;
     setup.request_type = 0x81;
     setup.request      = USB_REQ_GET_DESCRIPTOR;
     setup.value        = (USB_DESC_REPORT << 8);
@@ -563,16 +563,16 @@ bool ehci_enumerate_device(uint8_t port_idx, uint8_t dev_addr, uint8_t speed, bo
     printk(LOG_INFO, "EHCI [Enum]: Enumerating Dev %d (Speed: %d, Behind Hub: %d)...\n", 
            dev_addr, speed, behind_hub);
 
-    usb_device_t* dev = &g_usb_devices[dev_addr];
-    memset(dev, 0, sizeof(usb_device_t));
+    ehci_usb_device_t* dev = &g_usb_devices[dev_addr];
+    memset(dev, 0, sizeof(ehci_usb_device_t));
     dev->address       = dev_addr;
     dev->speed         = speed;
     dev->is_behind_hub = behind_hub;
     dev->hub_address   = hub_addr;
     dev->hub_port_num  = hub_port;
 
-    usb_setup_packet_t setup;
-    usb_device_descriptor_t* dev_desc = (usb_device_descriptor_t*)hal_alloc_dma_aligned(64, 32);
+    ehci_usb_setup_packet_t setup;
+    ehci_usb_device_descriptor_t* dev_desc = (ehci_usb_device_descriptor_t*)hal_alloc_dma_aligned(64, 32);
 
     setup.request_type = 0x80;
     setup.request      = USB_REQ_GET_DESCRIPTOR;
@@ -611,7 +611,7 @@ bool ehci_enumerate_device(uint8_t port_idx, uint8_t dev_addr, uint8_t speed, bo
         return false;
     }
 
-    usb_config_descriptor_t* cfg = (usb_config_descriptor_t*)cfg_buf;
+    ehci_usb_config_descriptor_t* cfg = (ehci_usb_config_descriptor_t*)cfg_buf;
     uint8_t* ptr = cfg_buf + cfg->bLength;
 
     dev->connected     = true;
@@ -621,7 +621,7 @@ bool ehci_enumerate_device(uint8_t port_idx, uint8_t dev_addr, uint8_t speed, bo
         uint8_t desc_type = ptr[1];
         
         if (desc_type == USB_DESC_ENDPOINT) {
-            usb_endpoint_descriptor_t* ep = (usb_endpoint_descriptor_t*)ptr;
+            ehci_usb_endpoint_descriptor_t* ep = (ehci_usb_endpoint_descriptor_t*)ptr;
             uint8_t ep_type = ep->bmAttributes & 0x03;
 
             if (ep_type == EP_TYPE_BULK) {
@@ -696,7 +696,7 @@ void ehci_scan_ports(void) {
     }
 }
 
-int ehci_find_devices_by_class(uint8_t target_class, usb_matched_device_t* out_devices, int max_results) {
+int ehci_find_devices_by_class(uint8_t target_class, ehci_usb_matched_device_t* out_devices, int max_results) {
     if (!g_ehci.active || !out_devices || max_results <= 0) {
         return 0;
     }
@@ -704,10 +704,10 @@ int ehci_find_devices_by_class(uint8_t target_class, usb_matched_device_t* out_d
     int match_count = 0;
 
     for (uint8_t addr = 1; addr < EHCI_MAX_DEVICES; addr++) {
-        usb_device_t* dev = &g_usb_devices[addr];
+        ehci_usb_device_t* dev = &g_usb_devices[addr];
         if (!dev->connected) continue;
 
-        usb_setup_packet_t setup;
+        ehci_usb_setup_packet_t setup;
         uint8_t* cfg_buf = (uint8_t*)hal_alloc_dma_aligned(512, 32);
         if (!cfg_buf) continue;
 
@@ -718,7 +718,7 @@ int ehci_find_devices_by_class(uint8_t target_class, usb_matched_device_t* out_d
         setup.length       = 512;
 
         if (ehci_control_transfer(dev->address, &setup, cfg_buf)) {
-            usb_config_descriptor_t* cfg = (usb_config_descriptor_t*)cfg_buf;
+            ehci_usb_config_descriptor_t* cfg = (ehci_usb_config_descriptor_t*)cfg_buf;
             uint8_t* ptr = cfg_buf + cfg->bLength;
             bool is_match = false;
 
@@ -726,7 +726,7 @@ int ehci_find_devices_by_class(uint8_t target_class, usb_matched_device_t* out_d
                 uint8_t desc_type = ptr[1];
 
                 if (desc_type == USB_DESC_INTERFACE) {
-                    usb_interface_descriptor_t* iface = (usb_interface_descriptor_t*)ptr;
+                    ehci_usb_interface_descriptor_t* iface = (ehci_usb_interface_descriptor_t*)ptr;
                     if (iface->bInterfaceClass == target_class || target_class == 0xFF) {
                         is_match = true;
                         out_devices[match_count].port            = dev->address;

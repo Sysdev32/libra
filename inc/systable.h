@@ -238,14 +238,33 @@ unsigned long long sys_socket_accept(arg *a);
 
 // Syscall 75
 unsigned long long sys_socket_bind(arg *a);
-static const syscall systable[76] = {
+
+// Syscall 76
+unsigned long long sys_dtable(arg *a);
+
+// Syscall 77
+unsigned long long sys_dopen(arg *a);
+
+// Syscall 78
+unsigned long long sys_dpstat(arg *a);
+
+// Syscall 79
+unsigned long long sys_ddstat(arg *a);
+
+// Syscall 80
+unsigned long long sys_mount(arg *a);
+
+// Syscall 81
+unsigned long long sys_umount(arg *a);
+
+static const syscall systable[82] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
     sys_mkdir, // Standard POSIX mkdir
     sys_rmdir, // Standard POSIX rmdir
     sys_close, // Standard POSIX close
-    sys_move_file,
+    sys_move_file, 
     sys_create_file,
     sys_delete_file,
     sys_get_perm_key,
@@ -316,5 +335,11 @@ static const syscall systable[76] = {
     sys_link,
     sys_socket_listen,
     sys_socket_accept,
-    sys_socket_bind
+    sys_socket_bind,
+    sys_dtable,
+    sys_dopen,
+    sys_dpstat,
+    sys_ddstat,
+    sys_mount,
+    sys_umount
 };

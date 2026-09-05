@@ -175,30 +175,30 @@ iso: $(KERNEL) initramfs
 # -------------------------
 # Run in QEMU
 # -------------------------
-
 run: iso
 	@echo "[QEMU] booting..."
 	@$(QEMU) \
-		-bios ./prebuilt/OVMF.fd \
-		-m 4G \
-		-M q35 \
-		-serial stdio \
-		-D qemu.log \
-		-d int \
-		-drive id=disk0,file=my_disk.qcow2,if=none,format=qcow2 \
-		-device ide-hd,drive=disk0,bus=ide.0 \
-		-cdrom $(ISO) \
-		-netdev user,id=net0 \
-		-device rtl8139,netdev=net0 \
-		-object filter-dump,id=f1,netdev=net0,file=packets.pcap \
-		-audiodev alsa,id=snd0 -device AC97,audiodev=snd0 \
-		-drive file=nvme.img,if=none,id=nvme0,format=raw \
-		-device nvme,drive=nvme0,serial=deadbeef \
-		-device qemu-xhci,id=xhci \
-		-smp 4 -device virtio-gpu-pci,xres=1280,yres=720 \
-		-trace "virtio_*" \
-	    -trace "virtio_gpu_*" \
-	    -trace "pci_*"
+       -bios ./prebuilt/OVMF.fd \
+       -m 4G \
+       -M q35 \
+       -serial stdio \
+       -D qemu.log \
+       -d int \
+       -drive id=disk0,file=my_disk.qcow2,if=none,format=qcow2 \
+       -device ide-hd,drive=disk0,bus=ide.0 \
+       -cdrom $(ISO) \
+       -netdev user,id=net0 \
+       -device rtl8139,netdev=net0 \
+       -object filter-dump,id=f1,netdev=net0,file=packets.pcap \
+       -audiodev alsa,id=snd0 -device AC97,audiodev=snd0 \
+       -drive file=nvme.img,if=none,id=nvme0,format=raw \
+       -device nvme,id=nvme_ctrl0,serial=deadbeef \
+       -device nvme-ns,drive=nvme0,bus=nvme_ctrl0,nsid=1 \
+       -device qemu-xhci,id=xhci \
+       -smp 4 -device virtio-gpu-pci,xres=1280,yres=720 \
+       -trace "virtio_*" \
+       -trace "virtio_gpu_*" \
+       -trace "pci_*"
 # -------------------------
 # Python-based Kconfiglib Environment (PEP 668 Compliant)
 # -------------------------

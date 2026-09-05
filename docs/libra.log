@@ -1,0 +1,1312 @@
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023/Debian) (preloaded format=pdfetex 2026.8.24)  27 AUG 2026 16:51
+entering extended mode
+ restricted \write18 enabled.
+ file:line:error style messages enabled.
+ %&-line parsing enabled.
+**\input ./libra.texi \input ./libra.texi \input ./libra.texi
+(./libra.texi (/usr/share/texmf/tex/texinfo/texinfo.tex
+Loading texinfo [version 2023-09-19.19]:
+\bindingoffset=\dimen16
+\normaloffset=\dimen17
+\txipagewidth=\dimen18
+\txipageheight=\dimen19
+\defaultoutput=\toks13
+\headlinebox=\box16
+\footlinebox=\box17
+\savedtopmark=\toks14
+\margin=\insert252
+\EMsimple=\toks15
+\groupbox=\box18
+\groupinvalidhelp=\toks16
+\mil=\dimen20
+\exdentamount=\skip18
+\inmarginspacing=\skip19
+\centerpenalty=\count27
+ pdf,
+\tempnum=\count28
+\lnkcount=\count29
+\filename=\toks17
+\filenamelength=\count30
+\pgn=\count31
+\toksA=\toks18
+\toksB=\toks19
+\toksC=\toks20
+\toksD=\toks21
+\boxA=\box19
+\boxB=\box20
+\countA=\count32
+\pagecount=\count33
+\romancount=\count34
+\arabiccount=\count35
+\contentsendcount=\count36
+\nopdfimagehelp=\toks22
+ fonts,
+\textleading=\dimen21
+\sffam=\fam8
+\fontdepth=\count37
+ glyphs,
+\errorbox=\box21
+ page headings,
+\titlepagetopglue=\skip20
+\titlepagebottomglue=\skip21
+\evenheadline=\toks23
+\oddheadline=\toks24
+\evenchapheadline=\toks25
+\oddchapheadline=\toks26
+\evenfootline=\toks27
+\oddfootline=\toks28
+
+tables,
+\tableindent=\dimen22
+\itemindent=\dimen23
+\itemmargin=\dimen24
+\itemmax=\dimen25
+\itemno=\count38
+\colcount=\count39
+\everytab=\toks29
+ conditionals,
+\doignorecount=\count40
+ indexing,
+\dummybox=\box22
+\whatsitskip=\skip22
+\whatsitpenalty=\count41
+\entryrightmargin=\dimen26
+\entrycontskip=\dimen27
+\thinshrinkable=\skip23
+\partialpage=\box23
+\doublecolumnhsize=\dimen28
+\balancedcolumns=\box24
+ sectioning,
+\unnumberedno=\count42
+\chapno=\count43
+\secno=\count44
+\subsecno=\count45
+\subsubsecno=\count46
+\appendixno=\count47
+\absseclevel=\count48
+\secbase=\count49
+\chapheadingskip=\skip24
+\secheadingskip=\skip25
+\subsecheadingskip=\skip26
+ toc,
+\tocfile=\write0
+\curchapmax=\dimen29
+\cursecmax=\dimen30
+\curssecmax=\dimen31
+\secnowidthchap=\dimen32
+\secnowidthsec=\dimen33
+\secnowidthssec=\dimen34
+\contentsrightmargin=\skip27
+\savepageno=\count50
+\lastnegativepageno=\count51
+\tocindent=\dimen35
+\secnowidth=\dimen36
+\extrasecnoskip=\dimen37
+\labelspace=\dimen38
+ environments,
+\lispnarrowing=\skip28
+\envskipamount=\skip29
+\lskip=\skip30
+\rskip=\skip31
+\circthick=\dimen39
+\cartouter=\dimen40
+\cartinner=\dimen41
+\normbskip=\skip32
+\normpskip=\skip33
+\normlskip=\skip34
+\nonfillparindent=\dimen42
+\tabw=\dimen43
+\verbbox=\box25
+ defuns,
+\defbodyindent=\skip35
+\defargsindent=\skip36
+\deflastargmargin=\skip37
+\defunpenalty=\count52
+\parencount=\count53
+\brackcount=\count54
+ macros,
+\paramno=\count55
+\macname=\toks30
+
+cross references,
+\auxfile=\write1
+\savesfregister=\count56
+\toprefbox=\box26
+\printedrefnamebox=\box27
+\infofilenamebox=\box28
+\printedmanualbox=\box29
+ insertions,
+\footnoteno=\count57
+\SAVEfootins=\box30
+\SAVEmargin=\box31
+\noepsfhelp=\toks31
+\capheight=\dimen44
+ localization,
+\nolanghelp=\toks32
+\countUTFx=\count58
+\countUTFy=\count59
+\countUTFz=\count60
+ formatting,
+\defaultparindent=\dimen45
+ microtype,
+\countC=\count61
+\countB=\count62
+
+and turning on texinfo input format.) (Libra Kernel Documentation)
+\openout0 = `libra.toc'.
+
+
+(/home/adam/libra-main/docs/libra.aux)
+\openout1 = `libra.aux'.
+
+ Chapter 1 [1{/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] Chapter 2 [2]
+
+Overfull \hbox (17.72316pt too wide) in paragraph at lines 745--745
+ @textbf Index| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textbf I
+.@textbf n
+.@textbf d
+.@textbf e
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 752--752
+ @textrm fd, new[]path -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 10.555
+.@glue(@leftskip) 12.0
+.@textrm f
+.@textrm d
+.@textrm ,
+.@glue 3.65 plus 2.28123 minus 0.97333
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 756--756
+ @textrm 10| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 757--757
+ @textrm 11| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 758--758
+ @textrm 12| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 759--759
+ @textrm 13| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 760--760
+ @textrm 14| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 760--761
+ @textrm Blocking IPC mes-sage
+
+@hbox(7.60416+2.12917)x173.44534, glue set 15.03914
+.@glue(@leftskip) 12.0
+.@textrm B
+.@textrm l
+.@textrm o
+.@kern0.30417
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 761--761
+ @textrm 15| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 762--762
+ @textrm 16| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 763--763
+ @textrm 17| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 764--764
+ @textrm 18| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 765--765
+ @textrm 19| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 1
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 766--766
+ @textrm 20| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 767--767
+ @textrm 21| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 768--768
+ @textrm 22| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 769--769
+ @textrm 23| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 770--770
+ @textrm 24| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 771--771
+ @textrm 25| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 772--772
+ @textrm 26| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 773--773
+ @textrm 27| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 774--774
+ @textrm 28| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 774--775
+ @textrm Non-blocking IPC mes-sage
+
+@hbox(7.60416+2.12917)x173.44534, glue set 9.0778
+.@glue(@leftskip) 12.0
+.@textrm N
+.@textrm o
+.@textrm n
+.@textrm -
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 775--775
+ @textrm 29| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 2
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 775--776
+ @textrm Non-blocking IPC mes-sage
+
+@hbox(7.60416+2.12917)x173.44534, glue set 9.0778
+.@glue(@leftskip) 12.0
+.@textrm N
+.@textrm o
+.@textrm n
+.@textrm -
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 776--776
+ @textrm 30| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 776--776
+ @textrm domain, type -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 10.24687
+.@glue(@leftskip) 12.0
+.@textrm d
+.@textrm o
+.@textrm m
+.@textrm a
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 777--777
+ @textrm 31| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 777--777
+ @textrm sock[]idx, addr -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 8.82906
+.@glue(@leftskip) 12.0
+.@textrm s
+.@textrm o
+.@kern0.30417
+.@textrm c
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 778--778
+ @textrm 32| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 779--779
+ @textrm 33| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 780--780
+ @textrm 34| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 781--781
+ @textrm 35| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 782--782
+ @textrm 36| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 783--783
+ @textrm 37| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 783--784
+ @textrm Returns PID of sys-tem
+
+@hbox(7.60416+2.12917)x173.44534, glue set 9.36864
+.@glue(@leftskip) 12.0
+.@textrm R
+.@textrm e
+.@textrm t
+.@textrm u
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 784--784
+ @textrm 38| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 784--784
+ @textrm utsname[]ptr -@texttt >
+
+@hbox(6.73512+2.12917)x130.08731, glue set 24.86531
+.@glue(@leftskip) 12.0
+.@textrm u
+.@textrm t
+.@textrm s
+.@textrm n
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 785--785
+ @textrm 39| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 3
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 786--786
+ @textrm 40| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 787--787
+ @textrm 41| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 788--788
+ @textrm 42| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 788--789
+ @textrm Enumerates VFS di-rec-tory
+
+@hbox(7.60416+2.12917)x173.44534, glue set 9.11115
+.@glue(@leftskip) 12.0
+.@textrm E
+.@textrm n
+.@kern-0.30418
+.@textrm u
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 789--789
+ @textrm 43| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 790--790
+ @textrm 44| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 791--791
+ @textrm 45| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 792--792
+ @textrm 46| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 793--793
+ @textrm 47| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 794--794
+ @textrm 48| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 795--795
+ @textrm 49| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 4
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 795--795
+ @textrm path, data, size -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 4.91109
+.@glue(@leftskip) 12.0
+.@textrm p
+.@textrm a
+.@textrm t
+.@textrm h
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 796--796
+ @textrm 50| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 796--796
+ @textrm path, buf, size -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 5.81586
+.@glue(@leftskip) 12.0
+.@textrm p
+.@textrm a
+.@textrm t
+.@textrm h
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 797--797
+ @textrm 51| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 797--797
+ @textrm path, type[]out -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 8.4809
+.@glue(@leftskip) 12.0
+.@textrm p
+.@textrm a
+.@textrm t
+.@textrm h
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 798--798
+ @textrm 52| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 799--799
+ @textrm 53| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 799--799
+ @textrm path, buf, size -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 5.81586
+.@glue(@leftskip) 12.0
+.@textrm p
+.@textrm a
+.@textrm t
+.@textrm h
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 799--800
+ @textrm Enumerates HVFS di-rec-tory
+
+@hbox(7.60416+2.12917)x173.44534, glue set 6.86002
+.@glue(@leftskip) 12.0
+.@textrm E
+.@textrm n
+.@kern-0.30418
+.@textrm u
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 800--800
+ @textrm 54| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 800--800
+ @textrm path, stat[]out -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 9.13275
+.@glue(@leftskip) 12.0
+.@textrm p
+.@textrm a
+.@textrm t
+.@textrm h
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 801--801
+ @textrm 55| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 802--802
+ @textrm 56| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 803--803
+ @textrm 57| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 804--804
+ @textrm 58| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 804--804
+ @textrm utask[]buf, max -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 7.72533
+.@glue(@leftskip) 12.0
+.@textrm u
+.@textrm t
+.@textrm a
+.@textrm s
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 804--805
+ @textrm Fetches ac-tive pro-cess ta-ble
+
+@hbox(7.60416+2.12917)x173.44534, glue set 5.30995
+.@glue(@leftskip) 12.0
+.@textrm F
+.@kern-0.91252
+.@textrm e
+.@textrm t
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 805--805
+ @textrm 59| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 5
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 805--806
+ @textrm Clears cur-rent TTY dis-play
+
+@hbox(7.60416+2.12917)x173.44534, glue set 5.22836
+.@glue(@leftskip) 12.0
+.@textrm C
+.@textrm l
+.@textrm e
+.@textrm a
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 806--806
+ @textrm 60| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 806--807
+ @textrm Switches ac-tive vir-tual TTY
+
+@hbox(7.60416+0.0)x173.44534, glue set 4.63771
+.@glue(@leftskip) 12.0
+.@textrm S
+.@textrm w
+.@textrm i
+.@textrm t
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 807--807
+ @textrm 61| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 808--808
+ @textrm 62| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 809--809
+ @textrm 63| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 810--810
+ @textrm 64| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 811--811
+ @textrm 65| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 812--812
+ @textrm 66| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 6
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 812--812
+ @textrm entry, stack, arg -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 4.37775
+.@glue(@leftskip) 12.0
+.@textrm e
+.@textrm n
+.@kern-0.30418
+.@textrm t
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 812--813
+ @textrm Spawns ker-nel/user thread
+
+@hbox(8.2125+2.73749)x173.44534, glue set 9.25658
+.@glue(@leftskip) 12.0
+.@textrm S
+.@textrm p
+.@textrm a
+.@kern-0.30418
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 813--813
+ @textrm 67| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 7
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 814--814
+ @textrm 68| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 8
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 815--815
+ @textrm 69| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 6
+.@textrm 9
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 815--816
+ @textrm Terminates cur-rent ex-e-cut-ing
+
+@hbox(7.48248+2.12917)x173.44534, glue set 5.77324
+.@glue(@leftskip) 12.0
+.@textrm T
+.@kern-0.91252
+.@textrm e
+.@textrm r
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 816--816
+ @textrm 70| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 0
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 817--817
+ @textrm 71| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 1
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 818--818
+ @textrm 72| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 2
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 818--818
+ @textrm oldpath, new-path -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 5.13574
+.@glue(@leftskip) 12.0
+.@textrm o
+.@textrm l
+.@textrm d
+.@textrm p
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 819--819
+ @textrm 73| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 3
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 819--819
+ @textrm sock[]idx, addr -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 8.82906
+.@glue(@leftskip) 12.0
+.@textrm s
+.@textrm o
+.@kern0.30417
+.@textrm c
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 820--820
+ @textrm 74| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 4
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 820--820
+ @textrm sock[]idx -@texttt >
+
+@hbox(7.60416+0.0)x130.08731, glue set 35.54868
+.@glue(@leftskip) 12.0
+.@textrm s
+.@textrm o
+.@kern0.30417
+.@textrm c
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 820--821
+ @textrm Accepts in-com-ing socket
+
+@hbox(7.60416+2.12917)x173.44534, glue set 12.11493
+.@glue(@leftskip) 12.0
+.@textrm A
+.@textrm c
+.@textrm c
+.@textrm e
+.etc.
+
+
+Overfull \hbox (1.2677pt too wide) in paragraph at lines 821--821
+ @textrm 75| 
+
+@hbox(9.34993+3.85005)x21.68231
+.@glue(@leftskip) 12.0
+.@textrm 7
+.@textrm 5
+.@rule(9.34993+3.85005)x0.0
+.@penalty 10000
+.etc.
+
+
+Underfull \hbox (badness 10000) in paragraph at lines 821--821
+ @textrm sock[]idx, addr -@texttt >
+
+@hbox(7.60416+2.12917)x130.08731, glue set 8.82906
+.@glue(@leftskip) 12.0
+.@textrm s
+.@textrm o
+.@kern0.30417
+.@textrm c
+.etc.
+
+[3] [4] Chapter 3 [5] Chapter 4 [6] [7] ) 
+Here is how much of TeX's memory you used:
+ 3650 strings out of 497075
+ 37089 string characters out of 6206395
+ 172186 words of memory out of 5000000
+ 4756 multiletter control sequences out of 15000+600000
+ 34203 words of font info for 119 fonts, out of 8000000 for 9000
+ 51 hyphenation exceptions out of 8191
+ 13i,5n,16p,395b,184s stack positions out of 10000i,1000n,20000p,200000b,200000s
+</usr/share/texlive/texmf-dist/fonts/t
+ype1/public/amsfonts/cm/cmb10.pfb></usr/share/texlive/texmf-dist/fonts/type1/pu
+blic/amsfonts/cm/cmbx12.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/a
+msfonts/cm/cmr10.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts
+/cm/cmsy10.pfb></usr/share/texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cm
+tt10.pfb>
+Output written on libra.pdf (7 pages, 90674 bytes).
+PDF statistics:
+ 87 PDF objects out of 1000 (max. 8388607)
+ 69 compressed objects within 1 object stream
+ 22 named destinations out of 1000 (max. 500000)
+ 525 words of extra memory for PDF output out of 10000 (max. 10000000)
+

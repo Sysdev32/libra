@@ -1,0 +1,15 @@
+@numchapentry{Architecture}{1}{Architecture}{1}
+@numsecentry{HVFS (Hierarchical Variable and Function System)}{1.1}{HVFS}{1}
+@numsecentry{Why You Should Use Libra}{1.2}{Why You Should Use Libra}{1}
+@numsecentry{Why You Should Develop for Libra}{1.3}{Why You Should Develop for Libra}{1}
+@numsecentry{Features}{1.4}{Features}{1}
+@numsecentry{Virtual Memory Manager and Memory Management}{1.5}{VMM}{1}
+@numsubsecentry{Paging}{1.5.1}{Paging}{1}
+@numsubsecentry{Allocator}{1.5.2}{Allocator}{2}
+@numchapentry{Syscall Table}{2}{Syscalls}{3}
+@numchapentry{Boot Chain}{3}{Bootchain}{6}
+@numchapentry{Guide For Developers}{4}{Guide For Developers}{7}
+@numsecentry{Getting Started...}{4.1}{}{7}
+@numsubsecentry{Cloning the Repo}{4.1.1}{Cloning The Repo}{7}
+@numsubsecentry{Getting The SDK}{4.1.2}{Getting the SDK}{7}
+@numsecentry{Compiling your program}{4.2}{Compiling your program}{7}

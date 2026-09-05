@@ -101,3 +101,4 @@ int  fat32_create_file_lfn(fat32_fs_t* fs, uint32_t parent_dir_cluster, const ch
 int  fat32_create_directory_lfn(fat32_fs_t* fs, uint32_t parent_dir_cluster, const char* lfn_name);
 int  fat32_remove_object_lfn(fat32_fs_t* fs, uint32_t parent_dir_cluster, const char* target_name);
 int  fat32_rename_or_move_lfn(fat32_fs_t* fs, uint32_t src_dir, const char* old_name, uint32_t dest_dir, const char* new_name);
+int fat32_format(volume_t* vol, const char* volume_label);

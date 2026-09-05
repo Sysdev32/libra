@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: GPL-3.0-only
+    // SPDX-License-Identifier: GPL-3.0-only
 #pragma once
 #include <stdint.h>
 
 #include "drivers/alloc.h"
+#include <fs/vfs.h>
 #define MAX_PROCESSES          128
 #define MAX_THREADS            512
 #define KERNEL_STACK_SIZE      4096
@@ -56,6 +57,8 @@ struct process {
     uint64_t signal_handlers[32];
     uint32_t pending_signals;
     uint32_t sig_mask;
+    init_volume_t vtables[128];
+    int vtable_counter;
     bool active;
 };
 typedef struct {
@@ -119,3 +122,5 @@ struct process *get_current_proc(void);
 struct process *create_process(const char *name, page_table_t *pml4, int uid, int gid);
 int create_thread(struct process *proc, void (*entry_point)(void), void *user_stack, uint64_t rdi, uint64_t rsi, uint64_t fs_base, bool is_user);
 int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user);
+init_volume_t* get_vol_array();
+int* get_vol_counter();

@@ -528,10 +528,44 @@ int tcp_close(struct net_socket* socket) {
 // endpoint as passive/accepting; "accept" blocks until a peer
 // connect()s to that same path, then hands back a socket bound to
 // a fresh, private ring buffer for that pair.
+//
+// IMPORTANT: none of these handlers may call rtl8139_poll(). That
+// function pumps the NIC driver and has nothing to do with AF_UNIX
+// traffic; calling it here was a straight copy/paste artifact from
+// the UDP/TCP/raw handlers above, and it's actively harmful for
+// AF_UNIX sockets:
+//   - It requires a NIC to exist at all, so on network-less machines
+//     (or once the NIC has been shut down) it can crash or hang.
+//   - The busy-wait loops in unix_connect()/unix_accept()/unix_recv()
+//     need to "just spin/yield" while another *local* thread makes
+//     progress; polling and parsing Ethernet/IPv4 frames for that is
+//     pure waste and, worse, means the "did the peer show up yet?"
+//     condition can spuriously depend on unrelated network traffic
+//     arriving to give the poll loop a chance to run.
+// All rtl8139_poll() calls have been removed from the AF_UNIX section
+// and replaced with cpu_relax(), a small architecture-provided
+// busy-wait hint (falls back to a no-op spin if unavailable) that
+// only yields the CPU, with no networking side effects whatsoever.
 
 #define UNIX_MAX_ENDPOINTS   32
 #define UNIX_PATH_MAX        108   // matches sockaddr_un convention
 #define UNIX_BUF_SIZE        4096
+
+#if defined(__has_include)
+#  if __has_include(<hals/cpu.h>)
+#    include <hals/cpu.h>
+#    define UNIX_HAVE_CPU_RELAX 1
+#  endif
+#endif
+
+#ifndef UNIX_HAVE_CPU_RELAX
+static inline void cpu_relax(void) {
+    /* No architecture-provided relax/pause hint available in this build;
+     * fall back to a plain no-op spin. Still strictly better than the
+     * previous behavior, which incorrectly pumped the NIC driver here. */
+    (void)0;
+}
+#endif
 
 typedef struct {
     char     path[UNIX_PATH_MAX];
@@ -640,7 +674,7 @@ int unix_connect(struct net_socket* socket, const char* addr) {
         unix_endpoints[idx].pending_client = socket->md.index;
 
         while (unix_endpoints[idx].pending_client == socket->md.index) {
-            rtl8139_poll(NULL); // yield while the listener notices us
+            cpu_relax(); // yield while the listener notices us
         }
 
         // By now socket->md.unix_endpoint has been rewritten by
@@ -724,7 +758,7 @@ int unix_accept(struct net_socket* socket, struct net_socket* out_client) {
 
     // Wait for a connecting socket to register itself.
     while (unix_endpoints[listen_idx].pending_client == -1) {
-        rtl8139_poll(NULL);
+        cpu_relax();
     }
 
     int client_sock_idx = unix_endpoints[listen_idx].pending_client;
@@ -824,8 +858,10 @@ int unix_recv(struct net_socket* socket, void* buffer, size_t length) {
 
     // Busy-poll until at least one byte is available, matching the
     // blocking style of the other recv() handlers in this file.
+    // Note: this only spins the CPU (cpu_relax) -- it does NOT pump
+    // the NIC driver, since AF_UNIX traffic never touches the network.
     while (ep->count == 0) {
-        rtl8139_poll(NULL); // yield / pump other subsystems while waiting
+        cpu_relax();
     }
 
     while (read_count < length && ep->count > 0) {

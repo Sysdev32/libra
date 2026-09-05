@@ -29,6 +29,9 @@
 #include "hals/nvme.h"
 #include "hals/ps2.h"
 #include <hals/virtio/virtio_gpu.h>
+
+#include "hals/ehci.h"
+#include "hals/xhci.h"
 struct flanterm_context *ft_ctx;
 extern char __user_src_start[];
 extern char __user_src_end[];
@@ -268,252 +271,211 @@ void stack_free(uint64_t phys) {
 }
 #define HEAP_START ((uint64_t)0x40000000)
 #define HEAP_END   ((uint64_t)0x60000000)
+/* Standard translation helper if you don't have virt_to_phys */
+#define VIRT_TO_PHYS(addr) ((uint64_t)(addr) - HHDM_OFFSET)
 int spawn(const char *path, int argc, char **argv, char* name)
 {
+    printk(LOG_DEBUG, "\n================ [SPAWN DEBUG START] ================\n");
+    printk(LOG_DEBUG, "[SPAWN] Path: '%s' | argc: %d | Task Name: '%s'\n",
+           path ? path : "NULL", argc, name ? name : "NULL");
+
     if (!path) {
-        printk(LOG_ERROR, "[SPAWN] NULL path pointer\n");
+        printk(LOG_ERROR, "[SPAWN ERROR] NULL path pointer\n");
         return -1;
     }
     if (argc < 0 || argc > 64 || (argc > 0 && argv == NULL)) {
-        printk(LOG_ERROR, "[SPAWN] Invalid argv vector\n");
+        printk(LOG_ERROR, "[SPAWN ERROR] Invalid argv vector\n");
         return -1;
     }
+
     char kpath[256];
     memset(kpath, 0, sizeof(kpath));
 
     for (int i = 0; i < 255; i++) {
         char c = path[i];
         kpath[i] = c;
-
-        if (c == '\0')
-            break;
-
-        if (i == 254) {
-            kpath[255] = '\0';
-        }
+        if (c == '\0') break;
+        if (i == 254) kpath[255] = '\0';
     }
+
+    /* 1. Create Isolated PML4 */
+    printk(LOG_DEBUG, "[SPAWN] Creating user PML4...\n");
     page_table_t *user_pml4 = vmm_create_address_space();
-
     if (!user_pml4) {
-        printk(LOG_ERROR,
-               "[SPAWN] Failed creating address space\n");
-        for(;;);
+        printk(LOG_ERROR, "[SPAWN ERROR] Failed creating user PML4 address space!\n");
+        return -1;
     }
 
+    uint64_t pml4_phys = (uint64_t)user_pml4;
+    if (pml4_phys >= HHDM_OFFSET) {
+        pml4_phys -= HHDM_OFFSET;
+    }
+    printk(LOG_DEBUG, "[SPAWN] User PML4 HHDM: %p | PML4 Phys: %x\n", user_pml4, pml4_phys);
 
+    /* 2. Read Executable into Buffer */
     int user_fd = vfs_open(kpath, O_RDONLY, 0);
     if (user_fd < 0) {
-        printk(LOG_ERROR,
-               "[SPAWN] Cannot open '%s'\n",
-               kpath);
-        for(;;);
+        printk(LOG_ERROR, "[SPAWN ERROR] Cannot open binary '%s'\n", kpath);
+        return -1;
     }
 
-
     struct vfs_stat stat = {0};
-
     vfs_fstat(user_fd, &stat);
-    uint64_t user_flags = PTE_USER | PTE_WRITABLE;
-    uint64_t safe_code_phys_base =
-        (uint64_t)arena_alloc(stat.st_size);
-    uint64_t safe_stack_phys_base =
-        stack_alloc(256 * 1024);
-    uint64_t raw_elf_phys_base =
-        safe_code_phys_base + (9216 * PAGE_SIZE);
+    printk(LOG_DEBUG, "[SPAWN] Executable file size: %d bytes\n", stat.st_size);
 
+    if (stat.st_size == 0) {
+        printk(LOG_ERROR, "[SPAWN ERROR] File '%s' is 0 bytes\n", kpath);
+        vfs_free_fd(user_fd);
+        return -1;
+    }
 
-    void *raw_elf_hhdm_ptr =
-        (void *)(raw_elf_phys_base + HHDM_OFFSET);
+    uint8_t *raw_elf_buf = (uint8_t *)kmalloc(stat.st_size);
+    if (!raw_elf_buf) {
+        printk(LOG_ERROR, "[SPAWN ERROR] Failed to kmalloc %d bytes for ELF buffer!\n", stat.st_size);
+        vfs_free_fd(user_fd);
+        return -1;
+    }
+
     int file_cursor = 0;
     uint64_t total_bytes_read = 0;
 
-    while (1)
+    while (total_bytes_read < (uint64_t)stat.st_size)
     {
-        void *dst =
-            (void *)((uint8_t *)raw_elf_hhdm_ptr +
-                     total_bytes_read);
-
-
-        int read =
-            vfs_read(user_fd,
-                     dst,
-                     PAGE_SIZE,
-                     file_cursor);
-
-
-        if (read <= 0)
-            break;
-
-
+        int read = vfs_read(user_fd, raw_elf_buf + total_bytes_read, PAGE_SIZE, file_cursor);
+        if (read <= 0) break;
         total_bytes_read += read;
         file_cursor += read;
     }
-
-    uint64_t user_code_vma =
-        elf_vaddr(raw_elf_hhdm_ptr);
     vfs_free_fd(user_fd);
+    printk(LOG_DEBUG, "[SPAWN] Read %d bytes into kernel memory successfully.\n", (int)total_bytes_read);
 
+    uint64_t user_code_vma = elf_vaddr((void *)raw_elf_buf);
+    uint64_t user_flags = PTE_USER | PTE_WRITABLE;
+    printk(LOG_DEBUG, "[SPAWN] ELF target Base Virtual Address (VMA): %x\n", user_code_vma);
 
-    int staging_pages = 8300;
+    /* 3. Dynamic ELF Allocation & Loading */
+    /* Map only the program size rounded up to page boundary, NOT 256MB */
+    size_t elf_pages = (stat.st_size + PAGE_SIZE - 1) / PAGE_SIZE;
+    /* Add extra pages for BSS/Data segments */
+    elf_pages += 16;
 
+    printk(LOG_DEBUG, "[SPAWN] Mapping %d pages for executable segments...\n", (int)elf_pages);
 
-    for (int i = 0; i < staging_pages; i++)
+    for (size_t i = 0; i < elf_pages; i++)
     {
-        uint64_t phys =
-            safe_code_phys_base +
-            i * PAGE_SIZE;
+        void *raw_ptr = pmm_alloc_pages(0);
+        if (!raw_ptr) {
+            printk(LOG_ERROR, "[SPAWN ERROR] Out of physical memory loading binary segments!\n");
+            kfree(raw_elf_buf);
+            return -1;
+        }
 
+        uint64_t page_phys = (uint64_t)raw_ptr >= HHDM_OFFSET ? (uint64_t)raw_ptr - HHDM_OFFSET : (uint64_t)raw_ptr;
+        void *page_hhdm_ptr = (void *)(page_phys + HHDM_OFFSET);
 
-        uint64_t virt =
-            user_code_vma +
-            i * PAGE_SIZE;
+        uint64_t virt = user_code_vma + (i * PAGE_SIZE);
 
-        memset((void *)(phys + HHDM_OFFSET),
-               0,
-               PAGE_SIZE);
-
-
-        vmm_map_page(user_pml4,
-                     virt,
-                     phys,
-                     user_flags);
+        memset(page_hhdm_ptr, 0, PAGE_SIZE);
+        vmm_map_page(user_pml4, virt, page_phys, user_flags);
     }
 
+    printk(LOG_DEBUG, "[SPAWN] Parsing ELF headers via load_elf()...\n");
+    ElfLoadResult loaded = load_elf(raw_elf_buf, user_pml4, user_code_vma);
 
+    kfree(raw_elf_buf);
 
-    ElfLoadResult loaded =
-        load_elf(raw_elf_hhdm_ptr,
-                 safe_code_phys_base,
-                 user_code_vma);
-
-    if (!loaded.entry_point)
-    {
-        printk(LOG_ERROR,
-               "[SPAWN] ELF loader failed\n");
-        for(;;);
+    if (!loaded.entry_point) {
+        printk(LOG_ERROR, "[SPAWN ERROR] ELF loader returned NULL entry point!\n");
+        return -1;
     }
+    printk(LOG_DEBUG, "[SPAWN] ELF parsed! Target RIP: %x\n", loaded.entry_point);
 
-
-
-
+    /* 4. Map User Stack (64 KB) */
     uint64_t user_stack_vma = 0x600000;
+    int stack_pages = 16; // 64 KB is plenty for process init
+    uint64_t stack_top_hhdm = 0;
 
-
-    int stack_pages = 64;
-
+    printk(LOG_DEBUG, "[SPAWN] Allocating %d stack pages at VMA: %x...\n", stack_pages, user_stack_vma);
 
     for (int i = 0; i < stack_pages; i++)
     {
-        uint64_t virt =
-            user_stack_vma +
-            i * PAGE_SIZE;
+        void *raw_ptr = pmm_alloc_pages(0);
+        if (!raw_ptr) {
+            printk(LOG_ERROR, "[SPAWN ERROR] Failed allocating stack page!\n");
+            return -1;
+        }
 
+        uint64_t stack_phys = (uint64_t)raw_ptr >= HHDM_OFFSET ? (uint64_t)raw_ptr - HHDM_OFFSET : (uint64_t)raw_ptr;
+        void *stack_hhdm_ptr = (void *)(stack_phys + HHDM_OFFSET);
+        uint64_t virt = user_stack_vma + (i * PAGE_SIZE);
 
-        uint64_t phys =
-            safe_stack_phys_base +
-            i * PAGE_SIZE;
+        memset(stack_hhdm_ptr, 0, PAGE_SIZE);
+        vmm_map_page(user_pml4, virt, stack_phys, user_flags);
 
-        memset((void *)(phys + HHDM_OFFSET),
-               0,
-               PAGE_SIZE);
-
-
-        vmm_map_page(user_pml4,
-                     virt,
-                     phys,
-                     user_flags);
+        if (i == stack_pages - 1) {
+            stack_top_hhdm = (uint64_t)stack_hhdm_ptr + PAGE_SIZE;
+        }
     }
-    uint64_t stack_top_vma =
-        user_stack_vma +
-        stack_pages * PAGE_SIZE;
 
-
-    uint64_t stack_top_hhdm =
-        safe_stack_phys_base +
-        stack_pages * PAGE_SIZE +
-        HHDM_OFFSET;
-
-    uint64_t cur_vma = stack_top_vma;
+    uint64_t cur_vma = user_stack_vma + (stack_pages * PAGE_SIZE);
     uint64_t cur_hhdm = stack_top_hhdm;
 
-
+    /* 5. Push Arguments onto Stack */
     uint64_t argv_ptrs[64];
-
 
     for (int i = argc - 1; i >= 0; i--)
     {
         if (argv[i] == NULL) {
-            printk(LOG_ERROR, "[SPAWN] NULL argv[%d]\n", i);
+            printk(LOG_ERROR, "[SPAWN ERROR] NULL argv[%d]\n", i);
             return -1;
         }
 
-        size_t len =
-            strlen(argv[i]) + 1;
-
-
+        size_t len = strlen(argv[i]) + 1;
         cur_vma -= len;
         cur_hhdm -= len;
 
-
-        memcpy((void *)cur_hhdm,
-               argv[i],
-               len);
-
-
+        memcpy((void *)cur_hhdm, argv[i], len);
         argv_ptrs[i] = cur_vma;
     }
 
-
-
-    cur_vma &= -8ULL;
-    cur_hhdm &= -8ULL;
-
-    uint64_t stack_words = (uint64_t)argc + 2;
-    if (((cur_vma - (stack_words * 8)) & 0xFULL) != 0) {
-        cur_vma -= 8;
-        cur_hhdm -= 8;
-    }
+    /* 16-byte align stack pointer */
+    cur_vma &= -16ULL;
+    cur_hhdm &= -16ULL;
 
     cur_vma -= 8;
     cur_hhdm -= 8;
+    *(uint64_t *)cur_hhdm = 0; // NULL terminator
 
-    *(uint64_t *)cur_hhdm = 0;
-
-
-    for(int i = argc - 1; i >= 0; i--)
+    for (int i = argc - 1; i >= 0; i--)
     {
         cur_vma -= 8;
         cur_hhdm -= 8;
-
-        *(uint64_t *)cur_hhdm =
-            argv_ptrs[i];
+        *(uint64_t *)cur_hhdm = argv_ptrs[i];
     }
 
-
-    uint64_t argv_start =
-        cur_vma;
-
+    uint64_t argv_start = cur_vma;
 
     cur_vma -= 8;
     cur_hhdm -= 8;
+    *(uint64_t *)cur_hhdm = argc;
 
+    printk(LOG_DEBUG, "[SPAWN STACK] Final RSP VMA: %x | argv_start: %x\n", cur_vma, argv_start);
 
-    *(uint64_t *)cur_hhdm =
-        argc;
+    /* 6. Context Switch Task Creation */
+    int pid = create_user_task(
+        (void *)loaded.entry_point,
+        (void *)cur_vma,
+        argc,
+        argv_start,
+        user_pml4,
+        0,
+        0,
+        -1,
+        name
+    );
 
-    set_cwd(getpcwd());
-    int pid =
-        create_user_task(
-            (void *)loaded.entry_point,
-            (void *)cur_vma,
-            argc,
-            argv_start,
-            user_pml4,
-            0,
-            0,
-            -1,
-            name);
-
+    printk(LOG_DEBUG, "[SPAWN SUCCESS] Task created with PID: %d\n", pid);
+    printk(LOG_DEBUG, "================ [SPAWN DEBUG END] ================\n\n");
 
     return pid;
 }
@@ -770,66 +732,7 @@ static inline uint64_t get_recursive_virt(uint64_t l4, uint64_t l3, uint64_t l2,
     return raw;
 }
 
-/**
- * Translates a virtual address to its underlying physical address.
- * Works for current process address space using Recursive Mapping.
- *
- * @param virt The virtual address to resolve.
- * @return Physical address, or 0 if unmapped / not present.
- */
-uint64_t vmm_virt_to_phys(uint64_t virt) {
-    /* 1. Extract 9-bit page table indices */
-    uint64_t pml4_idx = (virt >> 39) & 0x1FF;
-    uint64_t pdpt_idx = (virt >> 30) & 0x1FF;
-    uint64_t pd_idx   = (virt >> 21) & 0x1FF;
-    uint64_t pt_idx   = (virt >> 12) & 0x1FF;
-    uint64_t offset   = virt & 0xFFF;
 
-    /* 2. Check PML4 (Level 4) */
-    uint64_t *pml4 = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT);
-    uint64_t pml4e = pml4[pml4_idx];
-    if (!(pml4e & PTE_PRESENT)) {
-        return 0;
-    }
-
-    /* 3. Check PDPT (Level 3) */
-    uint64_t *pdpt = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, RECURSIVE_SLOT, pml4_idx);
-    uint64_t pdpte = pdpt[pdpt_idx];
-    if (!(pdpte & PTE_PRESENT)) {
-        return 0;
-    }
-
-    /* Check for 1 GB Huge Page */
-    if (pdpte & PTE_HUGE) {
-        uint64_t phys_base = pdpte & PTE_ADDR_MASK;
-        uint64_t gb_offset = virt & 0x3FFFFFFF; /* 1GB offset mask */
-        return phys_base + gb_offset;
-    }
-
-    /* 4. Check Page Directory (Level 2) */
-    uint64_t *pd = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, RECURSIVE_SLOT, pml4_idx, pdpt_idx);
-    uint64_t pde = pd[pd_idx];
-    if (!(pde & PTE_PRESENT)) {
-        return 0;
-    }
-
-    /* Check for 2 MB Huge Page */
-    if (pde & PTE_HUGE) {
-        uint64_t phys_base = pde & PTE_ADDR_MASK;
-        uint64_t mb_offset = virt & 0x1FFFFF; /* 2MB offset mask */
-        return phys_base + mb_offset;
-    }
-
-    /* 5. Check Page Table (Level 1) */
-    uint64_t *pt = (uint64_t *)get_recursive_virt(RECURSIVE_SLOT, pml4_idx, pdpt_idx, pd_idx);
-    uint64_t pte = pt[pt_idx];
-    if (!(pte & PTE_PRESENT)) {
-        return 0;
-    }
-
-    /* 6. Standard 4 KB Page */
-    return (pte & PTE_ADDR_MASK) + offset;
-}
 int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user)
 {
     if (!fn) {
@@ -856,7 +759,7 @@ int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user)
         // Translate user virtual address to physical address via direct page walk
         uintptr_t phys_tcb = hal_virt_to_phys((void *)child_fs_base);
         if (!phys_tcb) {
-            printk(LOG_ERROR, "[CLONE] Stack address unmapped or invalid: 0x%lx\n", child_fs_base);
+            printk(LOG_ERROR, "[CLONE] Stack address unmapped or invalid: 0x%x\n", child_fs_base);
             return -1;
         }
 
@@ -894,7 +797,7 @@ int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user)
             struct tcb *child_tcb = (struct tcb *)(phys_tcb + HHDM_OFFSET);
             child_tcb->thread_id = tid;
         } else {
-            printk(LOG_WARNING, "[CLONE] Unable to write thread_id to user TCB (0x%lx translation failed)\n", child_fs_base);
+            printk(LOG_WARNING, "[CLONE] Unable to write thread_id to user TCB (0x%x translation failed)\n", child_fs_base);
         }
     }
 
@@ -930,7 +833,7 @@ static int test(void* arg) {
     return 0;
 }
 static void main_kthread(void) {
-    launchd_pid = spawn("/System/usr/bin/commandline/launchd", 0, NULL, "launchd");
+    launchd_pid = spawn("/usr/bin/launchd", 0, NULL, "launchd");
     for (;;) {
         asm volatile("sti; hlt");
     }
@@ -1019,7 +922,92 @@ uint32_t devicecount = 0;
 virtio_gpu_device_t g_virtio_gpu;
 virtio_device_t vdev;
 void tests(void);
+bool check_device(int i, int class, int subclass, int prog_if) {
+    if (devices[i].class_code == class && devices[i].subclass == subclass && devices[i].prog_if == prog_if) {
+        return true;
+    }
+    return false;
+}
+bool check_gpt(const void* buffer) {
+    if (!buffer) return false;
 
+    // Safest & cleanest approach: byte comparison against "EFI PART"
+    return memcmp(buffer, "EFI PART", 8) == 0;
+}
+int check_fat32(volume_t* vol) {
+    if (!vol || !vol->is_valid) return 0;
+
+    uint32_t sector_size = (vol->drive.sector_size > 0) ? vol->drive.sector_size : 512;
+    uint8_t* buf = (uint8_t*)kmalloc(sector_size);
+    if (!buf) return 0;
+
+    if (!volume_read_sectors(vol, 0, 1, buf)) {
+        kfree(buf);
+        return 0;
+    }
+
+    // Direct byte offset parsing without extra struct definitions
+    uint16_t bytes_per_sector   = buf[11] | (buf[12] << 8);
+    uint16_t root_entry_count   = buf[17] | (buf[18] << 8);
+    uint16_t table_size_16      = buf[22] | (buf[23] << 8);
+    uint32_t table_size_32      = buf[36] | (buf[37] << 8) | (buf[38] << 16) | (buf[39] << 24);
+
+    // 1. Boot sector signature check (0x55, 0xAA)
+    if (buf[510] != 0x55 || buf[511] != 0xAA) {
+        kfree(buf);
+        return 0;
+    }
+
+    // 2. Validate basic FAT32 properties (FAT16/12 legacy entries must be 0)
+    if (bytes_per_sector != sector_size || root_entry_count != 0 || table_size_16 != 0 || table_size_32 == 0) {
+        kfree(buf);
+        return 0;
+    }
+
+    // 3. Verify string signature "FAT32   " at offset 0x52 (82)
+    if (memcmp(&buf[82], "FAT32   ", 8) != 0) {
+        kfree(buf);
+        return 0;
+    }
+
+    kfree(buf);
+    return 1;
+}
+initialized_drive init_drives[32];
+int init_drives_count = 0;
+static char* append_uint(char* dest, unsigned int val) {
+    char temp[12];
+    int i = 0;
+
+    if (val == 0) {
+        *dest++ = '0';
+        return dest;
+    }
+
+    while (val > 0) {
+        temp[i++] = '0' + (val % 10);
+        val /= 10;
+    }
+
+    while (i > 0) {
+        *dest++ = temp[--i];
+    }
+
+    return dest;
+}
+
+void make_nv_part_name(char *buf, unsigned int nv_id, unsigned int part_id) {
+    *buf++ = '/'; // Add leading slash for absolute path lookup!
+    *buf++ = 'n';
+    *buf++ = 'v';
+    buf = append_uint(buf, nv_id);
+    *buf++ = 'p';
+    *buf++ = 'a';
+    *buf++ = 'r';
+    *buf++ = 't';
+    buf = append_uint(buf, part_id);
+    *buf = '\0';
+}
 // ReSharper disable once CppUseInternalLinkage
 void _start(void) { // NOLINT(*-reserved-identifier)
     // Ensure the bootloader answered our framebuffer request safely
@@ -1054,11 +1042,12 @@ void _start(void) { // NOLINT(*-reserved-identifier)
     keyboard_init();
     tty_init(&fbt);
     tty_switch(1);
-    init_vfs();
     if (total_usable_memory / 1024 / 1024 < 128) {
         printk(LOG_ERROR, "Less than 128 MB of usable memory detected. Rebooting now..\n");
         triple_fault_reboot();
     }
+    init_vfs();
+    
     printk(LOG_TRACE, "Total usable memory: %d MB\n", total_usable_memory / 1024 / 1024);
     uacpi_status ret = uacpi_initialize(0);
     if (uacpi_unlikely_error(ret)) {
@@ -1115,19 +1104,113 @@ void _start(void) { // NOLINT(*-reserved-identifier)
     devices = kcalloc(256, sizeof(pci_device_t));
     
     pci_scan_bus(devices, 256, &devicecount);
+
     for (int i=0; i<devicecount; i++) {
         if (devices[i].vendor_id == 0x1AF4 && devices[i].device_id == 0x1050) {
             virtio_init_device(&vdev, devices[i].bus, devices[i].device, devices[i].function);
             virtio_gpu_init(&g_virtio_gpu, &vdev, 1280, 720, framebuffer->address);
             tty_switch_gpu();
         }
+        if (check_device(i, 0x01, 0x08, 0x02)) {
+            int32_t ret = nvme_init(devices[i].bus, devices[i].device, devices[i].function);
+            if (ret < 0) {
+                printk(LOG_ERROR, "failed to initialize NVMe controller.\n");
+            } else {
+                nvme_namespace_t ns[32];
+                int32_t count = nvme_get_namespaces(ret, ns, 32);
+                printk(LOG_INFO, "namespace count: %d\n", count);
+
+                // Renamed loop variable to ns_idx to avoid shadowing outer 'i'
+                for (int ns_idx = 0; ns_idx < count; ns_idx++) {
+                    initialized_drive drive;
+                    memset(&drive, 0, sizeof(initialized_drive));
+
+                    uint32_t nsid = ns[ns_idx].nsid;
+                    uint32_t sector_size = nvme_get_sector_size(ret, nsid);
+
+                    if (sector_size == 0) {
+                        printk(LOG_ERROR, "failed to retrieve sector size for NSID %d.\n", nsid);
+                        continue;
+                    }
+
+                    void* buffer = kmalloc(sector_size);
+                    if (!buffer) {
+                        printk(LOG_ERROR, "memory allocation failed for NSID %d sector buffer.\n", nsid);
+                        continue;
+                    }
+
+                    // Read LBA 1 (GPT Header)
+                    if (nvme_read_block(ret, nsid, 1, 1, buffer)) {
+                        printk(LOG_INFO, "nsid %d, sector size: %d bytes.\n", nsid, sector_size);
+
+                        // Log the first 16 bytes of LBA 1 in HEX
+                        uint8_t* raw = (uint8_t*)buffer;
+                        printk(LOG_INFO, "LBA 1 Header (first 16 bytes): %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+                               raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+                               raw[8], raw[9], raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+
+                        if (check_gpt(buffer)) {
+                            printk(LOG_INFO, "detected GPT formatting scheme on nsid: %d\n", nsid);
+
+                            generic_drive_t gpt_drive;
+                            gpt_drive.sector_size = ns[ns_idx].sector_size;
+                            gpt_drive.total_sectors = ns[ns_idx].sector_count;
+                            gpt_drive.type = DRIVE_TYPE_NVME;
+                            gpt_drive.nvme.nsid = nsid;
+                            gpt_drive.nvme.nvme_id = ret;
+                            partition_table_t table = gpt_parse_partitions(&gpt_drive);
+
+                            printk(LOG_INFO, "GPT partition count for nsid %d: %d\n", nsid, table.count);
+
+                            drive.format.gpt_partition_table.count = table.count;
+                            drive.drive = gpt_drive;
+                            drive.formatType = FS_GPT;
+
+                            for (int l = 0; l < table.count; l++) {
+                                printk(LOG_INFO, "evaluating partition %d (LBA start: %llu, count: %llu)...\n",
+                                       l, table.partitions[l]->start_lba, table.partitions[l]->total_sectors);
+
+                                if (check_fat32(table.partitions[l])) {
+                                    printk(LOG_INFO, "partition %d is FAT32. Initializing filesystem...\n", l);
+
+                                    fat32_fs_t fs;
+                                    fat32_init(table.partitions[l], &fs);
+
+                                    drive.format.gpt_partition_table.vols[l].base = *table.partitions[l];
+                                    drive.format.gpt_partition_table.vols[l].fsType = FS_FAT32;
+                                    drive.format.gpt_partition_table.vols[l].fs.filesystem = fs;
+                                    char name[32];
+                                    make_nv_part_name(name, ret, l);
+                                } else {
+                                    printk(LOG_INFO, "partition %d is not FAT32.\n", l);
+                                }
+                            }
+
+                            init_drives[init_drives_count++] = drive;
+                        } else {
+                            printk(LOG_ERROR, "unsupported formatting scheme on nsid %d.\n", nsid);
+                        }
+                    } else {
+                        printk(LOG_ERROR, "failed to read LBA 1 on nsid %d.\n", nsid);
+                    }
+
+                    kfree(buffer);
+                }
+            }
+        }
+        if (check_device(i, 0x01, 0x06, 0x01)) {
+            init_ahci(devices[i].bus, devices[i].device, devices[i].function);
+        }
+        if (check_device(i, 0x0C, 0x03, 0x30)) {
+            xhci_init_device(devices[i].bus, devices[i].device, devices[i].function);
+        }
+        if (check_device(i, 0x0C, 0x03, 0x20)) {
+            ehci_init_device(devices[i].bus, devices[i].device, devices[i].function);
+        }
         printk(LOG_INFO, "PCI DEVICE: %d:%d:%d %x:%x %x:%x\n", devices[i].bus, devices[i].device, devices[i].function, devices[i].class_code, devices[i].subclass, devices[i].device_id, devices[i].vendor_id);
     }
-    nvme_init();
     tests();
-    partition_t dev;
-    dev.type = DEVFS;
-    mount(&dev, "/dev");
+    devfs_init();
     tty_dev_init();
     // Echo bugs out on userspace turnoff
     tty_echo_off("/dev/tty1");

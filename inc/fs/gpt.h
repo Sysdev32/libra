@@ -5,6 +5,24 @@
 
 #define GPT_SIGNATURE 0x5452415020494645ULL // "EFI PART" in ASCII
 #define MAX_VOLUMES 16
+typedef enum {
+    DRIVE_TYPE_AHCI,
+    DRIVE_TYPE_NVME
+} drive_type_t;
+
+typedef struct {
+    drive_type_t type;
+    union {
+        ahci_device_t* ahci_drive;
+        struct {
+            uint32_t nvme_id;
+            uint32_t nsid;
+        } nvme;
+    };
+    uint64_t total_sectors;
+    uint32_t sector_size;
+} generic_drive_t;
+
 
 // GUID Structure definition used for unique identifiers
 typedef struct {
@@ -44,24 +62,27 @@ typedef struct {
 
 // Abstract storage layer structure for runtime environment partition tracking
 typedef struct {
-    ahci_device_t* drive;             // Linked underlying storage hardware device
+    generic_drive_t drive;            // Linked underlying generic storage device (AHCI or NVMe)
     uint64_t start_lba;               // Absolute hardware block displacement position
     uint64_t total_sectors;           // Maximum continuous length block allocation span
     char name[36];                    // Standard null-terminated ASCII string name
     int is_valid;                     // Validation registration state flag
 } volume_t;
-
+typedef struct {
+    volume_t* partitions[MAX_VOLUMES]; // Array of pointers to registered volume instances
+    int count;                          // Total number of valid partitions found
+} partition_table_t;
 /* --- Core Initialization and Discovery Prototypes --- */
 
 /**
  * Scans a storage device to parse its GPT structures and registers active partitions.
  */
-void gpt_parse_partitions(ahci_device_t* drive);
+partition_table_t gpt_parse_partitions(generic_drive_t* drive);
 
 /**
  * Registers an isolated partition entry slice to the global system volume array tracker.
  */
-void volume_register(ahci_device_t* drive, uint64_t start_lba, uint64_t total_sectors, const char* name);
+void volume_register(generic_drive_t drive, uint64_t start_lba, uint64_t total_sectors, const char* name);
 
 /**
  * Retrieves a pointer to an active registered storage volume via its index context offset.
@@ -73,12 +94,12 @@ volume_t* get_volume(int index);
 /**
  * Reads data blocks relative to a target partition volume's local start position boundary.
  */
-int volume_read_sectors(volume_t* vol, uint64_t relative_lba, uint16_t count, uint64_t buf_phys);
+int volume_read_sectors(volume_t* vol, uint64_t relative_lba, uint16_t count, void* buf_virt);
 
 /**
  * Writes data blocks relative to a target partition volume's local start position boundary.
  */
-int volume_write_sectors(volume_t* vol, uint64_t relative_lba, uint16_t count, uint64_t buf_phys);
+int volume_write_sectors(volume_t* vol, uint64_t relative_lba, uint16_t count, const void* buf_virt);
 
 /* --- Write Operations and Modification Prototypes --- */
 
@@ -86,16 +107,16 @@ int volume_write_sectors(volume_t* vol, uint64_t relative_lba, uint16_t count, u
  * Overwrites target storage blocks to initialize a clean Protective MBR and blank GPT framework.
  * @return 1 on success, 0 on hardware write errors.
  */
-int gpt_format_disk(ahci_device_t* drive);
+partition_table_t gpt_format_disk(generic_drive_t* drive);
 
 /**
  * Finds the first available unallocated slot space to append a new partition entry.
  * @return 1 on success, 0 if out of slot space or if disk bounds are exceeded.
  */
-int gpt_create_partition(ahci_device_t* drive, const char* name, uint64_t sector_count);
+int gpt_create_partition(generic_drive_t* drive, const char* name, uint64_t sector_count);
 
 /**
  * Zeroes out a target partition slot index entry and recalibrates table validation checksum arrays.
  * @return 1 on success, 0 on invalid index parameter values or hardware error states.
  */
-int gpt_delete_partition(ahci_device_t* drive, int index_slot);
+int gpt_delete_partition(generic_drive_t* drive, int index_slot);

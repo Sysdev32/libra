@@ -47,7 +47,8 @@ typedef struct {
     uint32_t reserved1:9;
     uint32_t i:1;       // Interrupt on completion
 } __attribute__((packed)) ahci_prdt_entry_t;
+
 int ahci_read_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
 int ahci_write_sectors(ahci_device_t* drive, uint64_t start_lba, uint16_t count, uint64_t buf_phys);
-void init_ahci();
+void init_ahci(uint8_t bus, uint8_t dev, uint8_t func);
 ahci_device_t* get_primary_sata_drive(void);

@@ -442,3 +442,44 @@ int vmm_munmap(void *addr, size_t length) {
     }
     return 0;
 }
+uint64_t vmm_virt_to_phys(page_table_t *pml4, uint64_t vma) {
+    if (!pml4) return 0;
+
+    size_t pml4_idx = PML4_INDEX(vma);
+    size_t pdpt_idx = PDPT_INDEX(vma);
+    size_t pd_idx   = PD_INDEX(vma);
+    size_t pt_idx   = PT_INDEX(vma);
+    uint64_t offset = vma & 0xFFFULL;
+
+    /* 1. PML4 Lookup (pml4 is already an HHDM virtual pointer) */
+    uint64_t pml4_entry = pml4[pml4_idx];
+    if (!(pml4_entry & PTE_PRESENT)) return 0;
+
+    /* 2. PDPT Lookup */
+    page_table_t *pdpt = (page_table_t *)phys_to_virt(pml4_entry & PTE_FRAME);
+    uint64_t pdpt_entry = pdpt[pdpt_idx];
+    if (!(pdpt_entry & PTE_PRESENT)) return 0;
+
+    /* Check for 1GB Huge Page (Bit 7 / PS bit) */
+    if (pdpt_entry & (1ULL << 7)) {
+        return (pdpt_entry & ~0x3FFFFFFFULL) + (vma & 0x3FFFFFFF);
+    }
+
+    /* 3. PD Lookup */
+    page_table_t *pd = (page_table_t *)phys_to_virt(pdpt_entry & PTE_FRAME);
+    uint64_t pd_entry = pd[pd_idx];
+    if (!(pd_entry & PTE_PRESENT)) return 0;
+
+    /* Check for 2MB Huge Page (Bit 7 / PS bit) */
+    if (pd_entry & (1ULL << 7)) {
+        return (pd_entry & ~0x1FFFFFULL) + (vma & 0x1FFFFF);
+    }
+
+    /* 4. PT Lookup */
+    page_table_t *pt = (page_table_t *)phys_to_virt(pd_entry & PTE_FRAME);
+    uint64_t pt_entry = pt[pt_idx];
+    if (!(pt_entry & PTE_PRESENT)) return 0;
+
+    /* Standard 4KB Page */
+    return (pt_entry & PTE_FRAME) + offset;
+}

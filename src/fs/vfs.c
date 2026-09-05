@@ -11,8 +11,10 @@
 #include <arch/x86_64/schedule.h>
 #include <fcntl.h>
 
+#include "hals/rtc.h"
+
 #define MAX_OPEN_FILES 32
-#define MAX_VFS_FILES  128  // Set a safe maximum for your ramdisk files
+#define MAX_VFS_FILES  384  // Set a safe maximum for your ramdisk files
 
 // The array that securely holds the raw VFS file pointers
 static struct file *global_fd_table[MAX_OPEN_FILES];
@@ -367,6 +369,7 @@ int init_vfs(void) {
             printk(LOG_INFO, "[VFS] init_vfs: Initramfs unpacked successfully.\n");
             return 0;
         }
+        printk(LOG_DEBUG, "path: %s\n", path);
         size_t pure_path_len = strlen(path);
         int appended_fd = append_file(path, pure_path_len + 1, archive + data_offset, file_size, mode, uid, gid, mtime);
 

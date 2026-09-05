@@ -1,6 +1,8 @@
 #pragma once
 #include <stdint.h>
 
+#include "alloc.h"
+
 #define EI_NIDENT   16
 #define HHDM_OFFSET 0xffff800000000000ULL
 
@@ -86,6 +88,6 @@ typedef struct {
 #define R_X86_64_JUMP_SLOT 7
 #define R_X86_64_RELATIVE  8
 
-ElfLoadResult load_elf(void *raw_elf_data, uint64_t physical_base, uint64_t load_vma);
+ElfLoadResult load_elf(void *raw_elf_data, page_table_t *user_pml4, uint64_t load_vma);
 uint64_t elf_vaddr(void *raw_elf_data);
 uint64_t elf_needed_mem(void *raw_elf_data);
