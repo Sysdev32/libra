@@ -92,10 +92,13 @@ typedef struct {
     volatile struct virtq_used *used;
     uint16_t queue_size;
     uint16_t last_seen_used;
+    uint64_t device_features;
+    uint64_t driver_features;
 } virtio_device_t;
 
 void virtio_set_hhdm_offset(uintptr_t offset);
 bool virtio_init_device(virtio_device_t *dev, uint8_t bus, uint8_t device, uint8_t function);
+bool virtio_has_feature(virtio_device_t *dev, uint64_t feature);
 
 bool virtio_send_command(virtio_device_t *dev,
                          void *out_data, uint32_t out_len,

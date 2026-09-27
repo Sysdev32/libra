@@ -257,20 +257,19 @@ int create_thread(struct process *proc, void (*entry_point)(void), void *user_st
             thread_table[i].joining_tid = -1;
             memset(thread_table[i].tls_slots, 0, sizeof(thread_table[i].tls_slots));
 
+            uint64_t requested_stack = (uint64_t)user_stack;
             uint64_t aligned_stack = 0;
             size_t tcb_size_aligned = (sizeof(struct tcb) + 15) & ~0xFULL;
 
             if (is_user) {
-                aligned_stack = ((uint64_t)user_stack) & ~0xFULL;
-
                 if (fs_base != 0) {
-                    // Explicit FS_BASE provided (e.g. from custom pthread_create)
+                    // Explicit FS_BASE provided by clone/pthread setup.
                     thread_table[i].fs_base = fs_base & ~0xFULL;
-                    thread_table[i].user_rsp = aligned_stack;
-                } else if (aligned_stack != 0) {
-                    // Place TCB at the top of the allocated stack block
+                    thread_table[i].user_rsp = requested_stack;
+                } else if (requested_stack != 0) {
+                    aligned_stack = requested_stack & ~0xFULL;
+                    // Place TCB at the top of the allocated stack block.
                     thread_table[i].fs_base = (aligned_stack - tcb_size_aligned) & ~0xFULL;
-                    // User RSP starts BELOW the TCB so stack pushes don't corrupt TCB data
                     thread_table[i].user_rsp = thread_table[i].fs_base;
                 } else {
                     thread_table[i].fs_base = 0;
@@ -541,8 +540,8 @@ uint64_t schedule_preemptive(uint64_t old_rsp) {
             return 0;
         }
 
-        if (thread_table[current_thread_id].state == TASK_STATE_READY) {
-            thread_table[current_thread_id].state = TASK_STATE_RUNNING;
+        if (thread_table[old_thread_id].state == TASK_STATE_READY) {
+            thread_table[old_thread_id].state = TASK_STATE_RUNNING;
         }
         return 0;
     }
@@ -1166,5 +1165,5 @@ init_volume_t* get_vol_array() {
     return thread_table[current_thread_id].process->vtables;
 }
 int* get_vol_counter() {
-    return thread_table[current_thread_id].process->vtable_counter;
+    return &thread_table[current_thread_id].process->vtable_counter;
 }

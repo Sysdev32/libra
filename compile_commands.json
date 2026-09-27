@@ -24,38 +24,6 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/arch/x86_64/exceptions.o",
-      "src/arch/x86_64/exceptions.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/arch/x86_64/exceptions.c",
-    "output": "/home/adam/libra-main/objects/arch/x86_64/exceptions.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
       "objects/arch/x86_64/gdt.o",
       "src/arch/x86_64/gdt.c"
     ],
@@ -120,12 +88,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/helpers/cwd.o",
-      "src/helpers/cwd.c"
+      "objects/arch/x86_64/exceptions.o",
+      "src/arch/x86_64/exceptions.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/helpers/cwd.c",
-    "output": "/home/adam/libra-main/objects/helpers/cwd.o"
+    "file": "/home/adam/libra-main/src/arch/x86_64/exceptions.c",
+    "output": "/home/adam/libra-main/objects/arch/x86_64/exceptions.o"
   },
   {
     "arguments": [
@@ -190,6 +158,38 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/string.c",
     "output": "/home/adam/libra-main/objects/string.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/helpers/cwd.o",
+      "src/helpers/cwd.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/helpers/cwd.c",
+    "output": "/home/adam/libra-main/objects/helpers/cwd.o"
   },
   {
     "arguments": [
@@ -312,38 +312,6 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/fs/fat32.o",
-      "src/fs/fat32.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/fs/fat32.c",
-    "output": "/home/adam/libra-main/objects/fs/fat32.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
       "objects/fs/gpt.o",
       "src/fs/gpt.c"
     ],
@@ -376,12 +344,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/fs/chfs.o",
-      "src/fs/chfs.c"
+      "objects/fs/fat32.o",
+      "src/fs/fat32.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/fs/chfs.c",
-    "output": "/home/adam/libra-main/objects/fs/chfs.o"
+    "file": "/home/adam/libra-main/src/fs/fat32.c",
+    "output": "/home/adam/libra-main/objects/fs/fat32.o"
   },
   {
     "arguments": [
@@ -472,12 +440,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/hals/graphics/UHD630.o",
-      "src/hals/graphics/UHD630.c"
+      "objects/hals/nvme.o",
+      "src/hals/nvme.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/hals/graphics/UHD630.c",
-    "output": "/home/adam/libra-main/objects/hals/graphics/UHD630.o"
+    "file": "/home/adam/libra-main/src/hals/nvme.c",
+    "output": "/home/adam/libra-main/objects/hals/nvme.o"
   },
   {
     "arguments": [
@@ -504,12 +472,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/hals/nvme.o",
-      "src/hals/nvme.c"
+      "objects/hals/graphics/UHD630.o",
+      "src/hals/graphics/UHD630.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/hals/nvme.c",
-    "output": "/home/adam/libra-main/objects/hals/nvme.o"
+    "file": "/home/adam/libra-main/src/hals/graphics/UHD630.c",
+    "output": "/home/adam/libra-main/objects/hals/graphics/UHD630.o"
   },
   {
     "arguments": [
@@ -568,12 +536,108 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
+      "objects/hals/systemio.o",
+      "src/hals/systemio.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/hals/systemio.c",
+    "output": "/home/adam/libra-main/objects/hals/systemio.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/hals/rtc.o",
+      "src/hals/rtc.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/hals/rtc.c",
+    "output": "/home/adam/libra-main/objects/hals/rtc.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
       "objects/hals/ehci.o",
       "src/hals/ehci.c"
     ],
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/hals/ehci.c",
     "output": "/home/adam/libra-main/objects/hals/ehci.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/hals/virtio/virtio_gpu.o",
+      "src/hals/virtio/virtio_gpu.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/hals/virtio/virtio_gpu.c",
+    "output": "/home/adam/libra-main/objects/hals/virtio/virtio_gpu.o"
   },
   {
     "arguments": [
@@ -632,12 +696,44 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/hals/xhci.o",
-      "src/hals/xhci.c"
+      "objects/hals/virtio/virtio.o",
+      "src/hals/virtio/virtio.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/hals/xhci.c",
-    "output": "/home/adam/libra-main/objects/hals/xhci.o"
+    "file": "/home/adam/libra-main/src/hals/virtio/virtio.c",
+    "output": "/home/adam/libra-main/objects/hals/virtio/virtio.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/hals/virtio/virtio_gpu_accel.o",
+      "src/hals/virtio/virtio_gpu_accel.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/hals/virtio/virtio_gpu_accel.c",
+    "output": "/home/adam/libra-main/objects/hals/virtio/virtio_gpu_accel.o"
   },
   {
     "arguments": [
@@ -696,6 +792,38 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
+      "objects/hals/serial.o",
+      "src/hals/serial.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/hals/serial.c",
+    "output": "/home/adam/libra-main/objects/hals/serial.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
       "objects/hals/ps2.o",
       "src/hals/ps2.c"
     ],
@@ -728,12 +856,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/drivers/net/http.o",
-      "src/drivers/net/http.c"
+      "objects/hals/xhci.o",
+      "src/hals/xhci.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/drivers/net/http.c",
-    "output": "/home/adam/libra-main/objects/drivers/net/http.o"
+    "file": "/home/adam/libra-main/src/hals/xhci.c",
+    "output": "/home/adam/libra-main/objects/hals/xhci.o"
   },
   {
     "arguments": [
@@ -792,12 +920,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/drivers/net/nsock.o",
-      "src/drivers/net/nsock.c"
+      "objects/drivers/net/http.o",
+      "src/drivers/net/http.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/drivers/net/nsock.c",
-    "output": "/home/adam/libra-main/objects/drivers/net/nsock.o"
+    "file": "/home/adam/libra-main/src/drivers/net/http.c",
+    "output": "/home/adam/libra-main/objects/drivers/net/http.o"
   },
   {
     "arguments": [
@@ -824,12 +952,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/drivers/net/dns.o",
-      "src/drivers/net/dns.c"
+      "objects/drivers/net/nsock.o",
+      "src/drivers/net/nsock.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/drivers/net/dns.c",
-    "output": "/home/adam/libra-main/objects/drivers/net/dns.o"
+    "file": "/home/adam/libra-main/src/drivers/net/nsock.c",
+    "output": "/home/adam/libra-main/objects/drivers/net/nsock.o"
   },
   {
     "arguments": [
@@ -894,6 +1022,38 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/drivers/net/dhcp.c",
     "output": "/home/adam/libra-main/objects/drivers/net/dhcp.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/drivers/net/dns.o",
+      "src/drivers/net/dns.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/drivers/net/dns.c",
+    "output": "/home/adam/libra-main/objects/drivers/net/dns.o"
   },
   {
     "arguments": [
@@ -1048,12 +1208,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/drivers/usb/hid/keyboard.o",
-      "src/drivers/usb/hid/keyboard.c"
+      "objects/drivers/tty.o",
+      "src/drivers/tty.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/drivers/usb/hid/keyboard.c",
-    "output": "/home/adam/libra-main/objects/drivers/usb/hid/keyboard.o"
+    "file": "/home/adam/libra-main/src/drivers/tty.c",
+    "output": "/home/adam/libra-main/objects/drivers/tty.o"
   },
   {
     "arguments": [
@@ -1080,12 +1240,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/drivers/tty.o",
-      "src/drivers/tty.c"
+      "objects/drivers/usb/hid/keyboard.o",
+      "src/drivers/usb/hid/keyboard.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/drivers/tty.c",
-    "output": "/home/adam/libra-main/objects/drivers/tty.o"
+    "file": "/home/adam/libra-main/src/drivers/usb/hid/keyboard.c",
+    "output": "/home/adam/libra-main/objects/drivers/usb/hid/keyboard.o"
   },
   {
     "arguments": [
@@ -1240,102 +1400,6 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/security/sha256.o",
-      "src/security/sha256.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/security/sha256.c",
-    "output": "/home/adam/libra-main/objects/security/sha256.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
-      "objects/vendor/flanterm/flanterm.o",
-      "src/vendor/flanterm/flanterm.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/vendor/flanterm/flanterm.c",
-    "output": "/home/adam/libra-main/objects/vendor/flanterm/flanterm.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
-      "objects/vendor/flanterm/fb.o",
-      "src/vendor/flanterm/fb.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/vendor/flanterm/fb.c",
-    "output": "/home/adam/libra-main/objects/vendor/flanterm/fb.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
       "objects/ioctl.o",
       "src/ioctl.c"
     ],
@@ -1374,6 +1438,38 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/uacpi/mutex.c",
     "output": "/home/adam/libra-main/objects/uacpi/mutex.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
+      "objects/security/sha256.o",
+      "src/security/sha256.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/security/sha256.c",
+    "output": "/home/adam/libra-main/objects/security/sha256.o"
   },
   {
     "arguments": [
@@ -1560,6 +1656,38 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
+      "objects/uacpi/tables.o",
+      "src/uacpi/tables.c"
+    ],
+    "directory": "/home/adam/libra-main",
+    "file": "/home/adam/libra-main/src/uacpi/tables.c",
+    "output": "/home/adam/libra-main/objects/uacpi/tables.o"
+  },
+  {
+    "arguments": [
+      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
+      "-ffreestanding",
+      "-fno-stack-protector",
+      "-fno-pic",
+      "-mno-red-zone",
+      "-m64",
+      "-march=x86-64",
+      "-mcmodel=kernel",
+      "-O0",
+      "-Wall",
+      "-Wextra",
+      "-g",
+      "-I./inc",
+      "-I.",
+      "-mno-sse",
+      "-mno-mmx",
+      "-mno-3dnow",
+      "-fpermissive",
+      "-Wno-error=int-conversion",
+      "-Wno-error=incompatible-pointer-types",
+      "-Wno-error=implicit-function-declaration",
+      "-c",
+      "-o",
       "objects/uacpi/resources.o",
       "src/uacpi/resources.c"
     ],
@@ -1592,12 +1720,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/uacpi/tables.o",
-      "src/uacpi/tables.c"
+      "objects/uacpi/event.o",
+      "src/uacpi/event.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/uacpi/tables.c",
-    "output": "/home/adam/libra-main/objects/uacpi/tables.o"
+    "file": "/home/adam/libra-main/src/uacpi/event.c",
+    "output": "/home/adam/libra-main/objects/uacpi/event.o"
   },
   {
     "arguments": [
@@ -1662,38 +1790,6 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/uacpi/utilities.c",
     "output": "/home/adam/libra-main/objects/uacpi/utilities.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
-      "objects/uacpi/event.o",
-      "src/uacpi/event.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/uacpi/event.c",
-    "output": "/home/adam/libra-main/objects/uacpi/event.o"
   },
   {
     "arguments": [
@@ -1848,12 +1944,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/uacpi/default_handlers.o",
-      "src/uacpi/default_handlers.c"
+      "objects/uacpi/namespace.o",
+      "src/uacpi/namespace.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/uacpi/default_handlers.c",
-    "output": "/home/adam/libra-main/objects/uacpi/default_handlers.o"
+    "file": "/home/adam/libra-main/src/uacpi/namespace.c",
+    "output": "/home/adam/libra-main/objects/uacpi/namespace.o"
   },
   {
     "arguments": [
@@ -1880,12 +1976,12 @@
       "-Wno-error=implicit-function-declaration",
       "-c",
       "-o",
-      "objects/uacpi/namespace.o",
-      "src/uacpi/namespace.c"
+      "objects/uacpi/default_handlers.o",
+      "src/uacpi/default_handlers.c"
     ],
     "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/uacpi/namespace.c",
-    "output": "/home/adam/libra-main/objects/uacpi/namespace.o"
+    "file": "/home/adam/libra-main/src/uacpi/default_handlers.c",
+    "output": "/home/adam/libra-main/objects/uacpi/default_handlers.o"
   },
   {
     "arguments": [
@@ -2014,37 +2110,5 @@
     "directory": "/home/adam/libra-main",
     "file": "/home/adam/libra-main/src/syscall.c",
     "output": "/home/adam/libra-main/objects/syscall.o"
-  },
-  {
-    "arguments": [
-      "/home/adam/opt/cross/bin/x86_64-elf-gcc",
-      "-ffreestanding",
-      "-fno-stack-protector",
-      "-fno-pic",
-      "-mno-red-zone",
-      "-m64",
-      "-march=x86-64",
-      "-mcmodel=kernel",
-      "-O0",
-      "-Wall",
-      "-Wextra",
-      "-g",
-      "-I./inc",
-      "-I.",
-      "-mno-sse",
-      "-mno-mmx",
-      "-mno-3dnow",
-      "-fpermissive",
-      "-Wno-error=int-conversion",
-      "-Wno-error=incompatible-pointer-types",
-      "-Wno-error=implicit-function-declaration",
-      "-c",
-      "-o",
-      "objects/hals/serial.o",
-      "src/hals/serial.c"
-    ],
-    "directory": "/home/adam/libra-main",
-    "file": "/home/adam/libra-main/src/serial.c",
-    "output": "/home/adam/libra-main/objects/serial.o"
   }
 ]

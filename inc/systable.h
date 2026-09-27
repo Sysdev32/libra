@@ -257,7 +257,24 @@ unsigned long long sys_mount(arg *a);
 // Syscall 81
 unsigned long long sys_umount(arg *a);
 
-static const syscall systable[82] = {
+// Syscall 82
+unsigned long long sys_vgpu_create_context(arg *a);
+
+// Syscall 83
+unsigned long long sys_vgpu_destroy_context(arg *a);
+
+// Syscall 84
+unsigned long long sys_vgpu_create_resource(arg *a);
+
+// Syscall 85
+unsigned long long sys_vgpu_attach_resource(arg *a);
+
+// Syscall 86
+unsigned long long sys_vgpu_detach_resource(arg *a);
+
+// Syscall 87
+unsigned long long sys_vgpu_submit_3d(arg *a);
+static const syscall systable[88] = {
     sys_read, // Standard POSIX read
     sys_write, // Standard POSIX write
     sys_open, // Standard POSIX open
@@ -341,5 +358,11 @@ static const syscall systable[82] = {
     sys_dpstat,
     sys_ddstat,
     sys_mount,
-    sys_umount
+    sys_umount,
+    sys_vgpu_create_context,
+    sys_vgpu_destroy_context,
+    sys_vgpu_create_resource,
+    sys_vgpu_attach_resource,
+    sys_vgpu_detach_resource,
+    sys_vgpu_submit_3d,
 };

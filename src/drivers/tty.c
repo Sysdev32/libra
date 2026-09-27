@@ -140,6 +140,10 @@ static void tty_flush_dirty(void) {
     dirty_max_y = 0;
 }
 
+void tty_flush(void) {
+    tty_flush_dirty();
+}
+
 static void pty_putc(pty_ringbuf_t *rb, char c) {
     uint32_t next = (rb->head + 1) % TTY_BUF_SIZE;
     if (next != rb->tail) {
@@ -187,12 +191,43 @@ void tty_draw_rect(int x, int y, int w, int h, uint32_t color) {
         if (cy < 0) continue;
         for (int cx = x; cx < x + w && cx < (int)global_fb.width; cx++) {
             if (cx < 0) continue;
-            target_buf[cy * pitch + cx] = color;
+            target_buf[(uint32_t)cy * pitch + (uint32_t)cx] = color;
+            tty7_backing_store[(uint32_t)cy * global_fb.width + (uint32_t)cx] = color;
         }
     }
 
     if (gpu) {
         mark_dirty_region(x, y, w, h);
+    }
+}
+
+void tty_draw_image(int x, int y, uint32_t w, uint32_t h, const uint32_t *pixels) {
+    if (!fb_initialized || !pixels || w == 0 || h == 0) return;
+
+    uint32_t *target_buf = (gpu && g_virtio_gpu.framebuffer) ? g_virtio_gpu.framebuffer : global_fb.address;
+    if (!target_buf) return;
+
+    uint32_t stride = gpu ? global_fb.width : (global_fb.pitch / sizeof(uint32_t));
+
+    for (uint32_t row = 0; row < h; row++) {
+        int dy = y + (int)row;
+        if (dy < 0) continue;
+        if (dy >= (int)global_fb.height) break;
+
+        for (uint32_t col = 0; col < w; col++) {
+            int dx = x + (int)col;
+            if (dx < 0) continue;
+            if (dx >= (int)global_fb.width) break;
+
+            uint32_t color = pixels[row * w + col];
+            target_buf[(uint32_t)dy * stride + (uint32_t)dx] = color;
+            tty7_backing_store[(uint32_t)dy * global_fb.width + (uint32_t)dx] = color;
+        }
+    }
+
+    if (gpu) {
+        mark_dirty_region(x, y, w, h);
+        tty_flush_dirty();
     }
 }
 

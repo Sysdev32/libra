@@ -24,6 +24,8 @@ NCURSES_LIBS:= -lncursesw   # Required to link the terminal interface
 
 AS := nasm
 QEMU := qemu-system-x86_64
+QEMU_ACCEL ?= kvm:tcg
+QEMU_DISPLAY ?= gtk,gl=on
 XORRISO := xorriso
 export srctree := .
 export SRCARCH := x86
@@ -180,7 +182,8 @@ run: iso
 	@$(QEMU) \
        -bios ./prebuilt/OVMF.fd \
        -m 4G \
-       -M q35 \
+       -M q35,accel=$(QEMU_ACCEL) \
+       -display $(QEMU_DISPLAY) \
        -serial stdio \
        -D qemu.log \
        -d int \
@@ -195,7 +198,7 @@ run: iso
        -device nvme,id=nvme_ctrl0,serial=deadbeef \
        -device nvme-ns,drive=nvme0,bus=nvme_ctrl0,nsid=1 \
        -device qemu-xhci,id=xhci \
-       -smp 4 -device virtio-gpu-pci,xres=1280,yres=720 \
+       -smp 4 -device virtio-gpu-gl-pci,xres=1280,yres=720 \
        -trace "virtio_*" \
        -trace "virtio_gpu_*" \
        -trace "pci_*"

@@ -3,8 +3,6 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <limine.h>
-#include <vendor/flanterm/flanterm.h>
-#include <vendor/flanterm/flanterm_backends/fb.h>
 #include <drivers/fb.h>
 #include <arch/x86_64/gdt.h>
 #include <drivers/alloc.h>
@@ -18,7 +16,6 @@
 #include <uacpi/event.h>
 #include <string.h>
 #include <uacpi/tables.h>
-#include <config.h>
 #include <uacpi/internal/namespace.h>
 #include <uacpi/types.h>
 #include <errno.h>
@@ -29,7 +26,7 @@
 #include "hals/nvme.h"
 #include "hals/ps2.h"
 #include <hals/virtio/virtio_gpu.h>
-
+#include <hals/virtio/virtio_gpu_accel.h>
 #include "hals/ehci.h"
 #include "hals/xhci.h"
 struct flanterm_context *ft_ctx;
@@ -770,7 +767,7 @@ int clone(void (*fn)(void *), void *user_stack, void *arg, bool is_user)
         child_tcb->self = (struct tcb *)child_fs_base;
 
         // 3. System V AMD64 ABI: (RSP + 8) must be 16-byte aligned before call/entry point
-        // Position RSP below the TCB frame with proper alignment
+        // Position RSP below the TCB frame with proper alignment.
         child_stack = (child_fs_base & ~0xFULL) - 8;
     }
 
@@ -920,6 +917,7 @@ static void tty_echo_off(char* path) {
 pci_device_t* devices;
 uint32_t devicecount = 0;
 virtio_gpu_device_t g_virtio_gpu;
+virtio_gpu_accel_t g_virtio_gpu_accel;
 virtio_device_t vdev;
 void tests(void);
 bool check_device(int i, int class, int subclass, int prog_if) {
@@ -1109,6 +1107,7 @@ void _start(void) { // NOLINT(*-reserved-identifier)
         if (devices[i].vendor_id == 0x1AF4 && devices[i].device_id == 0x1050) {
             virtio_init_device(&vdev, devices[i].bus, devices[i].device, devices[i].function);
             virtio_gpu_init(&g_virtio_gpu, &vdev, 1280, 720, framebuffer->address);
+            virtio_gpu_accel_init(&g_virtio_gpu_accel, &g_virtio_gpu);
             tty_switch_gpu();
         }
         if (check_device(i, 0x01, 0x08, 0x02)) {

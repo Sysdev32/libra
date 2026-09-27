@@ -150,6 +150,7 @@ static void virtio_setup_queue(virtio_device_t *dev, uint16_t q_index) {
 }
 
 bool virtio_init_device(virtio_device_t *dev, uint8_t bus, uint8_t device, uint8_t function) {
+    memset(dev, 0, sizeof(*dev));
     dev->bus = bus;
     dev->device = device;
     dev->function = function;
@@ -173,10 +174,16 @@ bool virtio_init_device(virtio_device_t *dev, uint8_t bus, uint8_t device, uint8
 
     // Negotiate features
     dev->common_cfg->device_feature_select = 0;
-    uint32_t features = dev->common_cfg->device_feature;
+    uint32_t features_lo = dev->common_cfg->device_feature;
+    dev->common_cfg->device_feature_select = 1;
+    uint32_t features_hi = dev->common_cfg->device_feature;
+    dev->device_features = ((uint64_t)features_hi << 32) | features_lo;
+    dev->driver_features = dev->device_features;
 
     dev->common_cfg->driver_feature_select = 0;
-    dev->common_cfg->driver_feature = features;
+    dev->common_cfg->driver_feature = (uint32_t)(dev->driver_features & 0xffffffffu);
+    dev->common_cfg->driver_feature_select = 1;
+    dev->common_cfg->driver_feature = (uint32_t)(dev->driver_features >> 32);
     __asm__ volatile("mfence" ::: "memory");
 
     dev->common_cfg->device_status |= VIRTIO_STATUS_FEATURES_OK;
@@ -194,6 +201,14 @@ bool virtio_init_device(virtio_device_t *dev, uint8_t bus, uint8_t device, uint8
 
     printk(LOG_TRACE, "[virtio-pci] Device initialized successfully!\n");
     return true;
+}
+
+bool virtio_has_feature(virtio_device_t *dev, uint64_t feature) {
+    if (!dev || feature >= 64) {
+        return false;
+    }
+
+    return (dev->driver_features & (1ULL << feature)) != 0;
 }
 
 static inline void virtio_notify(virtio_device_t *dev, uint16_t q_index) {
