@@ -1106,9 +1106,16 @@ void _start(void) { // NOLINT(*-reserved-identifier)
     for (int i=0; i<devicecount; i++) {
         if (devices[i].vendor_id == 0x1AF4 && devices[i].device_id == 0x1050) {
             virtio_init_device(&vdev, devices[i].bus, devices[i].device, devices[i].function);
-            virtio_gpu_init(&g_virtio_gpu, &vdev, 1280, 720, framebuffer->address);
-            virtio_gpu_accel_init(&g_virtio_gpu_accel, &g_virtio_gpu);
+            printk(LOG_TRACE,
+    "[virtio-gpu] GPU=%ux%u FB=%ux%u\n",
+    1280,
+    720,
+    framebuffer->width,
+    framebuffer->height);
+            virtio_gpu_init(&g_virtio_gpu, &vdev, framebuffer->width, framebuffer->height, framebuffer->address);
+
             tty_switch_gpu();
+            virtio_gpu_accel_init(&g_virtio_gpu_accel, &g_virtio_gpu);
         }
         if (check_device(i, 0x01, 0x08, 0x02)) {
             int32_t ret = nvme_init(devices[i].bus, devices[i].device, devices[i].function);

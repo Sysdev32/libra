@@ -1231,7 +1231,16 @@ unsigned long long sys_umount(arg *a) {
     }
     return -1;
 }
+
 // Syscall 82: virtio_gpu_accel_create_context
+//
+// Args:
+//   arg[0] = local_id - Process-local ID used to reference the context.
+//   arg[1] = name     - Pointer to the context name string.
+//
+// Returns:
+//   Context ID on success, -1 on failure.
+
 extern virtio_gpu_device_t g_virtio_gpu;
 extern virtio_gpu_accel_t g_virtio_gpu_accel;
 
@@ -1321,6 +1330,15 @@ int free_ctx_slots[MAX_CTX_ENTRIES] = {
 
 int free_ctx_count = MAX_CTX_ENTRIES;
 
+
+// Finds a context belonging to a specific process using its local ID.
+//
+// Args:
+//   local_id  - Process-local ID of the context to find.
+//   owner_pid - PID of the process that owns the context.
+//
+// Returns:
+//   Global context ID on success, -1 if no matching context exists.
 int lookup_entries(int local_id, int owner_pid) {
     for (int i = 0; i < MAX_CTX_ENTRIES; i++) {
         if (ctx_entries[i].active &&
@@ -1333,6 +1351,15 @@ int lookup_entries(int local_id, int owner_pid) {
     return -1;
 }
 
+
+// Syscall 82: virtio_gpu_accel_create_context
+//
+// Args:
+//   arg[0] = local_id - Process-local ID used to reference the context.
+//   arg[1] = name     - Pointer to the context name string.
+//
+// Returns:
+//   Context ID on success, -1 on failure.
 unsigned long long sys_vgpu_create_context(arg *a) {
     if (free_ctx_count == 0) {
         return -1;
@@ -1363,7 +1390,14 @@ unsigned long long sys_vgpu_create_context(arg *a) {
     return result;
 }
 
+
 // Syscall 83: virtio_gpu_accel_destroy_context
+//
+// Args:
+//   arg[0] = local_id - Process-local ID of the context to destroy.
+//
+// Returns:
+//   0 on success, -1 on failure.
 unsigned long long sys_vgpu_destroy_context(arg *a) {
     int owner_pid = getpid();
     int local_id = a->arg[0];
@@ -1392,28 +1426,90 @@ unsigned long long sys_vgpu_destroy_context(arg *a) {
     return -1;
 }
 
+
 // Syscall 84: virtio_gpu_accel_create_3d_resource
+//
+// Args:
+//   arg[0] = resource_id - ID of the resource to create.
+//   arg[1] = target      - Target/type of the resource.
+//   arg[2] = format      - Format of the resource.
+//   arg[3] = width       - Width of the resource.
+//   arg[4] = height      - Height of the resource.
+//   arg[5] = depth       - Depth of the resource.
+//
+// Returns:
+//   Result from virtio_gpu_accel_create_3d_resource().
 unsigned long long sys_vgpu_create_resource(arg *a) {
-    return virtio_gpu_accel_create_3d_resource(&g_virtio_gpu_accel, a->arg[0], a->arg[1], a->arg[2], a->arg[3], a->arg[4], a->arg[5]);
+    return virtio_gpu_accel_create_3d_resource(
+        &g_virtio_gpu_accel,
+        a->arg[0],
+        a->arg[1],
+        a->arg[2],
+        a->arg[3],
+        a->arg[4],
+        a->arg[5]
+    );
 }
 
+
 // Syscall 85: virtio_gpu_accel_attach_resource
+//
+// Args:
+//   arg[0] = resource_id - ID of the resource to attach.
+//
+// Returns:
+//   Result from virtio_gpu_accel_attach_resource(), or -1 if the
+//   context/resource lookup fails.
 unsigned long long sys_vgpu_attach_resource(arg *a) {
     int lookup = lookup_entries(a->arg[0], getpid());
     if (lookup == -1) return -1;
-    return virtio_gpu_accel_attach_resource(&g_virtio_gpu_accel, lookup, a->arg[0]);
+
+    return virtio_gpu_accel_attach_resource(
+        &g_virtio_gpu_accel,
+        lookup,
+        a->arg[0]
+    );
 }
 
+
 // Syscall 86: virtio_gpu_accel_detach_resource
+//
+// Args:
+//   arg[0] = resource_id - ID of the resource to detach.
+//
+// Returns:
+//   Result from virtio_gpu_accel_detach_resource(), or -1 if the
+//   context/resource lookup fails.
 unsigned long long sys_vgpu_detach_resource(arg *a) {
     int lookup = lookup_entries(a->arg[0], getpid());
     if (lookup == -1) return -1;
-    return virtio_gpu_accel_attach_resource(&g_virtio_gpu_accel, lookup, a->arg[0]);
+
+    return virtio_gpu_accel_detach_resource(
+        &g_virtio_gpu_accel,
+        lookup,
+        a->arg[0]
+    );
 }
 
+
 // Syscall 87: virtio_gpu_accel_submit_3d
-unsigned long long sys_vgpu_submit_3d(arg* a) {
+//
+// Args:
+//   arg[0] = context_id   - Process-local ID of the context to submit to.
+//   arg[1] = command      - Pointer to the 3D command buffer.
+//   arg[2] = command_size - Size of the command buffer in bytes.
+//
+// Returns:
+//   Result from virtio_gpu_accel_submit_3d(), or -1 if the
+//   context lookup fails.
+unsigned long long sys_vgpu_submit_3d(arg *a) {
     int lookup = lookup_entries(a->arg[0], getpid());
     if (lookup == -1) return -1;
-    return virtio_gpu_accel_submit_3d(&g_virtio_gpu_accel, lookup, (const void*)a->arg[1], a->arg[2]);
+
+    return virtio_gpu_accel_submit_3d(
+        &g_virtio_gpu_accel,
+        lookup,
+        (const void *)a->arg[1],
+        a->arg[2]
+    );
 }

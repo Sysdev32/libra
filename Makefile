@@ -179,11 +179,11 @@ iso: $(KERNEL) initramfs
 # -------------------------
 run: iso
 	@echo "[QEMU] booting..."
-	@$(QEMU) \
+	@QEMU_MODULE_DIR=/usr/lib/x86_64-linux-gnu/qemu $(QEMU) \
        -bios ./prebuilt/OVMF.fd \
        -m 4G \
        -M q35,accel=$(QEMU_ACCEL) \
-       -display $(QEMU_DISPLAY) \
+       -display gtk,gl=on \
        -serial stdio \
        -D qemu.log \
        -d int \
